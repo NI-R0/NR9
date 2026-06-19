@@ -1,0 +1,13 @@
+[project]
+name = "nr9"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "dm-control",
+    "pillow>=12.2.0",
+]
+
+[tool.uv.sources]
+dm-control = { path = "dm_control" }

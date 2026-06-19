@@ -1,5 +1,5 @@
 import numpy as np
-from dm_control.dm_control.locomotion import soccer as dm_soccer
+from dm_control.locomotion import soccer as dm_soccer
 
 # Instantiates a 2-vs-2 BOXHEAD soccer environment with episodes of 10 seconds
 # each. Upon scoring, the environment reset player positions and the episode
