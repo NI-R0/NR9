@@ -24,3 +24,9 @@ If you forgot to add `--recurse-submodules` to the `git clone` command:
 git submodule update --init
 ```
 
+---
+
+## Resources
+- [MPO Paper](https://arxiv.org/pdf/1806.06920)
+- [Official DeepMind MPO Implementation](https://github.com/google-deepmind/acme/tree/master/acme/agents/tf/mpo)
+- [`dm_control` repository](https://github.com/google-deepmind/dm_control)
