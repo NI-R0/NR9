@@ -134,6 +134,58 @@ wheels = [
 ]
 
 [[package]]
+name = "dm-acme"
+version = "0.4.1"
+source = { directory = "acme" }
+dependencies = [
+    { name = "absl-py" },
+    { name = "dm-env" },
+    { name = "dm-tree" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "typing-extensions" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "absl-py" },
+    { name = "atari-py", marker = "extra == 'envs'" },
+    { name = "bsuite", marker = "extra == 'envs'" },
+    { name = "chex", marker = "extra == 'jax'" },
+    { name = "dm-control", marker = "extra == 'envs'" },
+    { name = "dm-env" },
+    { name = "dm-haiku", marker = "extra == 'jax'" },
+    { name = "dm-launchpad", marker = "extra == 'jax'", specifier = "==0.5.2" },
+    { name = "dm-launchpad", marker = "extra == 'tf'", specifier = "==0.5.2" },
+    { name = "dm-reverb", marker = "extra == 'jax'", specifier = "==0.7.2" },
+    { name = "dm-reverb", marker = "extra == 'tf'", specifier = "==0.7.2" },
+    { name = "dm-sonnet", marker = "extra == 'tf'" },
+    { name = "dm-tree" },
+    { name = "flax", marker = "extra == 'jax'" },
+    { name = "gym", marker = "extra == 'envs'", specifier = "==0.25.0" },
+    { name = "gym", extras = ["atari"], marker = "extra == 'envs'" },
+    { name = "jax", marker = "extra == 'jax'", specifier = "==0.4.3" },
+    { name = "jaxlib", marker = "extra == 'jax'", specifier = "==0.4.3" },
+    { name = "numpy" },
+    { name = "optax", marker = "extra == 'jax'" },
+    { name = "pillow" },
+    { name = "pygame", marker = "extra == 'envs'", specifier = "==2.1.0" },
+    { name = "pytest-xdist", marker = "extra == 'testing'" },
+    { name = "pytype", marker = "extra == 'testing'", specifier = "==2021.8.11" },
+    { name = "rlax", marker = "extra == 'jax'" },
+    { name = "rlds", marker = "extra == 'envs'" },
+    { name = "tensorflow", marker = "extra == 'jax'", specifier = "==2.8.0" },
+    { name = "tensorflow", marker = "extra == 'tf'", specifier = "==2.8.0" },
+    { name = "tensorflow-datasets", marker = "extra == 'jax'", specifier = "==4.6.0" },
+    { name = "tensorflow-datasets", marker = "extra == 'tf'", specifier = "==4.6.0" },
+    { name = "tensorflow-probability", marker = "extra == 'jax'", specifier = "==0.15.0" },
+    { name = "tensorflow-probability", marker = "extra == 'tf'", specifier = "==0.15.0" },
+    { name = "trfl", marker = "extra == 'tf'" },
+    { name = "typing-extensions" },
+]
+provides-extras = ["jax", "tf", "testing", "envs"]
+
+[[package]]
 name = "dm-control"
 version = "1.0.42"
 source = { directory = "dm_control" }
@@ -457,12 +509,14 @@ name = "nr9"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "dm-acme" },
     { name = "dm-control" },
     { name = "pillow" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "dm-acme", directory = "acme" },
     { name = "dm-control", directory = "dm_control" },
     { name = "pillow", specifier = ">=12.2.0" },
 ]
