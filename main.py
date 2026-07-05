@@ -11,6 +11,7 @@ def parse_args():
     parser.add_argument("-v", "--visualize", default=False, action="store_true",
                         help="Enables visualization. Does not work on headless servers or in WSL.")
     parser.add_argument("--debug", default=False, action="store_true", help="Sets logger output level to DEBUG.")
+    # TODO: set central outdir used by loggers and train
 
     # Training-specific CLI args
     parser.add_argument("--episodes", type=int, default=1000)
