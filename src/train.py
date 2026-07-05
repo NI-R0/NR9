@@ -32,9 +32,9 @@ def train(args: dict):
 
     # TODO: Initialize environment, networks, ...
     env = Env()
-    buffer = ReplayBuffer(env.state_dim, env.action_dim, capacity=1000000)
+    buffer = ReplayBuffer(env.state_dim, env.action_dim, capacity=500)
 
-    tb = setup_tensorboard()
+    tb = setup_tensorboard(args["run_dir"])
 
     logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {visualize}")
 
@@ -54,7 +54,8 @@ def train(args: dict):
         log_stats_to_tb(tb, episode, ep_stats)
 
         if episode % 10 == 0:
-            logger.info(f"Episode {episode}/{max_episodes} | Reward: {ep_stats["Episode_Reward"]} | Buffer Size: {ep_stats["Buffer_Length"]}")
+            logger.info(
+                f"Episode {episode}/{max_episodes} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Length']}")
 
     # TODO: dump stats dict
     logger.success("Training completed successfully!")

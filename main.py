@@ -1,30 +1,23 @@
-import argparse
+import os
 from loguru import logger
-from src.utils import setup_logger
+from datetime import datetime
+from src.utils import setup_logger, parse_args
 from src.train import train
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-
-    # General CLI args
-    parser.add_argument("-v", "--visualize", default=False, action="store_true",
-                        help="Enables visualization. Does not work on headless servers or in WSL.")
-    parser.add_argument("--debug", default=False, action="store_true", help="Sets logger output level to DEBUG.")
-    # TODO: set central outdir used by loggers and train
-
-    # Training-specific CLI args
-    parser.add_argument("--episodes", type=int, default=1000)
-    # TODO: add bs, lr, ...
-
-    return parser.parse_args()
 
 
 @logger.catch
 def main():
     args = parse_args()
-    setup_logger("DEBUG" if args.debug else "INFO")
-    args = vars(args)
+
+    # Setup run directory
+    run_name = args["run_name"] if args["run_name"] else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # fmt: off
+    run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
+    os.makedirs(run_dir, exist_ok=False)
+    args["run_name"] = run_name
+    args["run_dir"] = run_dir
+
+    setup_logger("DEBUG" if args["debug"] else "INFO", outdir=run_dir)
+    logger.info(f"Using output directory at {run_dir}")
 
     try:
         train(args)

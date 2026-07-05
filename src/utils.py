@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import argparse
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from loguru import logger
@@ -26,9 +27,6 @@ class InterceptHandler(logging.Handler):
 
 
 def setup_logger(level: str = "INFO", outdir: str = "logs"):
-    log_path = os.path.join(os.getcwd(), outdir)
-    os.makedirs(log_path, exist_ok=True)
-
     logger.remove()
 
     stdout_fmt = (
@@ -47,7 +45,7 @@ def setup_logger(level: str = "INFO", outdir: str = "logs"):
         sys.stdout, format=stdout_fmt, level=level, enqueue=True
     )
     logger.add(
-        os.path.join(log_path, "log_{time}.log"),
+        os.path.join(outdir, "log_{time}.log"),
         format=logfile_fmt,
         level=level,
         enqueue=True,
@@ -61,13 +59,33 @@ def setup_logger(level: str = "INFO", outdir: str = "logs"):
 
 
 def setup_tensorboard(outdir: str = "runs") -> SummaryWriter:
-    run_name = f"MPO_soccer_{datetime.now().strftime("%Y%m%d_%H%M%S")}" # fmt: off
-    log_dir = os.path.join(os.getcwd(), outdir, run_name)
-    writer = SummaryWriter(log_dir=log_dir)
-    logger.info(f"Tensorboard logger initialized.")
+    logdir = os.path.join(outdir, "tensorboard")
+    writer = SummaryWriter(log_dir=logdir)
+    logger.info(f"Tensorboard logger initialized successfully")
     return writer
+
 
 def log_stats_to_tb(writer: SummaryWriter, episode: int, stats: dict):
     for key, value in stats.items():
         writer.add_scalar(f"Metrics/{key}", value, episode)
     logger.debug(f"Added metrics to tensorboard for episode {episode}.")
+
+
+def parse_args() -> dict:
+    parser = argparse.ArgumentParser()
+
+    # General CLI args
+    parser.add_argument("-v", "--visualize", default=False, action="store_true",
+                        help="Enables visualization. Does not work on headless servers or in WSL.")
+    parser.add_argument("--debug", default=False, action="store_true", help="Sets logger output level to DEBUG.")
+    parser.add_argument(
+        "--outdir", default="runs", type=str,
+        help="The outdir will be created in the current working directory and used by all loggers and file dumps.")
+    parser.add_argument("--run_name", default=None, type=str)
+
+    # Training-specific CLI args
+    parser.add_argument("--episodes", type=int, default=1000)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=1e-3)
+
+    return vars(parser.parse_args())
