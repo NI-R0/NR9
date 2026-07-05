@@ -1,13 +1,37 @@
-from src.utils import setup_logger
-from loguru import logger
 import argparse
+from loguru import logger
+from src.utils import setup_logger
+from src.train import train
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    # General CLI args
+    parser.add_argument("-v", "--visualize", action="store_true",
+                        help="Enables visualization. Does not work on headless servers or in WSL.")
+    parser.add_argument("--debug", action="store_true", help="Sets logger output level to DEBUG.")
+
+    # Training-specific CLI args
+    parser.add_argument("--episodes", type=int, default=1000)
+    # TODO: add bs, lr, ...
+
+    return parser.parse_args()
 
 
 @logger.catch
 def main():
-    setup_logger()
-    logger.warning("call from main.py")
-    raise NotImplementedError("tesssssssssst")
+    args = parse_args()
+    setup_logger("DEBUG" if args.debug else "INFO")
+    args = vars(args)
+
+    try:
+        train(args)
+    except KeyboardInterrupt:
+        logger.warning("Shutting down training!")
+    except Exception as e:
+        logger.exception("Uncaught exception occured during training!")
+        raise e
 
 
 if __name__ == "__main__":
