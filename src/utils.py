@@ -1,6 +1,8 @@
 import os
 import sys
 import logging
+from datetime import datetime
+from torch.utils.tensorboard import SummaryWriter
 from loguru import logger
 
 
@@ -56,3 +58,16 @@ def setup_logger(level: str = "INFO", outdir: str = "logs"):
 
     logger.info("Logger initialized successfully")
     return logger
+
+
+def setup_tensorboard(outdir: str = "runs") -> SummaryWriter:
+    run_name = f"MPO_soccer_{datetime.now().strftime("%Y%m%d_%H%M%S")}" # fmt: off
+    log_dir = os.path.join(os.getcwd(), outdir, run_name)
+    writer = SummaryWriter(log_dir=log_dir)
+    logger.info(f"Tensorboard logger initialized.")
+    return writer
+
+def log_stats_to_tb(writer: SummaryWriter, episode: int, stats: dict):
+    for key, value in stats.items():
+        writer.add_scalar(f"Metrics/{key}", value, episode)
+    logger.debug(f"Added metrics to tensorboard for episode {episode}.")
