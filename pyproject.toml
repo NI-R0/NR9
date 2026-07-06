@@ -10,7 +10,10 @@ dependencies = [
     "dm-control",
     "jax>=0.10.2",
     "optax>=0.2.8",
+    "loguru>=0.7.3",
     "pillow>=12.2.0",
+    "tensorboard>=2.21.0",
+    "torch>=2.12.1",
 ]
 
 [tool.uv.sources]
