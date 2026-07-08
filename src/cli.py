@@ -23,8 +23,8 @@ def parse_args() -> dict:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch_size", type=int, default=64)
 
-    parser.add_argument("--val_frequency", type=int, default=10)
+    parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(
-        "--num_val_episodes", type=int, default=5, help="Number of episodes to run evaluation for.")
+        "--num_eval_episodes", type=int, default=5, help="Number of episodes to run evaluation for.")
 
     return vars(parser.parse_args())

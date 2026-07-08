@@ -1,7 +1,8 @@
 import os
 from loguru import logger
 from datetime import datetime
-from src.utils import setup_logger, parse_args
+from src.cli import parse_args
+from src.utils import setup_logger
 from src.train import train
 from src.test import test
 
@@ -21,7 +22,7 @@ def main():
     logger.info(f"Using output directory at {run_dir}")
 
     try:
-        train(args) if args.task == "train" else test(args)
+        train(args) if args["task"] == "train" else test(args)
     except KeyboardInterrupt:
         logger.warning("Shutting down training!")
     except Exception as e:

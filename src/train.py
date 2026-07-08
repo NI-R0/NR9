@@ -1,9 +1,13 @@
 import json
+import os
+from copy import deepcopy
 import numpy as np
 from loguru import logger
 from src.utils import setup_tensorboard, log_stats_to_tb
 from src.buffer import ReplayBuffer
 from src.environment import Env
+from src.learner import MPOLearner
+from src.networks import ActorNetwork, CriticNetwork
 
 
 def run_episode(env: Env, buffer: ReplayBuffer):
@@ -29,10 +33,21 @@ def run_episode(env: Env, buffer: ReplayBuffer):
 def train(args: dict):
     max_episodes = args["episodes"]
     visualize = args["visualize"]
+    batch_size = args["batch_size"]
+    eval_interval = args["val_frequency"]
+    num_eval_episodes = args["num_val_episodes"]
+    run_dir = args["run_dir"]
 
-    # TODO: Initialize environment, networks, ...
-    env = Env()
-    buffer = ReplayBuffer(env.state_dim, env.action_dim, capacity=500)
+    # Initialize env
+    env = Env(domain_name="cartpole", task_name="balance")
+    eval_env = deepcopy(env)
+
+    # Initialize MPO learner components
+    actor_net = ActorNetwork(env.action_dim)
+    critic_net = CriticNetwork()
+
+    learner = MPOLearner(actor_net, critic_net, env.state_dim, env.action_dim)
+    buffer = ReplayBuffer(env.state_dim, env.action_dim)
 
     tb = setup_tensorboard(args["run_dir"])
 
@@ -43,10 +58,10 @@ def train(args: dict):
     stats = {}
 
     for episode in range(1, max_episodes + 1):
-        ep_stats = run_episode(env)
+        ep_reward, ep_length = run_episode(env)
         stats[episode] = {
-            "Episode_Reward": ep_stats[0],
-            "Episode_Length": ep_stats[1],
+            "Episode_Reward": ep_reward,
+            "Episode_Length": ep_length,
             "Buffer_Size": len(buffer)
         }
         ep_stats = stats[episode]
@@ -57,5 +72,25 @@ def train(args: dict):
             logger.info(
                 f"Episode {episode}/{max_episodes} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Length']}")
 
-    # TODO: dump stats dict
+        if episode in [1, 2, 3, 4, 5] or episode % eval_interval == 0:
+            logger.info(f"Starting evaluation at episode {episode}.")
+            eval_rewards = []
+
+            for eval_episode in num_eval_episodes:
+                eval_reward, _ = run_episode(
+                    eval_env,
+                    batch_size=batch_size,
+                    explore=False,
+                    visualize=visualize and (eval_episode == 0)  # only vis. first eval episode
+                )
+                eval_rewards.append(eval_reward)
+
+            mean_eval_reward = np.mean(eval_rewards)
+            stats[episode]["Mean_Eval_Reward"] = mean_eval_reward
+            logger.info(f"Mean evaluation reward over {num_eval_episodes} episodes: {mean_eval_reward:.2f}")
+            log_stats_to_tb(tb, episode, {"Mean_Eval_Reward": mean_eval_reward})
+
+    stats_file = os.path.join(run_dir, "training_stats.json")
+    with open(stats_file, "w") as f:
+        json.dump(stats, f, indent=4)
     logger.success("Training completed successfully!")
