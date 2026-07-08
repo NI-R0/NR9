@@ -82,8 +82,8 @@ Training Configuration:
     - Seed: {args['seed']}
     - Warmup: {args['warmup']} Steps
     - Batch Size: {args['batch_size']}
-    - Learning Rate: {args['learning_rate']}
-    - Dual Learning Rate: {args['dual_learning_rate']}
+    - Learning Rate: {args['lr']}
+    - Dual Learning Rate: {args['dual_lr']}
     - Buffer Capacity: {args['capacity']}
     - Tau: {args['tau']}
 

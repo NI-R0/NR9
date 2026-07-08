@@ -21,7 +21,7 @@ def parse_args() -> dict:
     # Training-specific CLI args
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=500)
-    parser.add_argument("--steps", type=int, default=500, help="Number of steps each episode runs for.")
+    parser.add_argument("--steps", type=int, default=1000, help="Number of steps each episode runs for.")
     parser.add_argument("--warmup", type=int, default=200,
                         help="Number of batches to fill buffer with before starting training.")
     parser.add_argument("--batch_size", type=int, default=64)

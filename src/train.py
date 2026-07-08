@@ -36,8 +36,8 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
 
 def train(args: dict):
-    env = Environment(domain_name=args["env_domain"], task_name=args["env_task"])
-    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"])
+    env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["step"])
+    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["step"])
 
     # Initialize MPO learner components
     actor_net = ActorNetwork(env.action_dim)
@@ -54,6 +54,8 @@ def train(args: dict):
     agent = SoccerAgent(learner, buffer, args["warmup"], args["batch_size"])
 
     tb = setup_tensorboard(args["run_dir"])
+    stats_file = os.path.join(args["run_dir"], "training_stats.json")
+    logger.info("Setup complete.")
 
     logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")
     stats = {}
@@ -92,7 +94,6 @@ def train(args: dict):
             logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
             log_stats_to_tb(tb, episode, {"Mean_Eval_Reward": mean_eval_reward})
 
-    stats_file = os.path.join(args["run_dir"], "training_stats.json")
     with open(stats_file, "w") as f:
         json.dump(stats, f, indent=4)
     logger.info(f"Dumped training statistics to {stats_file}.")

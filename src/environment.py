@@ -6,54 +6,55 @@ import sys
 
 
 class Environment:
-    def __init__(self, domain_name="cartpole", task_name="balance"):
+    def __init__(self, domain_name: str = "cartpole", task_name: str = "balance", max_steps: int = 1000):
         """Standard dm_control wrapper. Flattens dict observations into 1D arrays."""
-        self.env = None
-        try:
-            self.env = dm_suite.load(domain_name=domain_name, task_name=task_name)
-        except ValueError:
-            try:
-                self.env = suite.load(domain_name=domain_name, task_name=task_name)
-            except Exception as e:
-                logger.error(f"Could not load environment {domain_name} with task {task_name}: {e}")
-                sys.exit(1)
-        except Exception as e:
-            logger.error(f"Could not load environment {domain_name} with task {task_name}: {e}")
-            sys.exit(1)
+        self.env = self._load_control_env(domain_name, task_name)
 
         self.action_spec = self.env.action_spec()
         self.action_dim = self.action_spec.shape[0]
 
-        # Run a dummy reset to determine the flattened state dimension
-        dummy_timestep = self.env.reset()
-        self.state_dim = self._flatten_obs(dummy_timestep.observation).shape[0]
+        # Determine state dimensions by running dummy timestep
+        first_timestep = self.env.reset()
+        self.state_dim = self._flatten_observation(first_timestep.observation).shape[0]
 
-        # dm_control defaults to 1000 steps per episode
-        self.ep_max_steps = 1000
+        self.ep_max_steps = max_steps
 
-    def _flatten_obs(self, obs_dict: dict) -> np.ndarray:
-        # Concatenates position, velocity, etc. into a single flat vector for the MLPs
-        return np.concatenate([np.asarray(val).ravel() for val in obs_dict.values()])
+    def _load_control_env(self, domain_name: str, task_name: str):
+        try:
+            return dm_suite.load(domain_name=domain_name, task_name=task_name)
+        except ValueError:
+            pass  # if we reach this error, we try to load a custom env
+        try:
+            return suite.load(domain_name=domain_name, task_name=task_name)
+        except Exception as e:
+            logger.error(f"Could not load environment {domain_name} with task {task_name}: {e}")
+            sys.exit(1)
+
+    def _flatten_observation(self, obs_dict: dict) -> np.ndarray:
+        # Concatenates position, velocity, etc. into a flat vector for the MLPs
+        return np.concatenate([np.asarray(val).ravel() for val in obs_dict.values()]).astype(np.float32)
 
     def reset(self) -> np.ndarray:
-        timestep = self.env.reset()
-        return self._flatten_obs(timestep.observation)
+        return self._flatten_observation(self.env.reset().observation)
 
     def step(self, action: np.ndarray):
         # Clip action to physics bounds to prevent MuJoCo integration crashes
         action = np.clip(action, self.action_spec.minimum, self.action_spec.maximum)
         timestep = self.env.step(action)
 
-        state = self._flatten_obs(timestep.observation)
+        state = self._flatten_observation(timestep.observation)
         reward = timestep.reward if timestep.reward is not None else 0.0
-
-        # dm_control indicates end of episode with last()
         done = timestep.last()
 
         return state, reward, done, {}
 
-    def render(self):
-        # In a real setup, you would grab pixels via self.env.physics.render()
-        # and display them with cv2.imshow() or matplotlib.
-        pixels = self.env.physics.render(camera_id=0)
-        return pixels
+    def render(self, height: int = 240, width: int = 320, camera_id: int = 0):
+        """Returns the current frame as an (H, W, 3) uint8 RGB array.
+
+        Requires a configured MuJoCo GL backend (env var MUJOCO_GL=egl or
+        osmesa for headless offscreen rendering, glfw if a real display is
+        available), set before dm_control is imported.
+
+        Author's Note: Rendering process designed by Claude. 
+        """
+        return self.env.physics.render(height=height, width=width, camera_id=camera_id)
