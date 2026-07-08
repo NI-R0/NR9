@@ -27,9 +27,10 @@ class MPOLearner:
                  observation_shape: tuple,
                  action_shape: tuple,
                  random_key,
-                 learning_rate=3e-4,
-                 dual_learning_rate=1e-2,
-                 tau=0.005):
+                 lr=3e-4,
+                 dual_lr=1e-2,
+                 tau=0.005,
+                 **kwargs):
 
         self.actor_net = actor_net
         self.critic_net = critic_net
@@ -61,9 +62,9 @@ class MPOLearner:
         }
 
         # Optimizers
-        self.opt_actor = optax.adam(learning_rate)
-        self.opt_critic = optax.adam(learning_rate)
-        self.opt_dual = optax.adam(dual_learning_rate)
+        self.opt_actor = optax.adam(lr)
+        self.opt_critic = optax.adam(lr)
+        self.opt_dual = optax.adam(dual_lr)
 
         # Build initial training state
         self.state = TrainingState(

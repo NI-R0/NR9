@@ -68,3 +68,28 @@ def log_stats_to_tb(writer: SummaryWriter, episode: int, stats: dict):
     for key, value in stats.items():
         writer.add_scalar(f"Metrics/{key}", value, episode)
     logger.debug(f"Added metrics to tensorboard for episode {episode}.")
+
+
+def print_run_info(args: dict):
+    msg = f"""
+###############################################################################
+Training Summary:
+    - Run name: {args['outdir']}/{args['run_name']}
+    - Environment: {args['env_domain']} (task: {args['env_task']})
+    - Duration: {args['episodes']} Episodes at {args['steps']} Steps
+
+Training Configuration:
+    - Seed: {args['seed']}
+    - Warmup: {args['warmup']} Steps
+    - Batch Size: {args['batch_size']}
+    - Learning Rate: {args['learning_rate']}
+    - Dual Learning Rate: {args['dual_learning_rate']}
+    - Buffer Capacity: {args['capacity']}
+    - Tau: {args['tau']}
+
+Evaluation Configuration:
+    - Interval: {args['eval_frequency']}
+    - Eval Duration: {args['num_eval_episodes']} Episodes
+###############################################################################
+        """
+    logger.info(msg)

@@ -14,6 +14,10 @@ def parse_args() -> dict:
         help="The outdir will be created in the current working directory and used by all loggers and file dumps.")
     parser.add_argument("--run_name", default=None, type=str)
 
+    # Env-specific flags
+    parser.add_argument("--env_domain", type=str, default="cartpole")
+    parser.add_argument("--env_task", type=str, default="balance")
+
     # Training-specific CLI args
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=500)
@@ -21,8 +25,8 @@ def parse_args() -> dict:
     parser.add_argument("--warmup", type=int, default=200,
                         help="Number of batches to fill buffer with before starting training.")
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--learning_rate", type=float, default=3e-3)
-    parser.add_argument("--dual_learning_rate", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=3e-3)
+    parser.add_argument("--dual_lr", type=float, default=0.01)
     parser.add_argument("--capacity", type=int, default=100000)
     parser.add_argument("--tau", type=float, default=0.005)
 

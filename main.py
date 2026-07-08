@@ -2,7 +2,7 @@ import os
 from loguru import logger
 from datetime import datetime
 from src.cli import parse_args
-from src.utils import setup_logger
+from src.utils import setup_logger, print_run_info
 from src.train import train
 from src.test import test
 
@@ -20,6 +20,8 @@ def main():
 
     setup_logger("DEBUG" if args["verbose"] else "INFO", outdir=run_dir)
     logger.info(f"Using output directory at {run_dir}")
+
+    print_run_info(args)
 
     try:
         train(args) if args["task"] == "train" else test(args)
