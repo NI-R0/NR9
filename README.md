@@ -1,4 +1,4 @@
-# Learning to Score with a Robot Soccer Agent
+# Learning to Score with a Robot ~~Soccer~~ Football Agent
 
 Scoring a goal requires precise continuous control. The agent has to move toward the ball, make contact,
 and kick it in the right direction.
