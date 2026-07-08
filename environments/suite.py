@@ -18,12 +18,7 @@
 import collections
 import inspect
 import itertools
-
 from dm_control.rl import control
-
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import environments.cartpole_ball as cartpole_ball
 # import environments.one_joint_ball as one_joint_ball
 

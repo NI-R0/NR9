@@ -1,9 +1,4 @@
-import sys
-import os
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 import environments.suite as suite
 from dm_control import viewer
 
