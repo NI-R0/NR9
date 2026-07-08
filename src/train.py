@@ -22,7 +22,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
         if visualize:
             env.render()
 
-        action = agent.select_action(state, explore=explore)  # TODO
+        action = agent.select_action(state, explore=explore)
         next_state, reward, done, _ = env.step(action)
 
         if explore:
@@ -36,9 +36,8 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
 
 def train(args: dict):
-    # TODO: Initialize env
-    env = Environment(domain_name="cartpole", task_name="balance")
-    eval_env = deepcopy(env)
+    env = Environment(domain_name=args["env_domain"], task_name=args["env_task"])
+    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"])
 
     # Initialize MPO learner components
     actor_net = ActorNetwork(env.action_dim)
@@ -84,7 +83,7 @@ def train(args: dict):
                     agent,
                     args,
                     explore=False,
-                    visualize=args["visualize"] and (eval_episode == 0)  # only vis. first eval episode
+                    visualize=args["visualize"] and (eval_episode == 1)  # only vis. first eval episode
                 )
                 eval_rewards.append(eval_reward)
 

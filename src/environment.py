@@ -12,7 +12,11 @@ class Environment:
         try:
             self.env = dm_suite.load(domain_name=domain_name, task_name=task_name)
         except ValueError:
-            self.env = suite.load(domain_name=domain_name, task_name=task_name)
+            try:
+                self.env = suite.load(domain_name=domain_name, task_name=task_name)
+            except Exception as e:
+                logger.error(f"Could not load environment {domain_name} with task {task_name}: {e}")
+                sys.exit(1)
         except Exception as e:
             logger.error(f"Could not load environment {domain_name} with task {task_name}: {e}")
             sys.exit(1)
