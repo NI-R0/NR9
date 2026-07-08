@@ -15,6 +15,7 @@ def main():
     run_name = args["run_name"] if args["run_name"] else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # fmt: off
     run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
     os.makedirs(run_dir, exist_ok=False)
+    os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
     args["run_name"] = run_name
     args["run_dir"] = run_dir
 
