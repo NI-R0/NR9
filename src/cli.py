@@ -25,8 +25,8 @@ def parse_args() -> dict:
     parser.add_argument("--warmup", type=int, default=200,
                         help="Number of batches to fill buffer with before starting training.")
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--learning_rate", type=float, default=3e-3)
-    parser.add_argument("--dual_learning_rate", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=3e-3)
+    parser.add_argument("--dual_lr", type=float, default=0.01)
     parser.add_argument("--capacity", type=int, default=100000)
     parser.add_argument("--tau", type=float, default=0.005)
 
