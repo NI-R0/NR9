@@ -28,7 +28,7 @@ def run_episode(env: Env, agent: SoccerAgent, args: dict, explore: bool = True,
         next_state, reward, done, _ = env.step(action)
 
         if explore:
-            agent.train_step(state, action, reward, next_state, done, args["batch_size"])
+            agent.train_step(state, action, reward, next_state, done)
 
         state = next_state
         episode_reward += reward
@@ -46,7 +46,13 @@ def train(args: dict):
     actor_net = ActorNetwork(env.action_dim)
     critic_net = CriticNetwork()
 
-    learner = MPOLearner(actor_net, critic_net, env.state_dim, env.action_dim)
+    learner = MPOLearner(
+        actor_net,
+        critic_net,
+        env.state_dim,
+        env.action_dim,
+        **args
+    )
     buffer = ReplayBuffer(env.state_dim, env.action_dim)
     agent = SoccerAgent(learner, buffer, args["warmup"], args["batch_size"])
 
@@ -74,7 +80,7 @@ def train(args: dict):
             logger.info(f"Starting evaluation at episode {episode}.")
             eval_rewards = []
 
-            for eval_episode in range(args["num_eval_episodes"]):
+            for eval_episode in range(1, args["num_eval_episodes"] + 1):
                 eval_reward, _ = run_episode(
                     eval_env,
                     agent,
