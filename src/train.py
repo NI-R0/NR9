@@ -5,20 +5,18 @@ import numpy as np
 from loguru import logger
 from src.utils import setup_tensorboard, log_stats_to_tb
 from src.buffer import ReplayBuffer
-from src.environment import Env
+from src.environment import Environment
 from src.learner import MPOLearner
 from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
 
 
-def run_episode(env: Env, agent: SoccerAgent, args: dict, explore: bool = True,
+def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False):
     state = env.reset()
     episode_reward = 0.0
     done = False
     step = 0
-
-    warmup_transitions = args["warmup"] * args["batch_size"]
 
     while not done and step < env.ep_max_steps:
         if visualize:
@@ -39,7 +37,7 @@ def run_episode(env: Env, agent: SoccerAgent, args: dict, explore: bool = True,
 
 def train(args: dict):
     # TODO: Initialize env
-    env = Env(domain_name="cartpole", task_name="balance")
+    env = Environment(domain_name="cartpole", task_name="balance")
     eval_env = deepcopy(env)
 
     # Initialize MPO learner components
@@ -58,7 +56,7 @@ def train(args: dict):
 
     tb = setup_tensorboard(args["run_dir"])
 
-    logger.info(f"Starting training loop for {args["episodes"]} episodes. Visualization: {args["visualize"]}")
+    logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")
     stats = {}
 
     for episode in range(1, args["episodes"] + 1):
@@ -74,7 +72,7 @@ def train(args: dict):
 
         if episode % 10 == 0:
             logger.info(
-                f"Episode {episode}/{args["episodes"]} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Length']}")
+                f"Episode {episode}/{args['episodes']} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Length']}")
 
         if episode in [1, 2, 3, 4, 5] or episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
@@ -92,7 +90,7 @@ def train(args: dict):
 
             mean_eval_reward = np.mean(eval_rewards)
             stats[episode]["Mean_Eval_Reward"] = mean_eval_reward
-            logger.info(f"Mean evaluation reward over {args["num_eval_episodes"]} episodes: {mean_eval_reward:.2f}")
+            logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
             log_stats_to_tb(tb, episode, {"Mean_Eval_Reward": mean_eval_reward})
 
     stats_file = os.path.join(args["run_dir"], "training_stats.json")

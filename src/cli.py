@@ -14,6 +14,10 @@ def parse_args() -> dict:
         help="The outdir will be created in the current working directory and used by all loggers and file dumps.")
     parser.add_argument("--run_name", default=None, type=str)
 
+    # Env-specific flags
+    parser.add_argument("--env_domain", type=str, default="cartpole")
+    parser.add_argument("--env_task", type=str, default="balance")
+
     # Training-specific CLI args
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=500)

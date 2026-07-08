@@ -1,11 +1,22 @@
-from dm_control import suite
 import numpy as np
+import src.environments.suite as suite
+from dm_control import suite as dm_suite
+from loguru import logger
+import sys
 
 
-class Env:
+class Environment:
     def __init__(self, domain_name="cartpole", task_name="balance"):
         """Standard dm_control wrapper. Flattens dict observations into 1D arrays."""
-        self.env = suite.load(domain_name=domain_name, task_name=task_name)
+        self.env = None
+        try:
+            self.env = dm_suite.load(domain_name=domain_name, task_name=task_name)
+        except ValueError:
+            self.env = suite.load(domain_name=domain_name, task_name=task_name)
+        except Exception as e:
+            logger.error(f"Could not load environment {domain_name} with task {task_name}: {e}")
+            sys.exit(1)
+
         self.action_spec = self.env.action_spec()
         self.action_dim = self.action_spec.shape[0]
 
