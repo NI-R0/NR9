@@ -1,6 +1,0 @@
-[submodule "dm_control"]
-	path = dm_control
-	url = https://github.com/google-deepmind/dm_control.git
-[submodule "acme"]
-	path = acme
-	url = https://github.com/google-deepmind/acme.git
