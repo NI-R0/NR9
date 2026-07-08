@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from datetime import datetime
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from loguru import logger
 
 

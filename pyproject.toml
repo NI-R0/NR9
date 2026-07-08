@@ -10,9 +10,8 @@ dependencies = [
     "optax>=0.2.8",
     "loguru>=0.7.3",
     "pillow>=12.2.0",
-    "tensorboard>=2.21.0",
-    "torch>=2.12.1",
     "flax>=0.12.7",
     "dm-control>=1.0.43",
     "acme>=5.6.0",
+    "tensorboardx>=2.6.5",
 ]
