@@ -1,7 +1,6 @@
 import os
 import sys
 import logging
-import argparse
 from datetime import datetime
 from torch.utils.tensorboard import SummaryWriter
 from loguru import logger
@@ -69,23 +68,3 @@ def log_stats_to_tb(writer: SummaryWriter, episode: int, stats: dict):
     for key, value in stats.items():
         writer.add_scalar(f"Metrics/{key}", value, episode)
     logger.debug(f"Added metrics to tensorboard for episode {episode}.")
-
-
-def parse_args() -> dict:
-    parser = argparse.ArgumentParser()
-
-    # General CLI args
-    parser.add_argument("-v", "--visualize", default=False, action="store_true",
-                        help="Enables visualization. Does not work on headless servers or in WSL.")
-    parser.add_argument("--debug", default=False, action="store_true", help="Sets logger output level to DEBUG.")
-    parser.add_argument(
-        "--outdir", default="runs", type=str,
-        help="The outdir will be created in the current working directory and used by all loggers and file dumps.")
-    parser.add_argument("--run_name", default=None, type=str)
-
-    # Training-specific CLI args
-    parser.add_argument("--episodes", type=int, default=1000)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-3)
-
-    return vars(parser.parse_args())
