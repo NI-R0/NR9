@@ -71,7 +71,7 @@ def train(args: dict):
 
         if episode % 10 == 0:
             logger.info(
-                f"Episode {episode}/{args['episodes']} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Length']}")
+                f"Episode {episode}/{args['episodes']} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Size']}")
 
         if episode in [1, 2, 3, 4, 5] or episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
