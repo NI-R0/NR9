@@ -136,7 +136,7 @@ Evaluation Configuration:
                      extra_metrics: dict | None = None):
         metrics_str = ", ".join(f"{k}: {v:.4f}" for k, v in (extra_metrics or {}).items())
         logger.info(
-            f"Episode {episode}/{total_episodes} | Reward: {ep_stats['Episode_Reward']:.2f} "
+            f"Episode [{episode}/{total_episodes}] - Reward: {ep_stats['Episode_Reward']:.2f} "
             f"| Buffer Size: {ep_stats['Buffer_Size']}"
             + (f" | {metrics_str}" if metrics_str else "")
         )

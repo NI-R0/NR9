@@ -85,8 +85,7 @@ def train(args: dict, stats: StatsCollector):
 
         stats.log_stats_to_tb(episode, ep_stats)
 
-        if episode in [1, 2, 3, 4, 5] or episode % 10 == 0:
-            stats.log_progress(episode, args["episodes"], ep_stats, {"Episode Loss": ep_loss})
+        stats.log_progress(episode, args["episodes"], ep_stats, {"Episode Loss": ep_loss})
 
         if episode in [4, 5, 6] or episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
