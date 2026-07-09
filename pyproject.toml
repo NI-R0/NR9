@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "distrax>=0.1.9",
-    "jax>=0.10.2",
     "optax>=0.2.8",
     "loguru>=0.7.3",
     "pillow>=12.2.0",
@@ -14,4 +13,5 @@ dependencies = [
     "dm-control>=1.0.43",
     "acme>=5.6.0",
     "tensorboardx>=2.6.5",
+    "tensorboard>=2.21.0",
 ]

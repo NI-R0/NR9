@@ -20,7 +20,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     step = 0
 
     ep_loss = 0.0
-    num_steps = 0
+    loss_count = 0
 
     while not done and step < env.ep_max_steps:
         if visualize:
@@ -30,17 +30,19 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
         next_state, reward, done, _ = env.step(action)
 
         if explore:
-            _, loss = agent.train_step(state, action, reward, next_state, done)
-            ep_loss += loss
+            loss = agent.train_step(state, action, reward, next_state, done)
+            if loss:
+                loss_count += 1
+                ep_loss += loss["loss_critic"].item()
 
         state = next_state
         episode_reward += reward
         step += 1
 
-    if num_steps > 0:
-        return episode_reward, step, ep_loss / num_steps
+    if loss_count > 0:
+        return episode_reward, step, ep_loss / loss_count
 
-    return episode_reward, step, ep_loss
+    return episode_reward, step, np.nan
 
 
 def train(args: dict, stats: StatsCollector):
@@ -65,6 +67,14 @@ def train(args: dict, stats: StatsCollector):
 
     logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")
 
+    dummy_stats = {
+        "Episode_Reward": 0,
+        "Episode_Length": args["steps"],
+        "Buffer_Size": len(buffer),
+        "Episode_Loss": np.nan,
+    }
+    stats.log_stats_to_tb(0, dummy_stats)
+
     for episode in range(1, args["episodes"] + 1):
         ep_reward, ep_length, ep_loss = run_episode(env, agent, args)
         ep_stats = {
@@ -76,15 +86,15 @@ def train(args: dict, stats: StatsCollector):
 
         stats.log_stats_to_tb(episode, ep_stats)
 
-        if episode % 10 == 0:
+        if episode in [1, 2, 3, 4, 5] or episode % 10 == 0:
             stats.log_progress(episode, args["episodes"], ep_stats, {"Episode Loss": ep_loss})
 
-        if episode in [1, 2, 3, 4, 5] or episode % args["eval_frequency"] == 0:
+        if episode in [4, 5, 6] or episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
             eval_rewards = []
 
             for eval_episode in range(1, args["num_eval_episodes"] + 1):
-                eval_reward, _ = run_episode(
+                eval_reward, _, _ = run_episode(
                     eval_env,
                     agent,
                     args,
