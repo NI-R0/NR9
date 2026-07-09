@@ -5,7 +5,7 @@ import distrax
 
 
 class ActorNetwork(nn.Module):
-    action_dim: int
+    action_dim: tuple[int]
 
     @nn.compact
     def __call__(self, obs: jax.Array) -> distrax.MultivariateNormalDiag:
@@ -23,11 +23,11 @@ class ActorNetwork(nn.Module):
         x = nn.elu(x)
 
         # Mean Head: Bounded between -1 and 1 via tanh
-        mu = nn.Dense(features=self.action_dim)(x)
+        mu = nn.Dense(features=self.action_dim[0])(x)
         mu = jnp.tanh(mu)
 
         # Scale Head: Add 1e-5 to prevent 0-division or NaN logs.
-        log_sigma = nn.Dense(features=self.action_dim)(x)
+        log_sigma = nn.Dense(features=self.action_dim[0])(x)
         sigma = nn.softplus(log_sigma) + 1e-5
 
         return distrax.MultivariateNormalDiag(loc=mu, scale_diag=sigma)

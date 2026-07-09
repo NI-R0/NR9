@@ -36,8 +36,8 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
 
 def train(args: dict):
-    env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["step"])
-    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["step"])
+    env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
+    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
     # Initialize MPO learner components
     actor_net = ActorNetwork(env.action_dim)

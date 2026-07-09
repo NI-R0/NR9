@@ -20,6 +20,6 @@ class SoccerAgent:
             return info
         return None
 
-    def select_action(self):
+    def select_action(self, state, explore):
         # TODO
         raise NotImplementedError()
