@@ -4,7 +4,7 @@ from copy import deepcopy
 import numpy as np
 import jax
 from loguru import logger
-from src.utils import setup_tensorboard, log_stats_to_tb
+from src.collector import StatsCollector
 from src.buffer import ReplayBuffer
 from src.environment import Environment
 from src.learner import MPOLearner
@@ -19,6 +19,9 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     done = False
     step = 0
 
+    ep_loss = 0.0
+    num_steps = 0
+
     while not done and step < env.ep_max_steps:
         if visualize:
             env.render()
@@ -27,16 +30,20 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
         next_state, reward, done, _ = env.step(action)
 
         if explore:
-            agent.train_step(state, action, reward, next_state, done)
+            _, loss = agent.train_step(state, action, reward, next_state, done)
+            ep_loss += loss
 
         state = next_state
         episode_reward += reward
         step += 1
 
-    return episode_reward, step
+    if num_steps > 0:
+        return episode_reward, step, ep_loss / num_steps
+
+    return episode_reward, step, ep_loss
 
 
-def train(args: dict):
+def train(args: dict, stats: StatsCollector):
     env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
     eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
@@ -54,28 +61,23 @@ def train(args: dict):
     )
     buffer = ReplayBuffer(env.state_dim, env.action_dim)
     agent = SoccerAgent(learner, buffer, args["warmup"], args["batch_size"], args["random_key"])
-
-    tb = setup_tensorboard(args["run_dir"])
-    stats_file = os.path.join(args["run_dir"], "training_stats.json")
     logger.info("Setup complete.")
 
     logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")
-    stats = {}
 
     for episode in range(1, args["episodes"] + 1):
-        ep_reward, ep_length = run_episode(env, agent, args)
-        stats[episode] = {
+        ep_reward, ep_length, ep_loss = run_episode(env, agent, args)
+        ep_stats = {
             "Episode_Reward": ep_reward,
             "Episode_Length": ep_length,
-            "Buffer_Size": len(buffer)
+            "Buffer_Size": len(buffer),
+            "Episode_Loss": ep_loss,
         }
-        ep_stats = stats[episode]
 
-        log_stats_to_tb(tb, episode, ep_stats)
+        stats.log_stats_to_tb(episode, ep_stats)
 
         if episode % 10 == 0:
-            logger.info(
-                f"Episode {episode}/{args['episodes']} | Reward: {ep_stats['Episode_Reward']} | Buffer Size: {ep_stats['Buffer_Size']}")
+            stats.log_progress(episode, args["episodes"], ep_stats, {"Episode Loss": ep_loss})
 
         if episode in [1, 2, 3, 4, 5] or episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
@@ -92,11 +94,15 @@ def train(args: dict):
                 eval_rewards.append(eval_reward)
 
             mean_eval_reward = np.mean(eval_rewards)
-            stats[episode]["Mean_Eval_Reward"] = mean_eval_reward
+            stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
             logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
-            log_stats_to_tb(tb, episode, {"Mean_Eval_Reward": mean_eval_reward})
 
-    with open(stats_file, "w") as f:
-        json.dump(stats, f, indent=4)
-    logger.info(f"Dumped training statistics to {stats_file}.")
+            stats.flush_stats_to_disk()
+            stats.save_checkpoint(learner.state, "latest")
+            if stats.update_best_checkpoint(mean_eval_reward, learner.state):
+                logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
+
+    stats.flush_stats_to_disk()
+    stats.save_checkpoint(learner.state, "final")
+    logger.info(f"Dumped training statistics to {stats.stats_file}.")
     logger.success("Training completed successfully!")
