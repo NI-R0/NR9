@@ -11,11 +11,11 @@ class Environment:
         self.env = self._load_control_env(domain_name, task_name)
 
         self.action_spec = self.env.action_spec()
-        self.action_dim = self.action_spec.shape[0]
+        self.action_dim = self.action_spec.shape
 
         # Determine state dimensions by running dummy timestep
         first_timestep = self.env.reset()
-        self.state_dim = self._flatten_observation(first_timestep.observation).shape[0]
+        self.state_dim = self._flatten_observation(first_timestep.observation).shape
 
         self.ep_max_steps = max_steps
 
