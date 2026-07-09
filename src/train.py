@@ -58,8 +58,10 @@ def train(args: dict, stats: StatsCollector):
         env.action_dim,
         **args
     )
-    buffer = ReplayBuffer(env.state_dim, env.action_dim)
-    agent = SoccerAgent(learner, buffer, args["warmup"], args["batch_size"], args["random_key"])
+    buffer = ReplayBuffer(env.state_dim, env.action_dim, capacity=args["capacity"])
+    agent = SoccerAgent(
+        learner, buffer, args["warmup"], args["batch_size"], args["random_key"]
+    )
     logger.info("Setup complete.")
 
     logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")

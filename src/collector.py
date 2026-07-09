@@ -145,6 +145,10 @@ Evaluation Configuration:
 
     def load_checkpoint(self, name: str):
         path = os.path.join(self.checkpoint_dir, f"{name}.pkl")
+        return self.load_checkpoint_file(path)
+
+    @staticmethod
+    def load_checkpoint_file(path: str):
         with open(path, "rb") as f:
             return pickle.load(f)
 
