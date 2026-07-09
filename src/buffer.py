@@ -21,7 +21,7 @@ class ReplayBuffer:
     def __len__(self):
         return self._size
 
-    def add(self, state, action, next_state, reward, done):
+    def add(self, state, action, reward, next_state, done):
         self._states[self._pos] = np.asarray(state)
         self._next_states[self._pos] = np.asarray(next_state)
         self._actions[self._pos] = action

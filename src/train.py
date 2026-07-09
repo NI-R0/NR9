@@ -2,6 +2,7 @@ import json
 import os
 from copy import deepcopy
 import numpy as np
+import jax
 from loguru import logger
 from src.utils import setup_tensorboard, log_stats_to_tb
 from src.buffer import ReplayBuffer
@@ -42,6 +43,7 @@ def train(args: dict):
     # Initialize MPO learner components
     actor_net = ActorNetwork(env.action_dim)
     critic_net = CriticNetwork()
+    args["random_key"] = jax.random.PRNGKey(args["seed"])
 
     learner = MPOLearner(
         actor_net,
@@ -51,7 +53,7 @@ def train(args: dict):
         **args
     )
     buffer = ReplayBuffer(env.state_dim, env.action_dim)
-    agent = SoccerAgent(learner, buffer, args["warmup"], args["batch_size"])
+    agent = SoccerAgent(learner, buffer, args["warmup"], args["batch_size"], args["random_key"])
 
     tb = setup_tensorboard(args["run_dir"])
     stats_file = os.path.join(args["run_dir"], "training_stats.json")
