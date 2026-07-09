@@ -56,9 +56,9 @@ class MPOLearner:
         # Dual variables
         # log-space dual parameters avoids crashing exp(Q/eta)
         dual_params = {
-            "log_eta": jnp.array([0.0]),
-            "log_alpha_mean": jnp.array([0.0]),
-            "log_alpha_std": jnp.array([0.0]),
+            "log_eta": jnp.array(0.0),
+            "log_alpha_mean": jnp.array(0.0),
+            "log_alpha_std": jnp.array(0.0),
         }
 
         # Optimizers
@@ -114,7 +114,7 @@ class MPOLearner:
         # Vectorize critic over K dimensions
         vmapped_critic = jax.vmap(self.critic_net.apply, in_axes=(None, None, 0))
         q_values = vmapped_critic(params_critic, states, sampled_actions)
-        q_values = jnp.squeeze(q_values, axis=-1).T
+        q_values = q_values.T
         q_values = jax.lax.stop_gradient(q_values)
 
         # Compute weights via temperature eta
@@ -146,9 +146,14 @@ class MPOLearner:
         # Get distribution
         distribution_current = self.actor_net.apply(params_actor, batch["state"])
 
+        dist_expanded = distrax.MultivariateNormalDiag(
+            loc=distribution_current.loc[:, None, :],
+            scale_diag=distribution_current.scale_diag[:, None, :]
+        )
+
         # Weighted log-likehood loss
         # Minimize negative to maximize
-        log_probs = distribution_current.log_prob(sampled_actions)
+        log_probs = dist_expanded.log_prob(sampled_actions)
         loss_policy = -jnp.mean(jnp.sum(weights * log_probs, axis=1))
 
         # Calculate KL constraints mean and std individually

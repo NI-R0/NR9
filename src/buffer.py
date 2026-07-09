@@ -36,10 +36,10 @@ class ReplayBuffer:
         Samples a random batch of experienced transitions.
         """
         indices = np.random.randint(0, self._size, size=batch_size)
-        return (
-            self._states[indices],
-            self._actions[indices],
-            self._next_states[indices],
-            self._rewards[indices],
-            self._dones[indices],
-        )
+        return {
+            "state": self._states[indices],
+            "action": self._actions[indices],
+            "next_state": self._next_states[indices],
+            "reward": self._rewards[indices],
+            "done": self._dones[indices],
+        }
