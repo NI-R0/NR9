@@ -10,7 +10,6 @@ class SoccerAgent:
     def __init__(self, learner: MPOLearner, buffer: ReplayBuffer, warmup: int, batch_size: int, random_key: PRNGKey):
         self.learner = learner
         self.buffer = buffer
-        self.state = learner.state
 
         self.batch_size = batch_size
         self.warmup = warmup * batch_size
@@ -21,16 +20,15 @@ class SoccerAgent:
 
         if len(self.buffer) > self.warmup:
             batch = self.buffer.next(self.batch_size)
-            self.state, info = self.learner._update_step(self.state, batch)
+            self.learner.state, info = self.learner._update_step(self.learner.state, batch)
             return info
         return None
 
     def select_action(self, state, explore):
         state = jnp.asarray(state)[None, :]
 
-        dist = self.learner.actor_net.apply(
-            self.learner.state.params_actor, state
-        )
+        params = self.learner.state.params_actor
+        dist = self.learner.actor_net.apply(params, state)
 
         if explore:
             key, subkey = jax.random.split(self.learner.state.random_key)
