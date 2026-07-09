@@ -34,4 +34,10 @@ def parse_args() -> dict:
     parser.add_argument(
         "--num_eval_episodes", type=int, default=5, help="Number of episodes to run evaluation for.")
 
+    # Test-specific CLI args
+    parser.add_argument(
+        "--load_dir", type=str, default=None,
+        help="Path to a previous run directory to load a checkpoint from for testing.")
+    parser.add_argument("--checkpoint", type=str, default="best_ckpt", help="Checkpoint name to load.")
+
     return vars(parser.parse_args())
