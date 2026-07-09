@@ -1,15 +1,20 @@
+import numpy as np
+import jax
+import jax.numpy as jnp
 from src.learner import MPOLearner
 from src.buffer import ReplayBuffer
+from jax.random import PRNGKey
 
 
 class SoccerAgent:
-    def __init__(self, learner: MPOLearner, buffer: ReplayBuffer, warmup: int, batch_size: int):
+    def __init__(self, learner: MPOLearner, buffer: ReplayBuffer, warmup: int, batch_size: int, random_key: PRNGKey):
         self.learner = learner
         self.buffer = buffer
         self.state = learner.state
 
         self.batch_size = batch_size
         self.warmup = warmup * batch_size
+        self.random_key = random_key
 
     def train_step(self, state, action, reward, next_state, done):
         self.buffer.add(state, action, reward, next_state, done)
@@ -21,5 +26,17 @@ class SoccerAgent:
         return None
 
     def select_action(self, state, explore):
-        # TODO
-        raise NotImplementedError()
+        state = jnp.asarray(state)[None, :]
+
+        dist = self.learner.actor_net.apply(
+            self.learner.state.params_actor, state
+        )
+
+        if explore:
+            key, subkey = jax.random.split(self.learner.state.random_key)
+            self.learner.state = self.learner.state._replace(random_key=key)
+            action = dist.sample(seed=subkey)
+        else:
+            action = dist.loc
+
+        return np.array(action[0])
