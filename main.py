@@ -1,9 +1,6 @@
-import os
 from loguru import logger
-from datetime import datetime
-import jax
 from src.cli import parse_args
-from src.utils import setup_logger, print_run_info
+from src.collector import StatsCollector
 from src.train import train
 from src.test import test
 
@@ -11,27 +8,17 @@ from src.test import test
 @logger.catch
 def main():
     args = parse_args()
-
-    # Setup run directory
-    run_name = args["run_name"] if args["run_name"] else f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}" # fmt: off
-    run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
-    os.makedirs(run_dir, exist_ok=False)
-    os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
-    args["run_name"] = run_name
-    args["run_dir"] = run_dir
-
-    setup_logger("DEBUG" if args["verbose"] else "INFO", outdir=run_dir)
-    logger.info(f"Using output directory at {run_dir}")
-
-    print_run_info(args)
+    stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
 
     try:
-        train(args) if args["task"] == "train" else test(args)
+        train(args, stats) if args["task"] == "train" else test(args, stats)
     except KeyboardInterrupt:
         logger.warning("Shutting down training!")
     except Exception as e:
         logger.exception("Uncaught exception occured during training!")
         raise e
+    finally:
+        stats.close()
 
 
 if __name__ == "__main__":
