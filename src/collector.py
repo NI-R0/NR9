@@ -48,7 +48,7 @@ class StatsCollector:
         os.makedirs(self.run_dir, exist_ok=self.is_test)
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.tb_dir, exist_ok=True)
-        os.makedirs(self.outdir, exist_ok=False)
+        os.makedirs(self.outdir, exist_ok=True)
 
         args["run_name"] = run_name
         args["run_dir"] = self.run_dir
