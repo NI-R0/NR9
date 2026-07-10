@@ -20,7 +20,7 @@ import inspect
 import itertools
 from dm_control.rl import control
 import src.environments.cartpole_ball as cartpole_ball
-# import environments.one_joint_ball as one_joint_ball
+import src.environments.one_joint_ball as one_joint_ball
 
 # Find all domains imported.
 _DOMAINS = {name: module for name, module in locals().items()
