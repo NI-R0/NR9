@@ -1,13 +1,10 @@
 import numpy as np
-import jax
 from loguru import logger
 from src.collector import StatsCollector
 from src.buffer import ReplayBuffer
 from src.environment import Environment
-from src.learner import MPOLearner
 from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
-
 
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False):
@@ -16,8 +13,8 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     done = False
     step = 0
 
-    ep_loss = 0.0
-    loss_count = 0
+    episode_metrics = {}
+    updates_count = 0
 
     frames = [] if visualize else None
     while not done and step < env.ep_max_steps:
@@ -29,19 +26,21 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
         next_state, reward, done, _ = env.step(action)
 
         if explore:
-            loss = agent.train_step(state, action, reward, next_state, done)
-            if loss:
-                loss_count += 1
-                ep_loss += loss["loss_critic"].item()
+            metrics = agent.update(state, action, reward, next_state, done)
+            if metrics:
+                updates_count += 1
+                for k, v in metrics.items():
+                    episode_metrics[k] = episode_metrics.get(k, 0.0) + float(v)
 
         state = next_state
         episode_reward += reward
         step += 1
 
-    if loss_count > 0:
-        return episode_reward, step, ep_loss / loss_count, frames
+    if updates_count > 0:
+        avg_metrics = {k: v / updates_count for k, v in episode_metrics.items()}
+        return episode_reward, step, avg_metrics, frames
 
-    return episode_reward, step, np.nan, frames
+    return episode_reward, step, {}, frames
 
 
 def train(args: dict, stats: StatsCollector):
@@ -51,19 +50,22 @@ def train(args: dict, stats: StatsCollector):
     # Initialize MPO learner components
     actor_net = ActorNetwork(env.action_dim)
     critic_net = CriticNetwork()
-    args["random_key"] = jax.random.PRNGKey(args["seed"])
 
-    learner = MPOLearner(
-        actor_net,
-        critic_net,
-        env.state_dim,
-        env.action_dim,
+    buffer = ReplayBuffer(
+        env.state_dim, 
+        env.action_dim, 
+        capacity=args["capacity"]
+    )
+
+    agent = SoccerAgent(
+        observation_shape=env.state_dim,
+        action_shape=env.action_dim,
+        actor_net=actor_net,
+        critic_net=critic_net,
+        buffer=buffer,
         **args
     )
-    buffer = ReplayBuffer(env.state_dim, env.action_dim, capacity=args["capacity"])
-    agent = SoccerAgent(
-        learner, buffer, args["warmup"], args["batch_size"], args["random_key"]
-    )
+
     logger.info("Setup complete.")
 
     logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")
@@ -77,17 +79,17 @@ def train(args: dict, stats: StatsCollector):
     stats.log_stats_to_tb(0, dummy_stats)
 
     for episode in range(1, args["episodes"] + 1):
-        ep_reward, ep_length, ep_loss, _ = run_episode(env, agent, args)
+        ep_reward, ep_length, metrics, _ = run_episode(env, agent, args)
         ep_stats = {
             "Episode_Reward": ep_reward,
             "Episode_Length": ep_length,
             "Buffer_Size": len(buffer),
-            "Episode_Loss": ep_loss,
+            **metrics
         }
 
         stats.log_stats_to_tb(episode, ep_stats)
 
-        stats.log_progress(episode, args["episodes"], ep_stats, {"Episode Loss": ep_loss})
+        stats.log_progress(episode, args["episodes"], ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
         if episode in [4, 5, 6] or episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
@@ -108,11 +110,11 @@ def train(args: dict, stats: StatsCollector):
             logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
 
             stats.flush_stats_to_disk()
-            stats.save_checkpoint(learner.state, "latest")
-            if stats.update_best_checkpoint(mean_eval_reward, learner.state):
+            stats.save_checkpoint(agent.learner.state, "latest")
+            if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                 logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
 
     stats.flush_stats_to_disk()
-    stats.save_checkpoint(learner.state, "final")
+    stats.save_checkpoint(agent.learner.state, "final")
     logger.info(f"Dumped training statistics to {stats.stats_file}.")
     logger.success("Training completed successfully!")
