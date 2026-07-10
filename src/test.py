@@ -40,16 +40,24 @@ def test(args: dict, stats: StatsCollector):
 
     actor_net = ActorNetwork(env.action_dim)
     critic_net = CriticNetwork()
-    args["random_key"] = jax.random.PRNGKey(args["seed"])
 
-    learner = MPOLearner(actor_net, critic_net, env.state_dim, env.action_dim, **args)
-    buffer = ReplayBuffer(env.state_dim, env.action_dim, capacity=1)  # unused: testing never trains
+    buffer = ReplayBuffer(
+        env.state_dim, 
+        env.action_dim, 
+        capacity=args["capacity"]
+    )
+
     agent = SoccerAgent(
-        learner, buffer, args["warmup"], args["batch_size"], args["random_key"]
+        observation_shape=env.state_dim,
+        action_shape=env.action_dim,
+        actor_net=actor_net,
+        critic_net=critic_net,
+        buffer=buffer,
+        **args
     )
 
     logger.info(f"Loading checkpoint '{args['checkpoint']}' from {checkpoint_path}")
-    learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
+    agent.learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
 
     logger.info(
         f"Running {args['num_eval_episodes']} test episode(s) on "
