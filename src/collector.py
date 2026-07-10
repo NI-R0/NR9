@@ -33,11 +33,12 @@ class StatsCollector:
         if args["task"] == "test" and args["load_dir"]:
             # Nest test results under the run directory being evaluated, rather than
             # spawning an unrelated top-level run dir under --outdir.
-            base_dir = os.path.join(os.getcwd(), args["load_dir"], "test")
+            self.run_dir = os.path.join(os.getcwd(), args["load_dir"], "test")
+
         else:
             base_dir = os.path.join(os.getcwd(), args["outdir"])
+            self.run_dir = os.path.join(base_dir, run_name)
 
-        self.run_dir = os.path.join(base_dir, args["outdir"], run_name)
         self.log_dir = os.path.join(self.run_dir, "logs")
         self.tb_dir = os.path.join(self.run_dir, "tensorboard")
         self.checkpoint_dir = os.path.join(self.run_dir, "checkpoints")
@@ -46,18 +47,21 @@ class StatsCollector:
 
         os.makedirs(self.run_dir, exist_ok=False)
         os.makedirs(self.log_dir, exist_ok=True)
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         args["run_name"] = run_name
         args["run_dir"] = self.run_dir
-
         self._setup_logger(level)
+
         self.writer = SummaryWriter(log_dir=self.tb_dir)
         logger.info(f"Tensorboard logger initialized at {self.tb_dir}")
 
         self.stats: dict = {}
         self.best_eval_reward = -float("inf")
 
+        if args["task"] == "test":
+            return
+
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         self._dump_config(args)
         self._print_run_info(args)
 
