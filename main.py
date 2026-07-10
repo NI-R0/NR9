@@ -1,3 +1,6 @@
+import os
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+
 from loguru import logger
 from src.cli import parse_args
 from src.collector import StatsCollector
