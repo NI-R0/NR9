@@ -1,4 +1,5 @@
-import numpy as np
+import jax
+import jax.numpy as jnp
 from loguru import logger
 
 
@@ -10,11 +11,11 @@ class ReplayBuffer:
         self._size = 0
         self._pos = 0
 
-        self._states = np.zeros((capacity, *self._state_shape), dtype=np.float32)
-        self._next_states = np.zeros((capacity, *self._state_shape), dtype=np.float32)
-        self._actions = np.zeros((capacity, *self._action_shape), dtype=np.float32)
-        self._rewards = np.zeros(capacity, dtype=np.float32)
-        self._dones = np.zeros(capacity, dtype=np.float32)
+        self._states = jnp.zeros((capacity, *self._state_shape))
+        self._next_states = jnp.zeros((capacity, *self._state_shape))
+        self._actions = jnp.zeros((capacity, *self._action_shape))
+        self._rewards = jnp.zeros((capacity,))
+        self._dones = jnp.zeros((capacity,))
 
         logger.debug(f"ReplayBuffer initialized with capacity {capacity} and state shape {state_shape}")
 
@@ -22,20 +23,20 @@ class ReplayBuffer:
         return self._size
 
     def add(self, state, action, reward, next_state, done):
-        self._states[self._pos] = np.asarray(state)
-        self._next_states[self._pos] = np.asarray(next_state)
-        self._actions[self._pos] = action
-        self._rewards[self._pos] = reward
-        self._dones[self._pos] = done
+        self._states = self._states.at[self._pos].set(state)
+        self._next_states = self._next_states.at[self._pos].set(next_state)
+        self._actions = self._actions.at[self._pos].set(action)
+        self._rewards = self._rewards.at[self._pos].set(reward)
+        self._dones = self._dones.at[self._pos].set(done)
 
         self._pos = (self._pos + 1) % self._capacity
-        self._size = min(self._size + 1, self._capacity)
+        self._size = jnp.minimum(self._size + 1, self._capacity)
 
-    def next(self, batch_size):
+    def next(self, key, batch_size):
         """
         Samples a random batch of experienced transitions.
         """
-        indices = np.random.randint(0, self._size, size=batch_size)
+        indices = jax.random.randint(key, (batch_size,), 0, self._size)
         return {
             "state": self._states[indices],
             "action": self._actions[indices],
