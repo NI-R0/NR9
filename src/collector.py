@@ -29,29 +29,32 @@ class InterceptHandler(logging.Handler):
 class StatsCollector:
     def __init__(self, args: dict, level: str = "INFO"):
         run_name = args["run_name"] or self._default_run_name()
+        self.is_test = args["task"] == "test" and args["load_dir"]
 
-        if args["task"] == "test" and args["load_dir"]:
-            # Nest test results under the run directory being evaluated, rather than
-            # spawning an unrelated top-level run dir under --outdir.
-            self.run_dir = os.path.join(os.getcwd(), args["load_dir"], "test")
+        if self.is_test:
+            self.run_dir = os.path.join(os.getcwd(), args["load_dir"])
+            self.outdir = os.path.join(self.run_dir, "test", run_name)
 
         else:
-            base_dir = os.path.join(os.getcwd(), args["outdir"])
-            self.run_dir = os.path.join(base_dir, run_name)
+            self.run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
+            self.outdir = self.run_dir
 
         self.log_dir = os.path.join(self.run_dir, "logs")
         self.tb_dir = os.path.join(self.run_dir, "tensorboard")
         self.checkpoint_dir = os.path.join(self.run_dir, "checkpoints")
-        self.stats_file = os.path.join(self.run_dir, "training_stats.json")
-        self.config_file = os.path.join(self.run_dir, "run_config.json")
+        self.stats_file = os.path.join(self.outdir, "training_stats.json")
+        self.config_file = os.path.join(self.outdir, "run_config.json")
 
-        os.makedirs(self.run_dir, exist_ok=False)
+        os.makedirs(self.run_dir, exist_ok=self.is_test)
         os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.tb_dir, exist_ok=True)
+        os.makedirs(self.outdir, exist_ok=False)
 
         args["run_name"] = run_name
         args["run_dir"] = self.run_dir
-        self._setup_logger(level)
+        args["outdir"] = self.outdir
 
+        self._setup_logger(level)
         self.writer = SummaryWriter(log_dir=self.tb_dir)
         logger.info(f"Tensorboard logger initialized at {self.tb_dir}")
 
@@ -88,8 +91,9 @@ class StatsCollector:
         logger.add(
             sys.stdout, format=stdout_fmt, level=level, enqueue=True
         )
+        tag = "test" if self.is_test else "train"
         logger.add(
-            os.path.join(self.log_dir, "log_{time}.log"),
+            os.path.join(self.log_dir, f"{tag}_{{time}}.log"),
             format=logfile_fmt,
             level=level,
             enqueue=True,
