@@ -13,7 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
-"""Cartpole_ball domain."""
+"""one_joint_ball domain."""
 
 import collections
 import os
@@ -26,9 +26,9 @@ from dm_control.utils import containers
 import numpy as np
 
 
-_DEFAULT_TIME_LIMIT = 15
+_DEFAULT_TIME_LIMIT = 10
 SUITE = containers.TaggedTasks()
-FILE = 'cartpole_ball.xml'
+FILE = 'one_joint_ball.xml'
 
 
 def get_model_and_assets():
@@ -51,11 +51,7 @@ def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None,
       physics, task, time_limit=time_limit, **environment_kwargs)
 
 class Physics(mujoco.Physics):
-  """Physics simulation with additional features for the Cartpole_ball domain."""
-
-  def cart_position(self):
-    """Returns the position of the cart."""
-    return self.named.data.qpos['slider'][0]
+  """Physics simulation with additional features for the one_joint_ball domain."""
 
   def angular_vel(self):
     """Returns the angular velocity of the pole."""
@@ -73,14 +69,23 @@ class Physics(mujoco.Physics):
     """Returns the [vx, vy, vz, wx, wy, wz] velocity of the ball."""
     return np.array(self.named.data.qvel['ball_joint'])
 
+  def pole_tip_position(self):
+    """Returns the [x, y, z] world position of the bottom tip of the pole.
+
+    The lower_leg geom is a capsule from (0,0,0) to (0,0,1) in body-local
+    coordinates, so the tip is at body_xpos + body_xmat @ [0, 0, 1].
+    """
+    body_pos = self.named.data.xpos['lower_leg']
+    body_mat = self.named.data.xmat['lower_leg'].reshape(3, 3)
+    tip_local = np.array([0.0, 0.0, 1.0])
+    return body_pos + body_mat @ tip_local
 
 class Kick(base.Task):
-  """A Cartpole_ball `Task` to kick the ball.
+  """A one_joint_ball `Task` to kick the ball.
 
   State is initialized either close to the target configuration or at a random
   configuration.
   """
-
   def __init__(self, random=None):
     """Initializes an instance of `Kick`.
 
@@ -96,18 +101,13 @@ class Kick(base.Task):
     Args:
       physics: An instance of `Physics`.
     """
-    physics.named.data.qpos['slider'] = -0.8 + .5*self.random.randn()
     physics.named.data.qpos['knee'] = np.pi + .01*self.random.randn()
-    physics.named.data.qvel['slider'] = 0.01 * self.random.randn()
     physics.named.data.qvel['knee'] = 0.01 * self.random.randn()
     super().initialize_episode(physics)
 
   def get_observation(self, physics):
     """Returns an observation of the (bounded) physics state."""
     obs = collections.OrderedDict()
-    # Cart: position (x) and velocity (vx)
-    obs['cart_position'] = np.array([physics.cart_position()])
-    obs['cart_velocity'] = np.array([physics.named.data.qvel['slider'][0]])
     # Pole: angle (cos/sin) and angular velocity
     obs['pole_angle'] = np.array([physics.pole_angle_cosine(),
                                   physics.named.data.xmat['lower_leg', 'xz']])
@@ -127,15 +127,14 @@ class Kick(base.Task):
     """
     ball_pos = physics.ball_position()
     ball_vel = physics.ball_velocity()
-    cart_pos = physics.cart_position()
+    tip_pos = physics.pole_tip_position()
 
     # 1. Ball velocity in x-direction (main kick reward), bounded
     ball_vel_x = float(ball_vel[0])
     vel_reward = np.tanh(ball_vel_x / 10.0)  # bounded to [-1, 1]
 
-    # 2. Proximity reward: closer cart -> higher reward
-    #    Cart needs to be at ball_x - 0.4 (cart_half=0.2 + ball_radius=0.2)
-    dist_to_ball = abs(float(ball_pos[0]) - 0.4 - cart_pos)
+    # 2. Proximity reward: closer pole tip -> higher reward
+    dist_to_ball = np.linalg.norm(tip_pos[:2] - ball_pos[:2])
     proximity = np.exp(-2.0 * dist_to_ball)
 
     # 3. Ball displacement from initial position (x=1.0), bounded
