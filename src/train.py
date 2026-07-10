@@ -30,17 +30,17 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
             if metrics:
                 updates_count += 1
                 for k, v in metrics.items():
-                    episode_metrics[k] = episode_metrics.get(k, 0.0) + float(v)
+                    episode_metrics[k] = episode_metrics.get(k, 0.0) + v
 
         state = next_state
         episode_reward += reward
         step += 1
 
     if updates_count > 0:
-        avg_metrics = {k: v / updates_count for k, v in episode_metrics.items()}
+        avg_metrics = {k: float(v) / updates_count for k, v in episode_metrics.items()}
         return episode_reward, step, avg_metrics, frames
 
-    return episode_reward, step, {}, frames
+    return episode_reward, step, avg_metrics, frames
 
 
 def train(args: dict, stats: StatsCollector):
@@ -91,7 +91,7 @@ def train(args: dict, stats: StatsCollector):
 
         stats.log_progress(episode, args["episodes"], ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
-        if episode in [4, 5, 6] or episode % args["eval_frequency"] == 0:
+        if episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
             eval_rewards = []
 
