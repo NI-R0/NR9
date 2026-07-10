@@ -29,7 +29,16 @@ class InterceptHandler(logging.Handler):
 class StatsCollector:
     def __init__(self, args: dict, level: str = "INFO"):
         run_name = args["run_name"] or self._default_run_name()
-        self.run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
+
+        if args["task"] == "test" and args["load_dir"]:
+            # Nest test results under the run directory being evaluated, rather than
+            # spawning an unrelated top-level run dir under --outdir.
+            self.run_dir = os.path.join(os.getcwd(), args["load_dir"], "test")
+
+        else:
+            base_dir = os.path.join(os.getcwd(), args["outdir"])
+            self.run_dir = os.path.join(base_dir, run_name)
+
         self.log_dir = os.path.join(self.run_dir, "logs")
         self.tb_dir = os.path.join(self.run_dir, "tensorboard")
         self.checkpoint_dir = os.path.join(self.run_dir, "checkpoints")
@@ -38,18 +47,21 @@ class StatsCollector:
 
         os.makedirs(self.run_dir, exist_ok=False)
         os.makedirs(self.log_dir, exist_ok=True)
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         args["run_name"] = run_name
         args["run_dir"] = self.run_dir
-
         self._setup_logger(level)
+
         self.writer = SummaryWriter(log_dir=self.tb_dir)
         logger.info(f"Tensorboard logger initialized at {self.tb_dir}")
 
         self.stats: dict = {}
         self.best_eval_reward = -float("inf")
 
+        if args["task"] == "test":
+            return
+
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
         self._dump_config(args)
         self._print_run_info(args)
 
@@ -96,7 +108,7 @@ class StatsCollector:
         msg = f"""
 ###############################################################################
 Training Summary:
-    - Run name: {args['outdir']}/{args['run_name']}
+    - Run name: {self.run_dir}
     - Environment: {args['env_domain']} (task: {args['env_task']})
     - Duration: {args['episodes']} Episodes at {args['steps']} Steps
 
@@ -128,7 +140,7 @@ Evaluation Configuration:
                      extra_metrics: dict | None = None):
         metrics_str = ", ".join(f"{k}: {v:.4f}" for k, v in (extra_metrics or {}).items())
         logger.info(
-            f"Episode {episode}/{total_episodes} | Reward: {ep_stats['Episode_Reward']:.2f} "
+            f"Episode [{episode}/{total_episodes}] - Reward: {ep_stats['Episode_Reward']:.2f} "
             f"| Buffer Size: {ep_stats['Buffer_Size']}"
             + (f" | {metrics_str}" if metrics_str else "")
         )
@@ -145,6 +157,10 @@ Evaluation Configuration:
 
     def load_checkpoint(self, name: str):
         path = os.path.join(self.checkpoint_dir, f"{name}.pkl")
+        return self.load_checkpoint_file(path)
+
+    @staticmethod
+    def load_checkpoint_file(path: str):
         with open(path, "rb") as f:
             return pickle.load(f)
 
