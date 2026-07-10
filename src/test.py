@@ -76,7 +76,7 @@ def test(args: dict, stats: StatsCollector):
 
     if frames:
         video_path = os.path.join(args["run_dir"], f"{args['checkpoint']}.mp4")
-        saved_path = save_video(frames, video_path, fps=60)
+        saved_path = save_video(frames, video_path, fps=100)
         if saved_path:
             logger.success(f"Saved test visualization video to {saved_path}")
 
