@@ -105,9 +105,9 @@ class Kick(base.Task):
     Args:
       physics: An instance of `Physics`.
     """
-    physics.named.data.qpos['hipp'] = 4 + .01*self.random.randn()
+    physics.named.data.qpos['hipp'] = 4.28 + .01*self.random.randn()
     physics.named.data.qvel['hipp'] = 0.01 * self.random.randn()
-    physics.named.data.qpos['knee'] = 1 + .01*self.random.randn()
+    physics.named.data.qpos['knee'] = 2 + .01*self.random.randn()
     physics.named.data.qvel['knee'] = 0.01 * self.random.randn()
     super().initialize_episode(physics)
 
