@@ -13,7 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
-"""one_joint_ball domain."""
+"""two_joint_ball domain."""
 
 import collections
 import os
@@ -28,7 +28,7 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 10
 SUITE = containers.TaggedTasks()
-FILE = 'one_joint_ball.xml'
+FILE = 'two_joint_ball.xml'
 
 
 def get_model_and_assets():
@@ -51,15 +51,19 @@ def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None,
       physics, task, time_limit=time_limit, **environment_kwargs)
 
 class Physics(mujoco.Physics):
-  """Physics simulation with additional features for the one_joint_ball domain."""
+  """Physics simulation with additional features for the two_joint_ball domain."""
 
   def angular_vel(self):
     """Returns the angular velocity of the pole."""
     return self.data.qvel[1:]
 
-  def pole_angle_cosine(self):
+  def lower_leg_angle_cosine(self):
     """Returns the cosine of the pole angle."""
     return self.named.data.xmat['lower_leg', 'zz']
+
+  def upper_leg_angle_cosine(self):
+    """Returns the cosine of the pole angle."""
+    return self.named.data.xmat['upper_leg', 'zz']
 
   def ball_position(self):
     """Returns the [x, y, z] position of the ball."""
@@ -81,7 +85,7 @@ class Physics(mujoco.Physics):
     return body_pos + body_mat @ tip_local
 
 class Kick(base.Task):
-  """A one_joint_ball `Task` to kick the ball.
+  """A two_joint_ball `Task` to kick the ball.
 
   State is initialized either close to the target configuration or at a random
   configuration.
@@ -101,7 +105,9 @@ class Kick(base.Task):
     Args:
       physics: An instance of `Physics`.
     """
-    physics.named.data.qpos['knee'] = np.pi + .01*self.random.randn()
+    physics.named.data.qpos['hipp'] = 4 + .01*self.random.randn()
+    physics.named.data.qvel['hipp'] = 0.01 * self.random.randn()
+    physics.named.data.qpos['knee'] = 1 + .01*self.random.randn()
     physics.named.data.qvel['knee'] = 0.01 * self.random.randn()
     super().initialize_episode(physics)
 
@@ -109,9 +115,12 @@ class Kick(base.Task):
     """Returns an observation of the (bounded) physics state."""
     obs = collections.OrderedDict()
     # Pole: angle (cos/sin) and angular velocity
-    obs['pole_angle'] = np.array([physics.pole_angle_cosine(),
+    obs['knee_angle'] = np.array([physics.lower_leg_angle_cosine(),
                                   physics.named.data.xmat['lower_leg', 'xz']])
-    obs['pole_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
+    obs['knee_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
+    obs['hipp_angle'] = np.array([physics.upper_leg_angle_cosine(),
+                                  physics.named.data.xmat['upper_leg', 'xz']])
+    obs['hipp_velocity'] = np.array([physics.named.data.qvel['hipp'][0]])
     # Ball: position and velocity
     obs['ball_position'] = physics.ball_position()
     obs['ball_velocity'] = physics.ball_velocity()[:3]   # linear vx, vy, vz

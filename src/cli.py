@@ -22,13 +22,23 @@ def parse_args() -> dict:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--steps", type=int, default=1000, help="Number of steps each episode runs for.")
-    parser.add_argument("--warmup", type=int, default=50,
-                        help="Number of batches to fill buffer with before starting training.")
+    parser.add_argument("--warmup", type=int, default=1000,
+                        help="Number of steps to fill buffer with before starting training.")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--dual_lr", type=float, default=0.01)
     parser.add_argument("--capacity", type=int, default=100000)
     parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--gamma", type=float, default=0.99,
+                        help="Discount factor for Bellman target.")
+    parser.add_argument("--epsilon", type=float, default=0.5,
+                        help="KL constraint for E-step.")
+    parser.add_argument("--epsilon_mean", type=float, default=0.01,
+                        help="KL constraint for M-step (mean).")
+    parser.add_argument("--epsilon_std", type=float, default=0.001,
+                        help="KL constraint for M-step (std).")
+    parser.add_argument("--sample_k", type=int, default=20,
+                        help="Number of action samples per state in E-step.")
 
     parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(

@@ -124,6 +124,11 @@ Training Configuration:
     - Dual Learning Rate: {args['dual_lr']}
     - Buffer Capacity: {args['capacity']}
     - Tau: {args['tau']}
+    - Gamma: {args['gamma']}
+    - Epsilon (E-step): {args['epsilon']}
+    - Epsilon Mean (M-step): {args['epsilon_mean']}
+    - Epsilon Std (M-step): {args['epsilon_std']}
+    - Sample K: {args['sample_k']}
 
 Evaluation Configuration:
     - Interval: {args['eval_frequency']}

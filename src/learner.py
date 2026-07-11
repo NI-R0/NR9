@@ -34,14 +34,15 @@ class MPOLearner:
 
         self.actor_net = actor_net
         self.critic_net = critic_net
-        self.tau = tau
+        self.tau = kwargs.get("tau", tau)
+        self.gamma = kwargs.get("gamma", 0.99)
 
         # MPO hyperparameters
         self.config = {
-            "epsilon": 0.1,         # KL constraint for E-step
-            "epsilon_mean": 0.001,  # KL constraint for M-step (mean)
-            "epsilon_std": 0.0001,  # KL constraint for M-step (std)
-            "sample_k": 20          # Action samples for E-step
+            "epsilon": kwargs.get("epsilon", 0.1),              # KL constraint for E-step
+            "epsilon_mean": kwargs.get("epsilon_mean", 0.001),  # KL constraint for M-step (mean)
+            "epsilon_std": kwargs.get("epsilon_std", 0.0001),   # KL constraint for M-step (std)
+            "sample_k": kwargs.get("sample_k", 20)              # Action samples for E-step
         }
 
         # RNG keys
@@ -95,8 +96,7 @@ class MPOLearner:
 
         # Bellman target: y = r + gamma * Q_target(s', a')
         # Using batch["done"] to calculate bellman target for final episode
-        gamma = 0.99
-        target_q = batch["reward"] + gamma * (1.0 - batch["done"]) * next_q
+        target_q = batch["reward"] + self.gamma * (1.0 - batch["done"]) * next_q
 
         # Current Q-value prediction
         current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
