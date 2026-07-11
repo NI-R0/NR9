@@ -14,6 +14,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     step = 0
 
     episode_metrics = {}
+    avg_metrics = {}
     updates_count = 0
 
     frames = [] if visualize else None

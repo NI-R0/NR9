@@ -1,12 +1,34 @@
 import os
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'true'
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.5'
-
+import subprocess
 from loguru import logger
 from src.cli import parse_args
 from src.collector import StatsCollector
 from src.train import train
 from src.test import test
+
+def _nvidia_gpu_available() -> bool:
+    """Check whether an NVIDIA GPU with working drivers is present."""
+    if not any(os.path.exists(f"/dev/nvidia{i}") for i in range(4)):
+        return False
+    try:
+        return subprocess.run(
+            ["nvidia-smi"], capture_output=True, timeout=5
+        ).returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+if _nvidia_gpu_available():
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.5"
+else:
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    n_devices = os.cpu_count() or 1
+    os.environ["XLA_FLAGS"] = (
+        os.environ.get("XLA_FLAGS", "")
+        + f" --xla_force_host_platform_device_count={n_devices}"
+    )
+
 
 
 @logger.catch
