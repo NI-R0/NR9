@@ -117,28 +117,27 @@ class Kick(base.Task):
     obs['ball_velocity'] = physics.ball_velocity()[:3]   # linear vx, vy, vz
     return obs
 
-  def get_reward(self, physics):
-    """Dense, bounded reward: approach ball + kick it far.
+  _BALL_START_X = 0.3
 
-    All components are bounded to keep the reward scale stable:
+  def get_reward(self, physics):
+    """Dense, bounded reward: kick the ball in +x direction.
+
+    Only ball-centric signals are used (velocity + displacement) so the
+    reward transfers to more complex agents (e.g. humanoid) without
+    agent-specific shaping.
+
       1. Ball x-velocity (primary: kick ball in +x), tanh-bounded to [-1, 1]
-      2. Cart-to-ball proximity (shaping: reward getting close), [0, 1]
-      3. Ball x-displacement from start (reward kicking far), tanh-bounded
+      2. Ball x-displacement from start position, tanh-bounded to [0, 1)
     """
     ball_pos = physics.ball_position()
     ball_vel = physics.ball_velocity()
-    tip_pos = physics.pole_tip_position()
 
     # 1. Ball velocity in x-direction (main kick reward), bounded
     ball_vel_x = float(ball_vel[0])
     vel_reward = np.tanh(ball_vel_x / 10.0)  # bounded to [-1, 1]
 
-    # 2. Proximity reward: closer pole tip -> higher reward
-    dist_to_ball = np.linalg.norm(tip_pos[:2] - ball_pos[:2])
-    proximity = np.exp(-2.0 * dist_to_ball)
-
-    # 3. Ball displacement from initial position (x=1.0), bounded
-    ball_displacement = max(0.0, float(ball_pos[0]) - 1.0)
+    # 2. Ball displacement from initial position, bounded
+    ball_displacement = max(0.0, float(ball_pos[0]) - self._BALL_START_X)
     disp_reward = np.tanh(ball_displacement / 5.0)  # bounded to [0, 1)
 
-    return float(vel_reward + 0.1 * proximity + disp_reward)
+    return float(vel_reward + disp_reward)

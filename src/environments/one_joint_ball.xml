@@ -35,6 +35,6 @@
   </worldbody>
 
   <actuator>
-    <motor name="knee" joint="knee" gear="10" ctrllimited="true" ctrlrange="-1 1" />
+    <motor name="knee" joint="knee" gear="100" ctrllimited="true" ctrlrange="-1 1" />
   </actuator>
 </mujoco>
