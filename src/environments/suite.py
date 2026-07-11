@@ -19,13 +19,11 @@ import collections
 import inspect
 import itertools
 from dm_control.rl import control
-import src.environments.cartpole_ball as cartpole_ball
-import src.environments.one_joint_ball as one_joint_ball
-import src.environments.two_joint_ball as two_joint_ball
+import src.environments as _envs
 
-# Find all domains imported.
-_DOMAINS = {name: module for name, module in locals().items()
-            if inspect.ismodule(module) and hasattr(module, 'SUITE')}
+# Find all domains imported in the environments package.
+_DOMAINS = {name: mod for name, mod in inspect.getmembers(_envs, inspect.ismodule)
+            if hasattr(mod, 'SUITE')}
 
 
 def _get_tasks(tag):
