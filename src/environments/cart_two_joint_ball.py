@@ -134,10 +134,13 @@ class Kick(base.Task):
       1. Ball x-velocity (primary: kick ball in +x), tanh-bounded to [-1, 1]
       2. Cart-to-ball proximity (shaping: reward getting close), [0, 1]
       3. Ball x-displacement from start (reward kicking far), tanh-bounded
+      4. punishment as long as the ball wasn't kickt yet
     """
     ball_pos = physics.ball_position()
     ball_vel = physics.ball_velocity()
     cart_pos = physics.cart_position()
+
+    not_kickt = 0
 
     # 1. Ball velocity in x-direction (main kick reward), bounded
     ball_vel_x = float(ball_vel[0])
@@ -151,6 +154,9 @@ class Kick(base.Task):
     # 3. Ball displacement from initial position, bounded
     ball_displacement = max(0.0, float(ball_pos[0]) - self._BALL_START_X)
     disp_reward = np.tanh(ball_displacement / 5.0)  # bounded to [0, 1)
-    # TODO minus for movement
 
-    return float(vel_reward + 0.1 * proximity + disp_reward)
+    # 4. punishment as long as the ball wasn't kickt yet
+    if ball_displacement == 0:
+      not_kickt = -0.1
+
+    return float(vel_reward + 0.1 * proximity + disp_reward + not_kickt)

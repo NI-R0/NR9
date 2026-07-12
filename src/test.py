@@ -3,6 +3,7 @@ import numpy as np
 import jax
 import imageio
 from loguru import logger
+from dm_control import viewer
 from src.collector import StatsCollector
 from src.environment import Environment
 from src.learner import MPOLearner
@@ -25,6 +26,23 @@ def save_video(frames: list, path: str, fps: int = 30):
         except Exception as e2:
             logger.warning(f"Could not write GIF recording, skipping video export: {e2}")
             return None
+
+
+def run_live(env: Environment, agent: SoccerAgent):
+    """Launch the interactive dm_control viewer with the trained agent.
+
+    The viewer calls the policy function on each timestep. We flatten the
+    observation for the agent and convert its JAX output back to numpy.
+    """
+    action_spec = env.action_spec
+
+    def policy(timestep):
+        obs = env._flatten_observation(timestep.observation)
+        action = agent.select_action(obs, explore=False)
+        return np.asarray(action, dtype=np.float32)
+
+    logger.info("Launching interactive viewer. Close the window to exit.")
+    viewer.launch(environment_loader=env.env, policy=policy)
 
 
 def test(args: dict, stats: StatsCollector):
@@ -58,6 +76,10 @@ def test(args: dict, stats: StatsCollector):
 
     logger.info(f"Loading checkpoint '{args['checkpoint']}' from {checkpoint_path}")
     agent.learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
+
+    if args.get("live", False):
+        run_live(env, agent)
+        return
 
     logger.info(
         f"Running {args['num_eval_episodes']} test episode(s) on "
