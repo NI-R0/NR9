@@ -49,5 +49,8 @@ def parse_args() -> dict:
         "--load_dir", type=str, default=None,
         help="Path to a previous run directory to load a checkpoint from for testing.")
     parser.add_argument("--checkpoint", type=str, default="best_ckpt", help="Checkpoint name to load.")
+    parser.add_argument("--live", default=False, action="store_true",
+                        help="Launch interactive dm_control viewer with the loaded agent. "
+                             "Requires a display (not headless).")
 
     return vars(parser.parse_args())
