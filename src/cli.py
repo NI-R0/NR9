@@ -13,6 +13,8 @@ def parse_args() -> dict:
         "--outdir", default="runs", type=str,
         help="The outdir will be created in the current working directory and used by all loggers and file dumps.")
     parser.add_argument("--run_name", default=None, type=str)
+    parser.add_argument("--profile", default=False, action="store_true",
+                        help="Enable profiling: cProfile + per-step timing breakdown.")
 
     # Env-specific flags
     parser.add_argument("--env_domain", type=str, default="cartpole")
@@ -21,6 +23,10 @@ def parse_args() -> dict:
     # Training-specific CLI args
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=300)
+    parser.add_argument("--duration", type=float, default=None,
+                        help="Maximum training duration in minutes. If set, overrides --episodes "
+                             "as the stopping criterion. Training stops after the current episode "
+                             "finishes once the duration is exceeded.")
     parser.add_argument("--steps", type=int, default=1000, help="Number of steps each episode runs for.")
     parser.add_argument("--warmup", type=int, default=1000,
                         help="Number of steps to fill buffer with before starting training.")
@@ -39,6 +45,9 @@ def parse_args() -> dict:
                         help="KL constraint for M-step (std).")
     parser.add_argument("--sample_k", type=int, default=20,
                         help="Number of action samples per state in E-step.")
+    parser.add_argument("--update_every", type=int, default=1,
+                        help="Number of env steps between gradient updates. "
+                             "Buffer is filled every step; gradient update only every N steps.")
 
     parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(

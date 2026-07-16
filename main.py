@@ -1,5 +1,7 @@
 import os
 import subprocess
+import cProfile
+import pstats
 from loguru import logger
 from src.cli import parse_args
 from src.collector import StatsCollector
@@ -36,7 +38,12 @@ def main():
     args = parse_args()
     stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
 
+    profiler = None
     try:
+        if args["profile"]:
+            profiler = cProfile.Profile()
+            profiler.enable()
+
         train(args, stats) if args["task"] == "train" else test(args, stats)
     except KeyboardInterrupt:
         logger.warning("Shutting down training!")
@@ -44,6 +51,16 @@ def main():
         logger.exception("Uncaught exception occured during training!")
         raise e
     finally:
+        if profiler is not None:
+            profiler.disable()
+            prof_path = os.path.join(stats.run_dir, "profile.prof")
+            profiler.dump_stats(prof_path)
+            logger.info(f"Profile saved to {prof_path}")
+
+            summary = pstats.Stats(profiler).strip_dirs().sort_stats("cumulative")
+            logger.info("Top 30 functions by cumulative time:")
+            summary.print_stats(30)
+
         stats.close()
 
 

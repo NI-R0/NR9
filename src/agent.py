@@ -32,6 +32,8 @@ class SoccerAgent:
         self.buffer = buffer
         self.warmup = kwargs.get("warmup", 1000)
         self.batch_size = kwargs.get("batch_size", 256)
+        self.update_every = kwargs.get("update_every", 1)
+        self._step_count = 0
 
     def select_action(self, observation, explore=True):
 
@@ -46,8 +48,9 @@ class SoccerAgent:
 
     def update(self, state, action, reward, next_state, done):
         self.buffer.add(state, action, reward, next_state, done)
+        self._step_count += 1
 
-        if len(self.buffer) > self.warmup:
+        if len(self.buffer) > self.warmup and self._step_count % self.update_every == 0:
             self.random_key, sample_key = jax.random.split(self.random_key)
             batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)

@@ -1,4 +1,6 @@
+import time
 import numpy as np
+import jax
 from loguru import logger
 from src.collector import StatsCollector
 from src.buffer import ReplayBuffer
@@ -7,7 +9,7 @@ from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
 
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
-                visualize: bool = False):
+                visualize: bool = False, profile: bool = False):
     state = env.reset()
     episode_reward = 0.0
     done = False
@@ -17,21 +19,43 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     avg_metrics = {}
     updates_count = 0
 
+    # Per-step timing accumulators
+    timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
+
     frames = [] if visualize else None
     while not done and step < env.ep_max_steps:
         if visualize:
             frame = env.render()
             frames.append(frame)
 
+        t0 = time.perf_counter()
         action = agent.select_action(state, explore=explore)
+        # Force JAX to finish compute so timing is accurate (not deferred to next np.asarray)
+        if profile and hasattr(action, "block_until_ready"):
+            action.block_until_ready()
+        t1 = time.perf_counter()
+
         next_state, reward, done, _ = env.step(action)
+        t2 = time.perf_counter()
 
         if explore:
             metrics = agent.update(state, action, reward, next_state, done)
+            # Force JAX to finish update compute so timing is accurate
+            if profile and isinstance(metrics, dict):
+                for v in metrics.values():
+                    if hasattr(v, "block_until_ready"):
+                        v.block_until_ready()
+            t3 = time.perf_counter()
+            timing["update"] += t3 - t2
             if metrics:
                 updates_count += 1
                 for k, v in metrics.items():
                     episode_metrics[k] = episode_metrics.get(k, 0.0) + v
+        else:
+            t3 = t2  # no update, keep timing consistent
+
+        timing["select_action"] += t1 - t0
+        timing["env_step"] += t2 - t1
 
         state = next_state
         episode_reward += reward
@@ -39,7 +63,18 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
     if updates_count > 0:
         avg_metrics = {k: float(v) / updates_count for k, v in episode_metrics.items()}
-        return episode_reward, step, avg_metrics, frames
+
+    if profile and step > 0:
+        total = timing["select_action"] + timing["env_step"] + timing["update"]
+        logger.info(
+            f"  Timing (episode, {step} steps, {total:.1f}s total) — "
+            f"select_action: {timing['select_action']:.3f}s "
+            f"({timing['select_action']/step*1000:.1f}ms/step), "
+            f"env_step: {timing['env_step']:.3f}s "
+            f"({timing['env_step']/step*1000:.1f}ms/step), "
+            f"update: {timing['update']:.3f}s "
+            f"({timing['update']/step*1000:.1f}ms/step)"
+        )
 
     return episode_reward, step, avg_metrics, frames
 
@@ -69,7 +104,17 @@ def train(args: dict, stats: StatsCollector):
 
     logger.info("Setup complete.")
 
-    logger.info(f"Starting training loop for {args['episodes']} episodes. Visualization: {args['visualize']}")
+    duration_min = args.get("duration")
+    use_duration = duration_min is not None
+    max_episodes = args["episodes"]
+
+    if use_duration:
+        logger.info(
+            f"Starting training loop (time-limited: {duration_min:.1f} min, max {max_episodes} episodes). "
+            f"Visualization: {args['visualize']}"
+        )
+    else:
+        logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
     dummy_stats = {
         "Episode_Reward": 0,
@@ -79,8 +124,19 @@ def train(args: dict, stats: StatsCollector):
     }
     stats.log_stats_to_tb(0, dummy_stats)
 
-    for episode in range(1, args["episodes"] + 1):
-        ep_reward, ep_length, metrics, _ = run_episode(env, agent, args)
+    profile = args.get("profile", False)
+    train_start = time.perf_counter()
+    time_limit_sec = duration_min * 60.0 if use_duration else None
+
+    episode = 0
+    while True:
+        episode += 1
+        if episode > max_episodes:
+            break
+        if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+            logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
+            break
+        ep_reward, ep_length, metrics, _ = run_episode(env, agent, args, profile=profile)
         ep_stats = {
             "Episode_Reward": ep_reward,
             "Episode_Length": ep_length,
@@ -90,7 +146,8 @@ def train(args: dict, stats: StatsCollector):
 
         stats.log_stats_to_tb(episode, ep_stats)
 
-        stats.log_progress(episode, args["episodes"], ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
+        total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
+        stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
         if episode % args["eval_frequency"] == 0:
             logger.info(f"Starting evaluation at episode {episode}.")
