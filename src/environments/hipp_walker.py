@@ -31,13 +31,28 @@ _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = .025
 
 # Height of head above which stand reward is 1.
-_STAND_HEIGHT = 1.4
+_STAND_HEIGHT = 0.7
 
 # Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 10
 FILE = 'hipp_walker.xml'
 
+# Touch sensor names for non-foot limbs (used for reward penalty).
+_NON_FOOT_TOUCHES = (
+    'right_thigh_touch',
+    'left_thigh_touch',
+    'right_shin_touch',
+    'left_shin_touch',
+)
+
+# All touch sensor names, including feet (used for observations).
+_ALL_TOUCHES = _NON_FOOT_TOUCHES + (
+    'right_right_foot_touch',
+    'left_right_foot_touch',
+    'right_left_foot_touch',
+    'left_left_foot_touch',
+)
 
 SUITE = containers.TaggedTasks()
 
@@ -123,6 +138,14 @@ class Physics(mujoco.Physics):
   def joint_angles(self):
     """Returns the state without global orientation or position."""
     return self.data.qpos[7:].copy()  # Skip the 7 DoFs of the free root joint.
+  
+  def touch_forces(self):
+    """Returns touch forces of all limbs (including feet) as a 1-D array."""
+    return np.array([
+        np.tanh(self.named.data.sensordata[name].item()-3)
+        for name in _ALL_TOUCHES
+    ])
+
 
   def extremities(self):
     """Returns end effector positions in egocentric frame."""
@@ -184,30 +207,42 @@ class Humanoid(base.Task):
       obs['torso_vertical'] = physics.torso_vertical_orientation()
       obs['com_velocity'] = physics.center_of_mass_velocity()
       obs['velocity'] = physics.velocity()
+      obs['touches'] = physics.touch_forces()
     return obs
 
   def get_reward(self, physics):
-    """Returns a reward to the agent."""
-    standing = rewards.tolerance(physics.head_height(),
-                                 bounds=(_STAND_HEIGHT, float('inf')),
-                                 margin=_STAND_HEIGHT/4)
-    upright = rewards.tolerance(physics.torso_upright(),
-                                bounds=(0.9, float('inf')), sigmoid='linear',
-                                margin=1.9, value_at_margin=0)
-    stand_reward = standing * upright
-    small_control = rewards.tolerance(physics.control(), margin=1,
-                                      value_at_margin=0,
-                                      sigmoid='quadratic').mean()
-    small_control = (4 + small_control) / 5
-    if self._move_speed == 0:
-      horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
-      dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
-      return small_control * stand_reward * dont_move
-    else:
-      com_velocity = np.linalg.norm(physics.center_of_mass_velocity()[[0, 1]])
-      move = rewards.tolerance(com_velocity,
-                               bounds=(self._move_speed, float('inf')),
-                               margin=self._move_speed, value_at_margin=0,
-                               sigmoid='linear')
-      move = (5*move + 1) / 6
-      return small_control * stand_reward * move
+     """Returns a reward to the agent."""
+     # --- Positiver Reward: je höher die Hüfte/Torso, desto mehr ---
+     height_reward = np.tanh(physics.head_height())  # subtree_com['torso', 'z']
+     
+
+     # --- Negativer Reward: Kontakt von nicht-Füßen mit dem Boden ---
+     touch_penalty = sum(
+         np.tanh(physics.named.data.sensordata[name].item())
+         for name in _NON_FOOT_TOUCHES
+     )
+     
+     # Kombinieren: height_reward (0..1) minus touch_penalty
+     reward = height_reward - touch_penalty
+
+     # --- Optional: bestehende small_control / move-Logik beibehalten ---
+     small_control = rewards.tolerance(physics.control(), margin=1,
+                                       value_at_margin=0,
+                                       sigmoid='quadratic').mean()
+     small_control = (4 + small_control) / 5
+
+     if self._move_speed == 0:
+         horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
+         dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
+         reward = reward * small_control * dont_move
+     else:
+         com_velocity = np.linalg.norm(
+             physics.center_of_mass_velocity()[[0, 1]])
+         move = rewards.tolerance(com_velocity,
+                                  bounds=(self._move_speed, float('inf')),
+                                  margin=self._move_speed, value_at_margin=0,
+                                  sigmoid='linear')
+         move = (5 * move + 1) / 6
+         reward = reward * small_control * move
+
+     return reward
