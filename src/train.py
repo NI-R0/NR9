@@ -3,7 +3,7 @@ import numpy as np
 import jax
 from loguru import logger
 from src.collector import StatsCollector
-from src.buffer import ReplayBuffer
+from src.buffer import NStepTransitionBuffer
 from src.environment import Environment
 from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
@@ -87,10 +87,12 @@ def train(args: dict, stats: StatsCollector):
     actor_net = ActorNetwork(env.action_dim)
     critic_net = CriticNetwork()
 
-    buffer = ReplayBuffer(
-        env.state_dim, 
-        env.action_dim, 
-        capacity=args["capacity"]
+    buffer = NStepTransitionBuffer(
+        env.state_dim,
+        env.action_dim,
+        capacity=args["capacity"],
+        n_step=args.get("n_step", 5),
+        gamma=args.get("gamma", 0.99),
     )
 
     agent = SoccerAgent(

@@ -127,15 +127,18 @@ Training Configuration:
     - Warmup: {args['warmup']} Steps
     - Batch Size: {args['batch_size']}
     - Learning Rate: {args['lr']}
+    - Critic Learning Rate: {args['critic_lr']}
     - Dual Learning Rate: {args['dual_lr']}
     - Buffer Capacity: {args['capacity']}
-    - Tau: {args['tau']}
     - Gamma: {args['gamma']}
     - Epsilon (E-step): {args['epsilon']}
     - Epsilon Mean (M-step): {args['epsilon_mean']}
     - Epsilon Std (M-step): {args['epsilon_std']}
     - Sample K: {args['sample_k']}
-    - Update Every: {args['update_every']} Steps
+    - N-step: {args['n_step']}
+    - SGD steps/learner step: {args['sgd_steps_per_learner_step']}
+    - Target update period: {args['target_update_period']}
+    - Grad norm clip: {args['grad_norm_clip']}
 
 Evaluation Configuration:
     - Interval: {args['eval_frequency']}

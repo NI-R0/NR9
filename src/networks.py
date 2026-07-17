@@ -5,32 +5,41 @@ import distrax
 
 
 class ActorNetwork(nn.Module):
+    """Actor network with diagonal Gaussian output (Acme-style).
+
+    Uses a MultivariateNormalDiag distribution instead of full covariance.
+    The initial scale is set to ``init_scale`` to match Acme's
+    ``MultivariateNormalDiagHead(init_scale=0.7)``.
+    """
     action_dim: tuple[int]
+    init_scale: float = 0.7
 
     @nn.compact
     def __call__(self, obs: jax.Array) -> distrax.MultivariateNormalDiag:
-        # Shared MLP Backbone
-        x = nn.Dense(features=256)(obs)
-        x = nn.LayerNorm()(x)
+        dim = self.action_dim[0]
+
+        # MLP backbone: 100-100 (Control Suite setting from the paper)
+        x = nn.Dense(features=100)(obs)
         x = nn.elu(x)
 
-        x = nn.Dense(features=256)(x)
-        x = nn.LayerNorm()(x)
+        x = nn.Dense(features=100)(x)
         x = nn.elu(x)
 
-        x = nn.Dense(features=256)(x)
-        x = nn.LayerNorm()(x)
-        x = nn.elu(x)
+        # Mean head: unbounded (paper does not bound the mean)
+        mu = nn.Dense(features=dim)(x)
 
-        # Mean Head: Bounded between -1 and 1 via tanh
-        mu = nn.Dense(features=self.action_dim[0])(x)
-        mu = jnp.tanh(mu)
+        # Scale head: produces log-std parameters, shifted so that the
+        # initial scale is approximately ``init_scale``.  We use a fixed
+        # bias of ``log(init_scale)`` and a zero-initialized weight so that
+        # at initialisation the output is exactly ``init_scale``.
+        log_std = nn.Dense(
+            features=dim,
+            kernel_init=nn.initializers.zeros,
+            bias_init=nn.initializers.constant(jnp.log(self.init_scale)),
+        )(x)
+        scale = jax.nn.softplus(log_std) + 1e-6
 
-        # Scale Head: Add 1e-5 to prevent 0-division or NaN logs.
-        log_sigma = nn.Dense(features=self.action_dim[0])(x)
-        sigma = nn.softplus(log_sigma) + 1e-5
-
-        return distrax.MultivariateNormalDiag(loc=mu, scale_diag=sigma)
+        return distrax.MultivariateNormalDiag(loc=mu, scale_diag=scale)
 
 
 class CriticNetwork(nn.Module):
@@ -38,17 +47,11 @@ class CriticNetwork(nn.Module):
     def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
         inputs = jnp.concatenate([obs, action], axis=-1)
 
-        # MLP Backbone
-        x = nn.Dense(features=256)(inputs)
-        x = nn.LayerNorm()(x)
+        # MLP backbone: 200-200 (Control Suite setting from the paper)
+        x = nn.Dense(features=200)(inputs)
         x = nn.elu(x)
 
-        x = nn.Dense(features=256)(x)
-        x = nn.LayerNorm()(x)
-        x = nn.elu(x)
-
-        x = nn.Dense(features=256)(x)
-        x = nn.LayerNorm()(x)
+        x = nn.Dense(features=200)(x)
         x = nn.elu(x)
 
         q_value = nn.Dense(features=1)(x)

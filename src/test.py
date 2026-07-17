@@ -8,7 +8,7 @@ from src.collector import StatsCollector
 from src.environment import Environment
 from src.learner import MPOLearner
 from src.agent import SoccerAgent
-from src.buffer import ReplayBuffer
+from src.buffer import NStepTransitionBuffer
 from src.networks import ActorNetwork, CriticNetwork
 from src.train import run_episode
 
@@ -59,10 +59,12 @@ def test(args: dict, stats: StatsCollector):
     actor_net = ActorNetwork(env.action_dim)
     critic_net = CriticNetwork()
 
-    buffer = ReplayBuffer(
-        env.state_dim, 
-        env.action_dim, 
-        capacity=args["capacity"]
+    buffer = NStepTransitionBuffer(
+        env.state_dim,
+        env.action_dim,
+        capacity=args["capacity"],
+        n_step=args.get("n_step", 5),
+        gamma=args.get("gamma", 0.99),
     )
 
     agent = SoccerAgent(
