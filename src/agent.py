@@ -49,13 +49,38 @@ class SoccerAgent:
 
         return action
 
+    def select_actions(self, observations, explore=True):
+        """Select actions for a batch of observations (vectorized envs)."""
+        actions, self.random_key = self.actor.select_actions(
+            params=self.learner.state.params_actor,
+            observations=observations,
+            key=self.random_key,
+            explore=explore,
+        )
+        return actions
+
     def update(self, state, action, reward, next_state, done):
         self.buffer.add(state, action, reward, next_state, done)
         self._step_count += 1
 
         if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
-            self.random_key, sample_key = jax.random.split(self.random_key)
-            batch = self.buffer.next(sample_key, self.batch_size)
+            batch = self.buffer.next(self.random_key, self.batch_size)
+            self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
+            return metrics
+        return {}
+
+    def update_batch(self, states, actions, rewards, next_states, dones):
+        """Add transitions from all parallel envs and optionally run a learner step.
+
+        Each env contributes one transition.  ``self._step_count`` is
+        incremented by ``num_envs`` so that ``update_every`` still refers
+        to total environment steps (not meta-steps).
+        """
+        self.buffer.add_many(states, actions, rewards, next_states, dones)
+        self._step_count += self.buffer._num_envs
+
+        if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
+            batch = self.buffer.next(self.random_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
             return metrics
         return {}

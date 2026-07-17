@@ -58,6 +58,9 @@ def parse_args() -> dict:
                         help="Global gradient norm clip (Acme).")
     parser.add_argument("--update_every", type=int, default=1,
                         help="Run a learner update every N environment steps.")
+    parser.add_argument("--num_envs", type=int, default=1,
+                        help="Number of parallel environments for data collection "
+                             "(multiprocessing).  1 = single env (default).")
 
     parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(

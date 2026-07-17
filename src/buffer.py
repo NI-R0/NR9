@@ -41,8 +41,11 @@ class NStepTransitionBuffer:
         # True if the n-step window ended because of a terminal state
         self._dones = np.zeros((capacity,), dtype=np.float32)
 
-        # Rolling window of raw transitions (list of dicts)
-        self._window: list[dict] = []
+        # Rolling window of raw transitions — one list per parallel env.
+        # For backward compatibility (single-env), we use a single window
+        # when ``num_envs == 1`` and select by ``env_id``.
+        self._num_envs = 1
+        self._windows: list[list[dict]] = [[]]
 
         logger.debug(
             f"NStepTransitionBuffer initialized: capacity={capacity}, "
@@ -56,9 +59,15 @@ class NStepTransitionBuffer:
     def n_step(self) -> int:
         return self._n_step
 
-    def add(self, state, action, reward, next_state, done):
+    def set_num_envs(self, num_envs: int):
+        """Configure the number of parallel env trajectories."""
+        self._num_envs = num_envs
+        self._windows = [[] for _ in range(num_envs)]
+
+    def add(self, state, action, reward, next_state, done, env_id=0):
         """Add a single 1-step transition; commits n-step transitions as they become available."""
-        self._window.append({
+        window = self._windows[env_id]
+        window.append({
             "state": np.asarray(state, dtype=np.float32),
             "action": np.asarray(action, dtype=np.float32),
             "reward": float(reward),
@@ -67,24 +76,34 @@ class NStepTransitionBuffer:
         })
 
         # Once we have n_step transitions, commit the n-step transition
-        if len(self._window) >= self._n_step:
-            self._commit_nstep()
+        if len(window) >= self._n_step:
+            self._commit_nstep(window)
 
         if done:
             # Flush all remaining partial windows
-            while len(self._window) > 0:
-                self._commit_nstep()
-            self._window = []
+            while len(window) > 0:
+                self._commit_nstep(window)
+            window.clear()
 
-    def _commit_nstep(self):
+    def add_many(self, states, actions, rewards, next_states, dones):
+        """Add transitions from a batch of parallel environments.
+
+        ``dones`` may be True for some envs and False for others; each
+        env's n-step window is tracked independently.
+        """
+        for i in range(self._num_envs):
+            self.add(states[i], actions[i], rewards[i], next_states[i],
+                     dones[i], env_id=i)
+
+    def _commit_nstep(self, window):
         """Commit the oldest n-step (or shorter if flushing) transition."""
-        n = len(self._window)
-        first = self._window[0]
-        last = self._window[-1]
+        n = len(window)
+        first = window[0]
+        last = window[-1]
 
         # Discounted reward sum: r_0 + gamma*r_1 + ... + gamma^{n-1}*r_{n-1}
         discounted_reward = 0.0
-        for i, trans in enumerate(self._window):
+        for i, trans in enumerate(window):
             discounted_reward += (self._gamma ** i) * trans["reward"]
 
         # Remaining discount = gamma^n
@@ -102,19 +121,24 @@ class NStepTransitionBuffer:
         self._size = min(self._size + 1, self._capacity)
 
         # Slide window
-        self._window.pop(0)
+        window.pop(0)
 
     def next(self, key, batch_size):
-        """Samples a random batch of n-step transitions."""
-        indices = jax.random.randint(key, (batch_size,), 0, self._size)
-        indices = np.asarray(indices)
+        """Samples a random batch of n-step transitions.
+
+        Uses NumPy RNG to avoid a GPU→CPU sync point inside the training
+        loop.  Each array is transferred individually via ``jnp.asarray`` —
+        simple host→device copies that are cheaper than concatenating on
+        CPU and then slicing on GPU.
+        """
+        # Use NumPy RNG to avoid a GPU→CPU sync point inside the training loop.
+        indices = np.random.randint(0, self._size, size=batch_size)
 
         return {
             "state": jnp.asarray(self._states[indices]),
             "action": jnp.asarray(self._actions[indices]),
             "next_state": jnp.asarray(self._next_states[indices]),
             "reward": jnp.asarray(self._rewards[indices]),
-            # remaining discount (gamma^n) — learner multiplies Q_target by this
             "discount": jnp.asarray(self._discounts[indices]),
             "done": jnp.asarray(self._dones[indices]),
         }
