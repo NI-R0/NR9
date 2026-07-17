@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=nr9_walker_run
-#SBATCH --partition=gpu_h100_short
+#SBATCH --partition=gpu_h100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=32G
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -20,4 +20,4 @@ cd "$HOME/NR9"
 uv sync --frozen
 
 # Run training with 72 parallel environments (3 envs per CPU)
-uv run python main.py --env_domain walker --env_task run --episodes 10000 --num_envs 72 --eval_frequency 72 --capacity 1000000
+uv run python main.py --env_domain walker --env_task run --episodes 50000 --num_envs 72 --eval_frequency 72 --capacity 1000000
