@@ -31,13 +31,40 @@ _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = .025
 
 # Height of head above which stand reward is 1.
-_STAND_HEIGHT = 1.4
+_STAND_HEIGHT = 0.7
 
 # Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 10
 FILE = 'hipp_walker.xml'
 
+# Touch sensor names for non-foot limbs (used for reward penalty).
+_NON_FOOT_TOUCHES = (
+    'right_hip_touch',
+    'left_hip_touch',
+    'right_thigh_touch',
+    'left_thigh_touch',
+    'right_shin_touch',
+    'left_shin_touch',
+)
+
+# All touch sensor names, including feet (used for observations).
+_ALL_TOUCHES = _NON_FOOT_TOUCHES + (
+    'right_right_foot_touch',
+    'left_right_foot_touch',
+    'right_left_foot_touch',
+    'left_left_foot_touch',
+)
+
+# Force and torque sensor names at hip, knee and ankle joints.
+_FORCE_TORQUE_SENSORS = (
+    'left_hip_force', 'right_hip_force',
+    'left_knee_force', 'right_knee_force',
+    'left_ankle_force', 'right_ankle_force',
+    'left_hip_torque', 'right_hip_torque',
+    'left_knee_torque', 'right_knee_torque',
+    'left_ankle_torque', 'right_ankle_torque',
+)
 
 SUITE = containers.TaggedTasks()
 
@@ -123,6 +150,20 @@ class Physics(mujoco.Physics):
   def joint_angles(self):
     """Returns the state without global orientation or position."""
     return self.data.qpos[7:].copy()  # Skip the 7 DoFs of the free root joint.
+  
+  def touch_forces(self):
+    """Returns touch forces of all limbs (including feet) as a 1-D array."""
+    return np.array([
+        np.tanh(self.named.data.sensordata[name].item()-3)
+        for name in _ALL_TOUCHES
+    ])
+
+  def force_torque_sensors(self):
+    """Returns force and torque readings from hip, knee and ankle joints."""
+    return np.array([
+        self.named.data.sensordata[name].copy()
+        for name in _FORCE_TORQUE_SENSORS
+    ])
 
   def extremities(self):
     """Returns end effector positions in egocentric frame."""
@@ -184,30 +225,62 @@ class Humanoid(base.Task):
       obs['torso_vertical'] = physics.torso_vertical_orientation()
       obs['com_velocity'] = physics.center_of_mass_velocity()
       obs['velocity'] = physics.velocity()
+      obs['touches'] = physics.touch_forces()
+      obs['force_torque'] = physics.force_torque_sensors()
     return obs
 
   def get_reward(self, physics):
-    """Returns a reward to the agent."""
-    standing = rewards.tolerance(physics.head_height(),
-                                 bounds=(_STAND_HEIGHT, float('inf')),
-                                 margin=_STAND_HEIGHT/4)
-    upright = rewards.tolerance(physics.torso_upright(),
-                                bounds=(0.9, float('inf')), sigmoid='linear',
-                                margin=1.9, value_at_margin=0)
-    stand_reward = standing * upright
-    small_control = rewards.tolerance(physics.control(), margin=1,
-                                      value_at_margin=0,
-                                      sigmoid='quadratic').mean()
-    small_control = (4 + small_control) / 5
-    if self._move_speed == 0:
-      horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
-      dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
-      return small_control * stand_reward * dont_move
-    else:
-      com_velocity = np.linalg.norm(physics.center_of_mass_velocity()[[0, 1]])
-      move = rewards.tolerance(com_velocity,
-                               bounds=(self._move_speed, float('inf')),
-                               margin=self._move_speed, value_at_margin=0,
-                               sigmoid='linear')
-      move = (5*move + 1) / 6
-      return small_control * stand_reward * move
+     """Returns a reward to the agent."""
+     # --- Base height reward: tanh gives a non-zero gradient everywhere ---
+     # Even when the agent is on the ground (z≈0.3), tanh(0.3)=0.29 provides
+     # a learning signal. tolerance alone returns 0 below the margin, creating
+     # a "no gradient → no learning" deadlock.
+     height_reward = np.tanh(physics.head_height())
+
+     # --- Bonus for reaching stand height (0 below 0.45m, 1 above 0.7m) ---
+     # Adds an extra incentive to stand fully upright, complementing tanh
+     # which saturates around z≈1.5.
+     stand_bonus = rewards.tolerance(
+         physics.head_height(),
+         bounds=(_STAND_HEIGHT, float('inf')),
+         margin=0.25,
+         value_at_margin=0,
+         sigmoid='linear',
+     )
+
+     # --- Touch penalty: non-foot limbs contacting ground, capped at 1.0 ---
+     # Without the cap, up to 4 limbs can each contribute ~1.0, drowning out
+     # the height reward (~0.9) and creating an extremely noisy signal.
+     touch_penalty = sum(
+         np.tanh(physics.named.data.sensordata[name].item())
+         for name in _NON_FOOT_TOUCHES
+     )
+     touch_penalty = min(touch_penalty, 1.0)
+
+     # --- Combined positive reward ---
+     # Touch penalty weighted 0.5× to reduce reward variance (was 1.0×).
+     # The bimodal nature (standing=+0.15/step vs falling=-0.85/step) causes
+     # high Q-value variance and destabilises the critic.
+     reward = height_reward + 0.5 * stand_bonus - 0.5 * touch_penalty
+
+     # --- Small control penalty (mild, multiplicative) ---
+     small_control = rewards.tolerance(physics.control(), margin=1,
+                                       value_at_margin=0,
+                                       sigmoid='quadratic').mean()
+     small_control = (4 + small_control) / 5
+
+     if self._move_speed == 0:
+         horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
+         dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
+         reward = reward * small_control * dont_move
+     else:
+         com_velocity = np.linalg.norm(
+             physics.center_of_mass_velocity()[[0, 1]])
+         move = rewards.tolerance(com_velocity,
+                                  bounds=(self._move_speed, float('inf')),
+                                  margin=self._move_speed, value_at_margin=0,
+                                  sigmoid='linear')
+         move = (5 * move + 1) / 6
+         reward = reward * small_control * move
+
+     return reward

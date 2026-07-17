@@ -109,26 +109,36 @@ class StatsCollector:
             json.dump(args, f, indent=4, default=str)
 
     def _print_run_info(self, args: dict):
+        duration = args.get("duration")
+        if duration is not None:
+            duration_str = f"{duration:.1f} min (max {args['episodes']} episodes)"
+        else:
+            duration_str = f"{args['episodes']} Episodes at {args['steps']} Steps"
+
         msg = f"""
 ###############################################################################
 Training Summary:
     - Run name: {self.run_dir}
     - Environment: {args['env_domain']} (task: {args['env_task']})
-    - Duration: {args['episodes']} Episodes at {args['steps']} Steps
+    - Duration: {duration_str}
 
 Training Configuration:
     - Seed: {args['seed']}
     - Warmup: {args['warmup']} Steps
     - Batch Size: {args['batch_size']}
     - Learning Rate: {args['lr']}
+    - Critic Learning Rate: {args['critic_lr']}
     - Dual Learning Rate: {args['dual_lr']}
     - Buffer Capacity: {args['capacity']}
-    - Tau: {args['tau']}
     - Gamma: {args['gamma']}
     - Epsilon (E-step): {args['epsilon']}
     - Epsilon Mean (M-step): {args['epsilon_mean']}
     - Epsilon Std (M-step): {args['epsilon_std']}
     - Sample K: {args['sample_k']}
+    - N-step: {args['n_step']}
+    - SGD steps/learner step: {args['sgd_steps_per_learner_step']}
+    - Target update period: {args['target_update_period']}
+    - Grad norm clip: {args['grad_norm_clip']}
 
 Evaluation Configuration:
     - Interval: {args['eval_frequency']}
@@ -145,7 +155,7 @@ Evaluation Configuration:
             self.writer.add_scalar(f"Metrics/{key}", value, episode)
         logger.debug(f"Added metrics to tensorboard for episode {episode}.")
 
-    def log_progress(self, episode: int, total_episodes: int, ep_stats: dict,
+    def log_progress(self, episode: int, total_episodes: int | str, ep_stats: dict,
                      extra_metrics: dict | None = None):
         metrics_str = ", ".join(f"{k}: {v:.4f}" for k, v in (extra_metrics or {}).items())
         logger.info(

@@ -12,12 +12,40 @@ class TrainingState(typing.NamedTuple):
     params_critic: optax.Params         # Critic params
     target_params_actor: optax.Params   # Target Actor params
     target_params_critic: optax.Params  # Target Critic params
-    dual_params: optax.Params           # Log_eta, log_alpha_mu, log_alpha_sigma
+    dual_params: optax.Params           # log_eta, log_alpha_mu, log_alpha_sigma
     opt_state_actor: optax.OptState     # Optimizer state for actor
     opt_state_critic: optax.OptState    # Optimizer state for critic
     opt_state_dual: optax.OptState      # Optimizer state for dual variables
     steps: jax.Array                    # Training step counter
     random_key: jax.Array               # RNG key for sampling/noise
+
+
+def _clip_log_dual_params(dual_params: dict) -> dict:
+    """Clip dual parameters in log-space to ``max(-18, log_x)`` (Acme)."""
+    return {
+        "log_eta": jnp.maximum(dual_params["log_eta"], -18.0),
+        "log_alpha_mean": jnp.maximum(dual_params["log_alpha_mean"], -18.0),
+        "log_alpha_std": jnp.maximum(dual_params["log_alpha_std"], -18.0),
+    }
+
+
+def _kl_diag_per_dim(dist_old: distrax.MultivariateNormalDiag,
+                     dist_new: distrax.MultivariateNormalDiag) -> jax.Array:
+    """Per-dimension KL divergence between two diagonal Gaussians.
+
+    Returns shape ``(batch, dim)`` so that each action dimension can be
+    constrained independently (Acme per-dim constraining).
+    """
+    mu_old, std_old = dist_old.loc, dist_old.scale_diag
+    mu_new, std_new = dist_new.loc, dist_new.scale_diag
+
+    # KL(N(old) || N(new)) per dimension
+    var_old = std_old ** 2
+    var_new = std_new ** 2
+    kl = (jnp.log(std_new) - jnp.log(std_old)
+          + (var_old + (mu_old - mu_new) ** 2) / (2.0 * var_new)
+          - 0.5)
+    return kl
 
 
 class MPOLearner:
@@ -27,22 +55,28 @@ class MPOLearner:
                  observation_shape: tuple,
                  action_shape: tuple,
                  random_key,
-                 lr=3e-4,
-                 dual_lr=1e-2,
-                 tau=0.005,
+                 lr=5e-4,
+                 critic_lr=None,
+                 dual_lr=None,
                  **kwargs):
 
         self.actor_net = actor_net
         self.critic_net = critic_net
-        self.tau = kwargs.get("tau", tau)
         self.gamma = kwargs.get("gamma", 0.99)
 
-        # MPO hyperparameters
+        # Learning rates — Acme uses separate dual_lr (1e-2)
+        critic_lr = critic_lr if critic_lr is not None else lr
+        dual_lr = dual_lr if dual_lr is not None else lr
+
+        # MPO hyperparameters (Acme defaults)
         self.config = {
-            "epsilon": kwargs.get("epsilon", 0.1),              # KL constraint for E-step
-            "epsilon_mean": kwargs.get("epsilon_mean", 0.001),  # KL constraint for M-step (mean)
-            "epsilon_std": kwargs.get("epsilon_std", 0.0001),   # KL constraint for M-step (std)
-            "sample_k": kwargs.get("sample_k", 20)              # Action samples for E-step
+            "epsilon": kwargs.get("epsilon", 0.1),
+            "epsilon_mean": kwargs.get("epsilon_mean", 0.0025),
+            "epsilon_std": kwargs.get("epsilon_std", 1e-6),
+            "sample_k": kwargs.get("sample_k", 20),
+            "sgd_steps_per_learner_step": kwargs.get("sgd_steps_per_learner_step", 8),
+            "target_update_period": kwargs.get("target_update_period", 100),
+            "grad_norm_clip": kwargs.get("grad_norm_clip", 40.0),
         }
 
         # RNG keys
@@ -54,18 +88,28 @@ class MPOLearner:
         params_actor = self.actor_net.init(key_actor, dummy_obs)
         params_critic = self.critic_net.init(key_critic, dummy_obs, dummy_act)
 
-        # Dual variables
-        # log-space dual parameters avoids crashing exp(Q/eta)
+        # Dual variables — Acme init values
+        action_dim = action_shape[0]
         dual_params = {
-            "log_eta": jnp.array(0.0),
-            "log_alpha_mean": jnp.array(0.0),
-            "log_alpha_std": jnp.array(0.0),
+            "log_eta": jnp.array(jnp.log(10.0)),
+            # per-dim alphas: shape (action_dim,)
+            "log_alpha_mean": jnp.full((action_dim,), jnp.log(10.0)),
+            "log_alpha_std": jnp.full((action_dim,), jnp.log(1000.0)),
         }
 
-        # Optimizers
-        self.opt_actor = optax.adam(lr)
-        self.opt_critic = optax.adam(lr)
-        self.opt_dual = optax.adam(dual_lr)
+        # Optimizers with gradient clipping (Acme: grad_norm_clip=40)
+        self.opt_actor = optax.chain(
+            optax.clip_by_global_norm(self.config["grad_norm_clip"]),
+            optax.adam(lr),
+        )
+        self.opt_critic = optax.chain(
+            optax.clip_by_global_norm(self.config["grad_norm_clip"]),
+            optax.adam(critic_lr),
+        )
+        self.opt_dual = optax.chain(
+            optax.clip_by_global_norm(self.config["grad_norm_clip"]),
+            optax.adam(dual_lr),
+        )
 
         # Build initial training state
         self.state = TrainingState(
@@ -94,14 +138,15 @@ class MPOLearner:
         # Get target Q-values
         next_q = self.critic_net.apply(target_params_critic, batch["next_state"], next_actions)
 
-        # Bellman target: y = r + gamma * Q_target(s', a')
-        # Using batch["done"] to calculate bellman target for final episode
-        target_q = batch["reward"] + self.gamma * (1.0 - batch["done"]) * next_q
+        # N-step Bellman target: y = R_n + discount * Q_target(s', a')
+        # batch["discount"] = gamma^n, batch["reward"] = sum of discounted rewards
+        # Using done flag to zero out bootstrap at episode end
+        target_q = batch["reward"] + batch["discount"] * (1.0 - batch["done"]) * next_q
 
         # Current Q-value prediction
         current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
 
-        # Return MSE loss
+        # Return MSE loss (paper: squared loss)
         return jnp.mean(jnp.square(current_q - jax.lax.stop_gradient(target_q)))
 
     def _compute_weights(self, params_critic, dist_target, batch, eta, key):
@@ -114,24 +159,25 @@ class MPOLearner:
         # Vectorize critic over K dimensions
         vmapped_critic = jax.vmap(self.critic_net.apply, in_axes=(None, None, 0))
         q_values = vmapped_critic(params_critic, states, sampled_actions)
-        q_values = q_values.T
+        q_values = q_values.T  # (batch, K)
         q_values = jax.lax.stop_gradient(q_values)
 
-        # Compute weights via temperature eta
+        # Compute weights via temperature eta — numerically stable
         max_q = jnp.max(q_values, axis=1, keepdims=True)
         log_weights = (q_values - max_q) / jnp.maximum(eta, 1e-8)
 
-        sampled_actions = jnp.swapaxes(sampled_actions, 0, 1)
+        sampled_actions = jnp.swapaxes(sampled_actions, 0, 1)  # (batch, K, action_dim)
 
         return log_weights, max_q, sampled_actions
 
     def _dual_loss(self, log_eta, log_weights, max_q, epsilon):
+        """E-step dual loss (temperature eta)."""
         eta = jnp.exp(log_eta)
 
         k = log_weights.shape[1]
         log_avg_exp = jax.nn.logsumexp(log_weights, axis=1) - jnp.log(k)
 
-        return eta * epsilon + jnp.mean(max_q.squeeze() + eta * log_avg_exp)
+        return eta * epsilon + jnp.mean(max_q.squeeze(axis=-1) + eta * log_avg_exp)
 
     def _policy_and_dual_loss(self,
                               params_actor,
@@ -141,159 +187,159 @@ class MPOLearner:
                               log_weights,
                               max_q,
                               sampled_actions):
-        weights = jax.nn.softmax(log_weights, axis=1)
+        # --- M-Step weights: stop_gradient on weights (Acme) ---
+        weights = jax.lax.stop_gradient(jax.nn.softmax(log_weights, axis=1))
 
-        # Get distribution
+        # Current policy distribution
         distribution_current = self.actor_net.apply(params_actor, batch["state"])
 
+        # Expand current distribution over K samples
         dist_expanded = distrax.MultivariateNormalDiag(
             loc=distribution_current.loc[:, None, :],
             scale_diag=distribution_current.scale_diag[:, None, :]
         )
 
-        # Weighted log-likehood loss
-        # Minimize negative to maximize
-        log_probs = dist_expanded.log_prob(sampled_actions)
+        # Weighted log-likelihood loss (M-step objective)
+        log_probs = dist_expanded.log_prob(sampled_actions)  # (batch, K)
         loss_policy = -jnp.mean(jnp.sum(weights * log_probs, axis=1))
 
-        # Calculate KL constraints mean and std individually
-        dist_mu = distrax.MultivariateNormalDiag(
+        # --- Decoupled KL with per-dim constraining (Acme) ---
+        # fixed_stddev: online mean, target scale → constrains mean
+        dist_fixed_stddev = distrax.MultivariateNormalDiag(
             loc=distribution_current.loc,
-            scale_diag=distribution_old.scale_diag
+            scale_diag=distribution_old.scale_diag,
         )
-        dist_sigma = distrax.MultivariateNormalDiag(
+        # fixed_mean: target mean, online scale → constrains std
+        dist_fixed_mean = distrax.MultivariateNormalDiag(
             loc=distribution_old.loc,
-            scale_diag=distribution_current.scale_diag
+            scale_diag=distribution_current.scale_diag,
         )
 
-        kl_mu = jnp.mean(distribution_old.kl_divergence(dist_mu))
-        kl_sigma = jnp.mean(distribution_old.kl_divergence(dist_sigma))
+        # Per-dimension KL: shape (batch, action_dim)
+        kl_mean_per_dim = _kl_diag_per_dim(distribution_old, dist_fixed_stddev)
+        kl_std_per_dim = _kl_diag_per_dim(distribution_old, dist_fixed_mean)
 
-        # Dual variables loss
+        # Average over batch → shape (action_dim,)
+        kl_mean = jnp.mean(kl_mean_per_dim, axis=0)
+        kl_std = jnp.mean(kl_std_per_dim, axis=0)
+
+        # --- Dual variable losses ---
         log_eta = dual_params["log_eta"]
-        alpha_mu = jnp.exp(dual_params["log_alpha_mean"])
-        alpha_sigma = jnp.exp(dual_params["log_alpha_std"])
+        alpha_mean = jnp.exp(dual_params["log_alpha_mean"])  # (action_dim,)
+        alpha_std = jnp.exp(dual_params["log_alpha_std"])    # (action_dim,)
 
-        # Stop gradient on KL so actor params aren't affected
+        # E-step dual loss (scalar)
         loss_eta = self._dual_loss(log_eta, log_weights, max_q, self.config["epsilon"])
-        loss_alpha_mu = alpha_mu * (self.config["epsilon_mean"] -
-                                    jax.lax.stop_gradient(kl_mu))
-        loss_alpha_sigma = alpha_sigma * (self.config["epsilon_std"] -
-                                          jax.lax.stop_gradient(kl_sigma))
 
-        # Penalize actor if KL > epsilon
-        # (stop gradient on alpha so dual params are not affected)
-        loss_actor = loss_policy + \
-            jax.lax.stop_gradient(alpha_mu) * kl_mu + \
-            jax.lax.stop_gradient(alpha_sigma) * kl_sigma
+        # Per-dim dual losses for mean and std
+        epsilon_mean = self.config["epsilon_mean"]
+        epsilon_std = self.config["epsilon_std"]
 
-        return loss_actor + loss_eta + loss_alpha_mu + loss_alpha_sigma
+        loss_alpha_mean = jnp.sum(
+            alpha_mean * (epsilon_mean - jax.lax.stop_gradient(kl_mean)))
+        loss_alpha_std = jnp.sum(
+            alpha_std * (epsilon_std - jax.lax.stop_gradient(kl_std)))
+
+        # --- Actor loss: policy + KL penalty ---
+        # stop_gradient on alpha so actor isn't affected by dual updates
+        loss_actor = (
+            loss_policy
+            + jnp.sum(jax.lax.stop_gradient(alpha_mean) * kl_mean)
+            + jnp.sum(jax.lax.stop_gradient(alpha_std) * kl_std)
+        )
+
+        return loss_actor + loss_eta + loss_alpha_mean + loss_alpha_std
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, state: TrainingState, batch):
+        """Performs one full learner step with sgd_steps_per_learner_step gradient updates.
+
+        1. Critic update (N-step Bellman target).
+        2. E-Step: compute action weights from critic Q-values.
+        3. M-Step: update actor + dual variables with per-dim KL constraints.
+        4. Periodic hard target update every target_update_period steps.
+        5. Dual parameter clipping (max(-18, log_x)).
         """
-        Performs the actual MPO algorithm. The steps are the following:
+        def sgd_step(carry, _):
+            state = carry
+            key, key_critic, key_sample = jax.random.split(state.random_key, 3)
 
-        1. Calculate the loss of the critic.
-            - let target actor predict action in the next state
-            - let target critic evaluate the value of that next action
-            - calculate the Bellman target 'Reward + (Gamma * Next_Q_Value)
-            - let online critic evaluate the Q-value of the current state-action pair
-            - calculate the mean squared error between the prediction of the online 
-            critic and the bellman target
-        2. Perform gradient descent to update the weights of the online critic.<br></br>
+            # Distributions for E-step / M-step
+            dist_sample = self.actor_net.apply(state.target_params_actor, batch["state"])
+            dist_old = self.actor_net.apply(state.params_actor, batch["state"])
 
-        3. E-step - Determine weights for the actions according to the critic.
-            - let online critic evaluate the Q-values for states and actions of the batch
-            - apply temperature by deviding the Q-values by eta
-                - large eta -> similar weights, uncertainty
-                - small eta -> aggressive weights, high certainty
-            - exponentiate to get weights that are probability-like and normalize
+            # --- Critic update ---
+            def critic_loss_fn(p):
+                return self._critic_loss(
+                    p,
+                    state.target_params_critic,
+                    state.target_params_actor,
+                    batch,
+                    key_critic,
+                )
 
-        4. M-step - Update actor parameters based on weights from the E-step, while ensuring
-        policy does not change to much.
-            - let online actor calculate the log-probability of the actions
-            - mulitply by weights to get learning signals
-            - calculate Kullback-Leibler (KL) divergences for KL mean and KL std seperately
-            - calculate alpha (mean, std) to act like a penalty multiplier
-            - combine losses to calculate gradients for actor parameters and alphas
+            loss_c, grads_critic = jax.value_and_grad(critic_loss_fn)(state.params_critic)
+            updates_c, opt_state_c = self.opt_critic.update(grads_critic, state.opt_state_critic)
+            params_critic = optax.apply_updates(state.params_critic, updates_c)
 
-        5. Soft target update & making the new TrainingState
-            - perform a weighted average based weight update
-            - build the new TrainingState dictionary"""
-        key, key_critic, key_sample = jax.random.split(state.random_key, 3)
-        dist_target = self.actor_net.apply(state.target_params_actor, batch["state"])
-
-        # Update critic
-        def critic_loss_fn(p):
-            return self._critic_loss(
-                p,
-                state.target_params_critic,
-                state.target_params_actor,
-                batch,
-                key_critic
+            # --- E-Step (use pre-update critic) ---
+            eta = jnp.exp(state.dual_params["log_eta"])
+            log_weights, max_q, sampled_actions = self._compute_weights(
+                state.params_critic, dist_sample, batch, eta, key_sample
             )
 
-        loss_c, grads_critic = jax.value_and_grad(critic_loss_fn)(state.params_critic)
-        updates_c, opt_state_c = self.opt_critic.update(grads_critic, state.opt_state_critic)
-        params_critic = optax.apply_updates(state.params_critic, updates_c)
+            # --- M-Step (actor + dual) ---
+            def actor_dual_loss_fn(p_actor, p_dual):
+                return self._policy_and_dual_loss(
+                    p_actor, p_dual, dist_old, batch,
+                    log_weights, max_q, sampled_actions,
+                )
 
-        # E-Step
-        eta = jnp.exp(state.dual_params["log_eta"])
-        log_weights, max_q, sampled_actions = self._compute_weights(
-            params_critic,
-            dist_target,
-            batch,
-            eta,
-            key_sample
-        )
-
-        # M-Step
-        def actor_dual_loss_fn(p_actor, p_dual):
-            return self._policy_and_dual_loss(
-                p_actor,
-                p_dual,
-                dist_target,
-                batch,
-                log_weights,
-                max_q,
-                sampled_actions
+            grads_actor, grads_dual = jax.grad(actor_dual_loss_fn, argnums=(0, 1))(
+                state.params_actor, state.dual_params
             )
 
-        grads_actor, grads_dual = jax.grad(actor_dual_loss_fn, argnums=(0, 1))(
-            state.params_actor,
-            state.dual_params
-        )
+            updates_a, opt_state_a = self.opt_actor.update(grads_actor, state.opt_state_actor)
+            params_actor = optax.apply_updates(state.params_actor, updates_a)
+            updates_d, opt_state_d = self.opt_dual.update(grads_dual, state.opt_state_dual)
+            dual_params = optax.apply_updates(state.dual_params, updates_d)
 
-        updates_a, opt_state_a = self.opt_actor.update(grads_actor, state.opt_state_actor)
-        params_actor = optax.apply_updates(state.params_actor, updates_a)
-        updates_d, opt_state_d = self.opt_dual.update(grads_dual, state.opt_state_dual)
-        dual_params = optax.apply_updates(state.dual_params, updates_d)
+            # Clip dual parameters in log-space
+            dual_params = _clip_log_dual_params(dual_params)
 
-        # Soft update target networks
-        target_params_critic = optax.incremental_update(
-            params_critic,
-            state.target_params_critic,
-            self.tau
-        )
-        target_params_actor = optax.incremental_update(
-            params_actor,
-            state.target_params_actor,
-            self.tau
-        )
+            new_state = state._replace(
+                params_actor=params_actor,
+                params_critic=params_critic,
+                dual_params=dual_params,
+                opt_state_actor=opt_state_a,
+                opt_state_critic=opt_state_c,
+                opt_state_dual=opt_state_d,
+                random_key=key,
+            )
+            return new_state, loss_c
 
-        # Build new state and return it
+        # Run sgd_steps_per_learner_step gradient steps (batch reuse)
+        state, loss_c = jax.lax.scan(
+            sgd_step, state, None, length=self.config["sgd_steps_per_learner_step"]
+        )
+        # loss_c has shape (sgd_steps_per_learner_step,) — report last step
+        loss_c = loss_c[-1]
+
+        # --- Periodic hard target update ---
+        period = self.config["target_update_period"]
+        steps = state.steps + 1
+        do_update = (steps % period) == 0
+        target_params_actor = jax.tree_util.tree_map(
+            lambda new, old: jnp.where(do_update, new, old),
+            state.params_actor, state.target_params_actor)
+        target_params_critic = jax.tree_util.tree_map(
+            lambda new, old: jnp.where(do_update, new, old),
+            state.params_critic, state.target_params_critic)
+
         new_state = state._replace(
-            params_actor=params_actor,
-            params_critic=params_critic,
             target_params_actor=target_params_actor,
             target_params_critic=target_params_critic,
-            dual_params=dual_params,
-            opt_state_actor=opt_state_a,
-            opt_state_critic=opt_state_c,
-            opt_state_dual=opt_state_d,
-            steps=state.steps + 1,
-            random_key=key
+            steps=steps,
         )
 
         return new_state, {"loss_critic": loss_c}
