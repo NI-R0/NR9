@@ -20,4 +20,4 @@ cd "$HOME/NR9"
 uv sync --frozen
 
 # Run training with 72 parallel environments (3 envs per CPU)
-uv run python main.py --env_domain walker --env_task run --episodes 10000 --num_envs 72 --eval_frequency 72
+uv run python main.py --env_domain walker --env_task run --episodes 10000 --num_envs 72 --eval_frequency 72 --capacity 1000000
