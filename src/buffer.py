@@ -106,8 +106,8 @@ class NStepTransitionBuffer:
 
     def next(self, key, batch_size):
         """Samples a random batch of n-step transitions."""
-        indices = jax.random.randint(key, (batch_size,), 0, self._size)
-        indices = np.asarray(indices)
+        # Use NumPy RNG to avoid a GPU→CPU sync point inside the training loop.
+        indices = np.random.randint(0, self._size, size=batch_size)
 
         return {
             "state": jnp.asarray(self._states[indices]),
