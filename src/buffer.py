@@ -126,56 +126,19 @@ class NStepTransitionBuffer:
     def next(self, key, batch_size):
         """Samples a random batch of n-step transitions.
 
-        Gathers all sampled arrays into a single contiguous NumPy buffer
-        before transferring to GPU, so only **one** ``jnp.asarray`` call
-        is issued instead of six — eliminating five redundant JAX staging
-        operations per sample call.
+        Uses NumPy RNG to avoid a GPU→CPU sync point inside the training
+        loop.  Each array is transferred individually via ``jnp.asarray`` —
+        simple host→device copies that are cheaper than concatenating on
+        CPU and then slicing on GPU.
         """
         # Use NumPy RNG to avoid a GPU→CPU sync point inside the training loop.
         indices = np.random.randint(0, self._size, size=batch_size)
 
-        # Slice all arrays with fancy indexing (NumPy, stays on CPU).
-        s = self._states[indices]          # (B, *state_shape)
-        a = self._actions[indices]         # (B, *action_shape)
-        ns = self._next_states[indices]    # (B, *state_shape)
-        r = self._rewards[indices]         # (B,)
-        d = self._discounts[indices]       # (B,)
-        dn = self._dones[indices]          # (B,)
-
-        # Concatenate into one flat buffer: each 2-D array contributes
-        # B * prod(shape) elements, each 1-D array contributes B elements.
-        flat = np.concatenate([
-            s.reshape(batch_size, -1),
-            a.reshape(batch_size, -1),
-            ns.reshape(batch_size, -1),
-            r.reshape(batch_size, -1),
-            d.reshape(batch_size, -1),
-            dn.reshape(batch_size, -1),
-        ], axis=1)  # shape: (B, total_cols)
-
-        # Single CPU→GPU transfer + JAX staging operation.
-        flat_gpu = jnp.asarray(flat)
-
-        # Unpack on GPU — pure views, no extra transfers.
-        off = 0
-        def _take(n_cols, shape):
-            nonlocal off
-            sl = flat_gpu[:, off:off + n_cols]
-            off += n_cols
-            return sl.reshape(batch_size, *shape)
-
-        state = _take(int(np.prod(self._state_shape)), self._state_shape)
-        action = _take(int(np.prod(self._action_shape)), self._action_shape)
-        next_state = _take(int(np.prod(self._state_shape)), self._state_shape)
-        reward = _take(1, (1,)).squeeze(-1)
-        discount = _take(1, (1,)).squeeze(-1)
-        done = _take(1, (1,)).squeeze(-1)
-
         return {
-            "state": state,
-            "action": action,
-            "next_state": next_state,
-            "reward": reward,
-            "discount": discount,
-            "done": done,
+            "state": jnp.asarray(self._states[indices]),
+            "action": jnp.asarray(self._actions[indices]),
+            "next_state": jnp.asarray(self._next_states[indices]),
+            "reward": jnp.asarray(self._rewards[indices]),
+            "discount": jnp.asarray(self._discounts[indices]),
+            "done": jnp.asarray(self._dones[indices]),
         }
