@@ -13,7 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
-"""hipp_walker Domain."""
+"""Humanoid Custom Domain."""
 
 import collections
 
@@ -36,7 +36,7 @@ _STAND_HEIGHT = 1.4
 # Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 10
-FILE = 'hipp_walker.xml'
+FILE = 'humanoid_custom.xml'
 
 
 SUITE = containers.TaggedTasks()
@@ -181,7 +181,7 @@ class Humanoid(base.Task):
     
     # Add only a TINY bit of noise to joint positions
     qpos = physics.data.qpos.copy()
-    qpos[7:] += self.random.uniform(-0.01, 0.01, size=len(qpos[7:]))
+    qpos[7:] += self.random.uniform(-0.2, 0.2, size=len(qpos[7:]))
     physics.data.qpos[:] = qpos
     
     # Lift him slightly off the ground so he doesn't clip

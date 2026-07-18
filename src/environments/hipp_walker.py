@@ -83,7 +83,7 @@ def get_model_and_assets():
 def stand(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Stand task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Humanoid(move_speed=0, pure_state=False, random=random)
+  task = Hipp_walker(move_speed=0, pure_state=False, random=random)
   environment_kwargs = environment_kwargs or {}
   return control.Environment(
       physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
@@ -94,7 +94,7 @@ def stand(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
 def walk(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Walk task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Humanoid(move_speed=_WALK_SPEED, pure_state=False, random=random)
+  task = Hipp_walker(move_speed=_WALK_SPEED, pure_state=False, random=random)
   environment_kwargs = environment_kwargs or {}
   return control.Environment(
       physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
@@ -105,7 +105,7 @@ def walk(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
 def run(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Run task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Humanoid(move_speed=_RUN_SPEED, pure_state=False, random=random)
+  task = Hipp_walker(move_speed=_RUN_SPEED, pure_state=False, random=random)
   environment_kwargs = environment_kwargs or {}
   return control.Environment(
       physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
@@ -117,7 +117,7 @@ def run_pure_state(time_limit=_DEFAULT_TIME_LIMIT, random=None,
                    environment_kwargs=None):
   """Returns the Run task."""
   physics = Physics.from_xml_string(*get_model_and_assets())
-  task = Humanoid(move_speed=_RUN_SPEED, pure_state=True, random=random)
+  task = Hipp_walker(move_speed=_RUN_SPEED, pure_state=True, random=random)
   environment_kwargs = environment_kwargs or {}
   return control.Environment(
       physics, task, time_limit=time_limit, control_timestep=_CONTROL_TIMESTEP,
@@ -177,11 +177,11 @@ class Physics(mujoco.Physics):
     return np.hstack(positions)
 
 
-class Humanoid(base.Task):
-  """A humanoid task."""
+class Hipp_walker(base.Task):
+  """A Hipp_walker task."""
 
   def __init__(self, move_speed, pure_state, random=None):
-    """Initializes an instance of `Humanoid`.
+    """Initializes an instance of `Hipp_walker`.
 
     Args:
       move_speed: A float. If this value is zero, reward is given simply for
