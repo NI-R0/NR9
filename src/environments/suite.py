@@ -16,10 +16,15 @@
 """A collection of MuJoCo-based Reinforcement Learning environments."""
 
 import collections
+import importlib
 import inspect
 import itertools
+import pkgutil
 from dm_control.rl import control
 import src.environments as _envs
+
+for _finder, _name, _ in pkgutil.iter_modules(_envs.__path__):
+    importlib.import_module(f"{_envs.__name__}.{_name}")
 
 # Find all domains imported in the environments package.
 _DOMAINS = {name: mod for name, mod in inspect.getmembers(_envs, inspect.ismodule)

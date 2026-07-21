@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -28,8 +28,8 @@ echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
 # Run training; num_envs adapts to the allocated CPUs automatically.
 uv run python main.py \
-  --env_domain walker --env_task run \
-  --episodes 50000 \
+  --env_domain walker_3D_ball --env_task walk \
+  --episodes 500000 \
   --num_envs "$NUM_ENVS" \
   --eval_frequency "$NUM_ENVS" \
   --capacity 1000000
