@@ -330,10 +330,9 @@ class Walker3DBall(base.Task):
 
     # Phase-weighted reward
     if self._phase == PHASE_STAND:
-      reward = _W_STAND * stand_reward
+      reward = stand_reward
     elif self._phase == PHASE_APPROACH:
-      reward = (_W_STAND * stand_reward
-                + _W_APPROACH * approach_reward)
+      reward = (_W_STAND * stand_reward + _W_APPROACH * approach_reward) / (_W_STAND +_W_APPROACH)
     else:
       # PHASE_FULL: all components
       dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)

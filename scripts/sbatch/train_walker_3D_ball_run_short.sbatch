@@ -26,8 +26,16 @@
 # submitted.  Otherwise a new job is automatically scheduled.
 #
 # Convergence parameters (override via --export):
-#   CONV_WINDOW=5       - number of recent evals to compare
-#   CONV_THRESHOLD=10.0 - minimum improvement to keep training
+#   CONV_WINDOW=5               - number of recent evals to compare
+#   CONV_THRESHOLD=10.0         - minimum improvement to keep training
+#   CONV_MIN_REWARD=100.0       - don't converge below this reward
+#   CONV_STAGNATION_WINDOW=20   - evals to check for stagnation
+#   CONV_STAGNATION_THRESHOLD=1.0 - improvement below this over stagnation_window = stagnant
+#
+# Exit codes from check_convergence.py:
+#   0 = converged  (stop, success)
+#   1 = continue   (reschedule)
+#   2 = stagnant   (stop, likely bug – no reschedule)
 #
 # Usage:
 #   1st run (fresh):  sbatch --export=FRESH=1 scripts/sbatch/train_walker_3D_ball_run_short.sbatch
@@ -49,6 +57,9 @@ echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
 CONV_WINDOW="${CONV_WINDOW:-5}"
 CONV_THRESHOLD="${CONV_THRESHOLD:-10.0}"
+CONV_MIN_REWARD="${CONV_MIN_REWARD:-100.0}"
+CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-20}"
+CONV_STAGNATION_THRESHOLD="${CONV_STAGNATION_THRESHOLD:-1.0}"
 
 RESUME_ARGS=""
 ACTIVE_RUN=""
@@ -110,20 +121,27 @@ fi
 
 echo "Active run directory: $ACTIVE_RUN"
 
-echo "Running convergence check (window=$CONV_WINDOW, threshold=$CONV_THRESHOLD)..."
+echo "Running convergence check (window=$CONV_WINDOW, threshold=$CONV_THRESHOLD, min_reward=$CONV_MIN_REWARD, stagnation_window=$CONV_STAGNATION_WINDOW, stagnation_threshold=$CONV_STAGNATION_THRESHOLD)..."
 uv run python scripts/check_convergence.py \
   --run_dir "$ACTIVE_RUN" \
   --window "$CONV_WINDOW" \
-  --threshold "$CONV_THRESHOLD"
+  --threshold "$CONV_THRESHOLD" \
+  --min_reward "$CONV_MIN_REWARD" \
+  --stagnation_window "$CONV_STAGNATION_WINDOW" \
+  --stagnation_threshold "$CONV_STAGNATION_THRESHOLD"
 
 CONV_EXIT=$?
 
 if [ $CONV_EXIT -eq 0 ]; then
     echo "Training has converged. No new job will be scheduled."
     echo "Best model is in $ACTIVE_RUN/checkpoints/best_ckpt.pkl"
+elif [ $CONV_EXIT -eq 2 ]; then
+    echo "Training has STAGNATED (possible bug or fundamental issue). No new job will be scheduled."
+    echo "Check logs in $ACTIVE_RUN/logs/ for details."
+    echo "Best model so far is in $ACTIVE_RUN/checkpoints/best_ckpt.pkl"
 else
     echo "Training has NOT converged - scheduling next job..."
-    NEW_JOB=$(sbatch --export=RUN_DIR="$ACTIVE_RUN",CONV_WINDOW="$CONV_WINDOW",CONV_THRESHOLD="$CONV_THRESHOLD" \
+    NEW_JOB=$(sbatch --export=RUN_DIR="$ACTIVE_RUN",CONV_WINDOW="$CONV_WINDOW",CONV_THRESHOLD="$CONV_THRESHOLD",CONV_MIN_REWARD="$CONV_MIN_REWARD",CONV_STAGNATION_WINDOW="$CONV_STAGNATION_WINDOW",CONV_STAGNATION_THRESHOLD="$CONV_STAGNATION_THRESHOLD" \
         scripts/sbatch/train_walker_3D_ball_run_short.sbatch)
     echo "Submitted: $NEW_JOB"
 fi

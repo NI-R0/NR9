@@ -18,9 +18,11 @@ class ActorNetwork(nn.Module):
     def __call__(self, obs: jax.Array) -> distrax.MultivariateNormalDiag:
         dim = self.action_dim[0]
 
-        x = nn.Dense(features=100)(obs)
+        x = nn.Dense(features=400)(obs)
         x = nn.elu(x)
-        x = nn.Dense(features=100)(x)
+        x = nn.Dense(features=400)(x)
+        x = nn.elu(x)
+        x = nn.Dense(features=400)(x)
         x = nn.elu(x)
 
         mu = nn.Dense(features=dim)(x)
@@ -40,9 +42,11 @@ class CriticNetwork(nn.Module):
     def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
         inputs = jnp.concatenate([obs, action], axis=-1)
 
-        x = nn.Dense(features=200)(inputs)
+        x = nn.Dense(features=400)(inputs)
         x = nn.elu(x)
-        x = nn.Dense(features=200)(x)
+        x = nn.Dense(features=400)(x)
+        x = nn.elu(x)
+        x = nn.Dense(features=400)(x)
         x = nn.elu(x)
 
         q_value = nn.Dense(features=1)(x)

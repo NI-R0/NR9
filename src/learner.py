@@ -125,8 +125,11 @@ class MPOLearner:
 
         distribution_next = self.actor_net.apply(target_params_actor, batch["next_state"])
         next_actions = distribution_next.sample(seed=key)
+        next_actions = jnp.tanh(next_actions)
         next_q = self.critic_net.apply(target_params_critic, batch["next_state"], next_actions)
+        next_q = jnp.clip(next_q, -100.0, 100.0)
         target_q = batch["reward"] + batch["discount"] * (1.0 - batch["done"]) * next_q
+        target_q = jnp.clip(target_q, -200.0, 200.0)
         current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
 
         return jnp.mean(jnp.square(current_q - jax.lax.stop_gradient(target_q)))
@@ -136,8 +139,9 @@ class MPOLearner:
         k = self.config["sample_k"]
 
         sampled_actions = dist_target.sample(seed=key, sample_shape=(k,))
+        tanh_actions = jnp.tanh(sampled_actions)
         vmapped_critic = jax.vmap(self.critic_net.apply, in_axes=(None, None, 0))
-        q_values = vmapped_critic(params_critic, states, sampled_actions)
+        q_values = vmapped_critic(params_critic, states, tanh_actions)
         q_values = q_values.T
         q_values = jax.lax.stop_gradient(q_values)
         max_q = jnp.max(q_values, axis=1, keepdims=True)
