@@ -11,9 +11,7 @@
 # Fallback to gpu_a100_short if gpu_h100_short is unavailable:
 #   sbatch --partition=gpu_a100_short scripts/train_humanoid_stand.sbatch
 
-# Load uv into PATH
 export PATH="$HOME/.local/bin:$PATH"
-
 cd "$HOME/NR9"
 mkdir -p logs
 

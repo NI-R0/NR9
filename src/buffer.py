@@ -30,20 +30,12 @@ class NStepTransitionBuffer:
         self._size = 0
         self._pos = 0
 
-        # Circular storage for committed n-step transitions
         self._states = np.zeros((capacity, *self._state_shape), dtype=np.float32)
         self._next_states = np.zeros((capacity, *self._state_shape), dtype=np.float32)
         self._actions = np.zeros((capacity, *self._action_shape), dtype=np.float32)
-        # n-step discounted reward
         self._rewards = np.zeros((capacity,), dtype=np.float32)
-        # Remaining discount: gamma^n (or less at episode end)
         self._discounts = np.zeros((capacity,), dtype=np.float32)
-        # True if the n-step window ended because of a terminal state
         self._dones = np.zeros((capacity,), dtype=np.float32)
-
-        # Rolling window of raw transitions — one list per parallel env.
-        # For backward compatibility (single-env), we use a single window
-        # when ``num_envs == 1`` and select by ``env_id``.
         self._num_envs = 1
         self._windows: list[list[dict]] = [[]]
 
@@ -75,12 +67,10 @@ class NStepTransitionBuffer:
             "done": float(done),
         })
 
-        # Once we have n_step transitions, commit the n-step transition
         if len(window) >= self._n_step:
             self._commit_nstep(window)
 
         if done:
-            # Flush all remaining partial windows
             while len(window) > 0:
                 self._commit_nstep(window)
             window.clear()
@@ -101,12 +91,10 @@ class NStepTransitionBuffer:
         first = window[0]
         last = window[-1]
 
-        # Discounted reward sum: r_0 + gamma*r_1 + ... + gamma^{n-1}*r_{n-1}
         discounted_reward = 0.0
         for i, trans in enumerate(window):
             discounted_reward += (self._gamma ** i) * trans["reward"]
 
-        # Remaining discount = gamma^n
         discount = self._gamma ** n
         done = last["done"]
 
@@ -120,18 +108,16 @@ class NStepTransitionBuffer:
         self._pos = (self._pos + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
 
-        # Slide window
         window.pop(0)
 
     def next(self, key, batch_size):
         """Samples a random batch of n-step transitions.
 
         Uses NumPy RNG to avoid a GPU→CPU sync point inside the training
-        loop.  Each array is transferred individually via ``jnp.asarray`` —
+        loop.  Each array is transferred individually via ``jnp.asarray``
         simple host→device copies that are cheaper than concatenating on
         CPU and then slicing on GPU.
         """
-        # Use NumPy RNG to avoid a GPU→CPU sync point inside the training loop.
         indices = np.random.randint(0, self._size, size=batch_size)
 
         return {

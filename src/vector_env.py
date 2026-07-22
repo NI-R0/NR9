@@ -16,7 +16,6 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed):
     """Worker process: owns one Environment, handles step/reset commands."""
     parent_remote.close()
 
-    # Import here so each process gets its own MuJoCo state.
     from src.environment import Environment
 
     env = Environment(domain_name=domain_name, task_name=task_name, max_steps=max_steps)
@@ -28,7 +27,6 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed):
             if cmd == "step":
                 state, reward, done, info = env.step(data)
                 if done:
-                    # Store terminal observation for the buffer, then auto-reset.
                     info["terminal_obs"] = state
                     state = env.reset()
                 remote.send((state, reward, done, info))
@@ -38,6 +36,9 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed):
             elif cmd == "get_spaces":
                 remote.send((env.state_dim, env.action_dim, env.action_spec.minimum,
                              env.action_spec.maximum))
+            elif cmd == "set_phase":
+                env.set_phase(data)
+                remote.send(None)
             elif cmd == "close":
                 remote.close()
                 break
@@ -76,7 +77,6 @@ class ParallelVectorEnv:
             self.remotes.append(parent_remote)
             self.processes.append(p)
 
-        # Query state/action dims from first worker.
         self.remotes[0].send(("get_spaces", None))
         self.state_dim, self.action_dim, self.action_min, self.action_max = \
             self.remotes[0].recv()
@@ -97,11 +97,11 @@ class ParallelVectorEnv:
         """Step all environments with the given batched actions.
 
         Returns:
-            next_states: (N, state_dim) — observation for the *next* step
+            next_states: (N, state_dim) - observation for the *next* step
                          (auto-reset obs if the env was done).
             rewards: (N,)
             dones: (N,)
-            infos: list[dict] — ``info["terminal_obs"]`` present when done.
+            infos: list[dict] - ``info["terminal_obs"]`` present when done.
         """
         for i, remote in enumerate(self.remotes):
             remote.send(("step", actions[i]))
@@ -125,3 +125,10 @@ class ParallelVectorEnv:
                 p.terminate()
         for remote in self.remotes:
             remote.close()
+
+    def set_phase(self, phase: int):
+        """Propagate curriculum phase to all worker environments."""
+        for remote in self.remotes:
+            remote.send(("set_phase", phase))
+        for remote in self.remotes:
+            remote.recv()

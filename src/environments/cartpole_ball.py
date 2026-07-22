@@ -36,7 +36,6 @@ def get_model_and_assets():
   xml_path = os.path.join(os.path.dirname(__file__), FILE)
   with open(xml_path, 'r') as f:
     xml_string = f.read()
-  # Map the common includes to the actual assets from dm_control
   assets = {f"./common/{k}": v for k, v in common.ASSETS.items()}
   return xml_string, assets
 
@@ -105,16 +104,13 @@ class Kick(base.Task):
   def get_observation(self, physics):
     """Returns an observation of the (bounded) physics state."""
     obs = collections.OrderedDict()
-    # Cart: position (x) and velocity (vx)
     obs['cart_position'] = np.array([physics.cart_position()])
     obs['cart_velocity'] = np.array([physics.named.data.qvel['slider'][0]])
-    # Pole: angle (cos/sin) and angular velocity
     obs['pole_angle'] = np.array([physics.pole_angle_cosine(),
                                   physics.named.data.xmat['lower_leg', 'xz']])
     obs['pole_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
-    # Ball: position and velocity
     obs['ball_position'] = physics.ball_position()
-    obs['ball_velocity'] = physics.ball_velocity()[:3]   # linear vx, vy, vz
+    obs['ball_velocity'] = physics.ball_velocity()[:3]
     return obs
 
   def get_reward(self, physics):
@@ -129,17 +125,13 @@ class Kick(base.Task):
     ball_vel = physics.ball_velocity()
     cart_pos = physics.cart_position()
 
-    # 1. Ball velocity in x-direction (main kick reward), bounded
     ball_vel_x = float(ball_vel[0])
-    vel_reward = np.tanh(ball_vel_x / 10.0)  # bounded to [-1, 1]
+    vel_reward = np.tanh(ball_vel_x / 10.0)
 
-    # 2. Proximity reward: closer cart -> higher reward
-    #    Cart needs to be at ball_x - 0.4 (cart_half=0.2 + ball_radius=0.2)
     dist_to_ball = abs(float(ball_pos[0]) - 0.4 - cart_pos)
     proximity = np.exp(-2.0 * dist_to_ball)
 
-    # 3. Ball displacement from initial position (x=1.0), bounded
     ball_displacement = max(0.0, float(ball_pos[0]) - 1.0)
-    disp_reward = np.tanh(ball_displacement / 5.0)  # bounded to [0, 1)
+    disp_reward = np.tanh(ball_displacement / 5.0)
 
     return float(vel_reward + 0.1 * proximity + disp_reward)

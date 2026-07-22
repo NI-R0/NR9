@@ -111,20 +111,16 @@ class Kick(base.Task):
   def get_observation(self, physics):
     """Returns an observation of the physics state."""
     obs = collections.OrderedDict()
-    # Cart: position (x) and velocity (vx)
     obs['cart_position'] = np.array([physics.cart_position()])
     obs['cart_velocity'] = np.array([physics.named.data.qvel['slider'][0]])
-    # Hüfte (hipp): angle (cos/sin) and angular velocity
     obs['hipp_angle'] = np.array([physics.upper_leg_angle_cosine(),
                                   physics.named.data.xmat['upper_leg', 'xz']])
     obs['hipp_velocity'] = np.array([physics.named.data.qvel['hipp'][0]])
-    # Knie (knee): angle (cos/sin) and angular velocity
     obs['knee_angle'] = np.array([physics.lower_leg_angle_cosine(),
                                   physics.named.data.xmat['lower_leg', 'xz']])
     obs['knee_velocity'] = np.array([physics.named.data.qvel['knee'][0]])
-    # Ball: position and velocity
     obs['ball_position'] = physics.ball_position()
-    obs['ball_velocity'] = physics.ball_velocity()[:3]  # linear vx, vy, vz
+    obs['ball_velocity'] = physics.ball_velocity()[:3]
     return obs
 
   def get_reward(self, physics):
@@ -142,20 +138,15 @@ class Kick(base.Task):
 
     not_kickt = 0
 
-    # 1. Ball velocity in x-direction (main kick reward), bounded
     ball_vel_x = float(ball_vel[0])
-    vel_reward = np.tanh(ball_vel_x / 10.0)  # bounded to [-1, 1]
+    vel_reward = np.tanh(ball_vel_x / 10.0)
 
-    # 2. Proximity reward: closer cart -> higher reward
-    #    Cart needs to be near ball_x - 0.4 (cart_half=0.2 + ball_radius=0.2)
     dist_to_ball = abs(float(ball_pos[0]) - 0.4 - cart_pos)
     proximity = np.exp(-2.0 * dist_to_ball)
 
-    # 3. Ball displacement from initial position, bounded
     ball_displacement = max(0.0, float(ball_pos[0]) - self._BALL_START_X)
-    disp_reward = np.tanh(ball_displacement / 5.0)  # bounded to [0, 1)
+    disp_reward = np.tanh(ball_displacement / 5.0)
 
-    # 4. punishment as long as the ball wasn't kickt yet
     if ball_displacement == 0:
       not_kickt = -0.1
 

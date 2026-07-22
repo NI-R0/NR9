@@ -35,7 +35,6 @@ class StatsCollector:
         if self.is_test:
             self.run_dir = os.path.join(os.getcwd(), args["load_dir"])
             self.outdir = os.path.join(self.run_dir, "test", run_name)
-
         else:
             self.run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
             self.outdir = self.run_dir
@@ -46,7 +45,11 @@ class StatsCollector:
         self.stats_file = os.path.join(self.outdir, "training_stats.json")
         self.config_file = os.path.join(self.outdir, "run_config.json")
 
-        os.makedirs(self.run_dir, exist_ok=self.is_test)
+        if self.is_test:
+            os.makedirs(self.run_dir, exist_ok=True)
+        else:
+            os.makedirs(self.run_dir, exist_ok=False)
+
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.tb_dir, exist_ok=True)
         os.makedirs(self.outdir, exist_ok=True)
@@ -155,6 +158,34 @@ Evaluation Configuration:
         for key, value in stats.items():
             self.writer.add_scalar(f"Metrics/{key}", value, episode)
         logger.debug(f"Added metrics to tensorboard for episode {episode}.")
+
+    def log_hparams(self, args: dict):
+        """Log hyperparameters to TensorBoard HParams tab.
+
+        Must be called once at the start of training (before any metrics).
+        The final metric (Mean_Eval_Reward) is used as the HParams metric.
+        """
+        hparam_keys = [
+            "seed", "warmup", "batch_size", "lr", "critic_lr", "dual_lr",
+            "capacity", "gamma", "epsilon", "epsilon_mean", "epsilon_std",
+            "sample_k", "n_step", "sgd_steps_per_learner_step",
+            "target_update_period", "grad_norm_clip", "update_every",
+            "num_envs", "eval_frequency", "num_eval_episodes",
+            "curriculum", "phase1_threshold", "phase2_threshold",
+        ]
+        hparams = {}
+        for k in hparam_keys:
+            if k in args:
+                val = args[k]
+                if isinstance(val, bool):
+                    hparams[k] = int(val)
+                elif val is None:
+                    continue
+                else:
+                    hparams[k] = val
+        metric = {"Mean_Eval_Reward": 0.0}
+        self.writer.add_hparams(hparams, metric)
+        logger.info(f"Logged {len(hparams)} hyperparameters to TensorBoard.")
 
     def log_progress(self, episode: int, total_episodes: int | str, ep_stats: dict,
                      extra_metrics: dict | None = None):

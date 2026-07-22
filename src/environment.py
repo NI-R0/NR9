@@ -13,7 +13,6 @@ class Environment:
         self.action_spec = self.env.action_spec()
         self.action_dim = self.action_spec.shape
 
-        # Determine state dimensions by running dummy timestep
         first_timestep = self.env.reset()
         self.state_dim = self._flatten_observation(first_timestep.observation).shape
 
@@ -23,7 +22,7 @@ class Environment:
         try:
             return dm_suite.load(domain_name=domain_name, task_name=task_name)
         except ValueError:
-            pass  # if we reach this error, we try to load a custom env
+            pass
         try:
             return suite.load(domain_name=domain_name, task_name=task_name)
         except Exception as e:
@@ -31,14 +30,12 @@ class Environment:
             sys.exit(1)
 
     def _flatten_observation(self, obs_dict: dict) -> np.ndarray:
-        # Concatenates position, velocity, etc. into a flat vector for the MLPs
         return np.concatenate([np.asarray(val).ravel() for val in obs_dict.values()]).astype(np.float32)
 
     def reset(self) -> np.ndarray:
         return self._flatten_observation(self.env.reset().observation)
 
     def step(self, action: np.ndarray):
-        # Clip action to physics bounds to prevent MuJoCo integration crashes
         action = np.clip(action, self.action_spec.minimum, self.action_spec.maximum)
         timestep = self.env.step(action)
 
@@ -58,3 +55,9 @@ class Environment:
         Author's Note: Rendering process designed by Claude. 
         """
         return self.env.physics.render(height=height, width=width, camera_id=camera_id)
+
+    def set_phase(self, phase: int):
+        """Propagate curriculum phase to the underlying task, if supported."""
+        task = getattr(self.env, 'task', None)
+        if task is not None and hasattr(task, 'set_phase'):
+            task.set_phase(phase)

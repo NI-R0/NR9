@@ -1,3 +1,5 @@
+import os
+import signal
 import time
 import numpy as np
 import os
@@ -9,6 +11,41 @@ from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
 from src.vector_env import ParallelVectorEnv
 
+# Curriculum phases (must match src/environments/walker_3D_ball.py)
+_PHASE_STAND = 0
+_PHASE_APPROACH = 1
+_PHASE_FULL = 2
+
+
+def _check_phase_advancement(current_phase: int, mean_eval_reward: float,
+                             phase1_threshold: float, phase2_threshold: float) -> int:
+    """Check if the curriculum phase should advance based on eval reward.
+
+    Returns the new phase (same as current if no advancement).
+    """
+    if current_phase == _PHASE_STAND and mean_eval_reward >= phase1_threshold:
+        logger.info(
+            f"Curriculum: advancing from STAND to APPROACH "
+            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase1_threshold:.2f})"
+        )
+        return _PHASE_APPROACH
+    elif current_phase == _PHASE_APPROACH and mean_eval_reward >= phase2_threshold:
+        logger.info(
+            f"Curriculum: advancing from APPROACH to FULL "
+            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase2_threshold:.2f})"
+        )
+        return _PHASE_FULL
+    return current_phase
+
+
+def _propagate_phase(phase: int, use_vectorized: bool, venv, env, eval_env):
+    """Send phase update to all environments (train + eval)."""
+    if use_vectorized:
+        venv.set_phase(phase)
+    else:
+        env.set_phase(phase)
+    eval_env.set_phase(phase)
+    logger.info(f"Curriculum phase set to {phase} for all environments.")
 
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False, profile: bool = False):
@@ -21,7 +58,6 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     avg_metrics = {}
     updates_count = 0
 
-    # Per-step timing accumulators
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
     frames = [] if visualize else None
@@ -32,7 +68,6 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
         t0 = time.perf_counter()
         action = agent.select_action(state, explore=explore)
-        # Force JAX to finish compute so timing is accurate (not deferred to next np.asarray)
         if profile and hasattr(action, "block_until_ready"):
             action.block_until_ready()
         t1 = time.perf_counter()
@@ -42,7 +77,6 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
         if explore:
             metrics = agent.update(state, action, reward, next_state, done)
-            # Force JAX to finish update compute so timing is accurate
             if profile and isinstance(metrics, dict):
                 for v in metrics.values():
                     if hasattr(v, "block_until_ready"):
@@ -54,7 +88,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
                 for k, v in metrics.items():
                     episode_metrics[k] = episode_metrics.get(k, 0.0) + v
         else:
-            t3 = t2  # no update, keep timing consistent
+            t3 = t2
 
         timing["select_action"] += t1 - t0
         timing["env_step"] += t2 - t1
@@ -69,7 +103,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     if profile and step > 0:
         total = timing["select_action"] + timing["env_step"] + timing["update"]
         logger.info(
-            f"  Timing (episode, {step} steps, {total:.1f}s total) — "
+            f"  Timing (episode, {step} steps, {total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
             f"({timing['select_action']/step*1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
@@ -90,12 +124,11 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     ``ParallelVectorEnv.step``) and the terminal observation is used for
     the buffer before the new observation is carried forward.
 
-    Returns a list of (reward, length) tuples — one per env, in order.
+    Returns a list of (reward, length) tuples - one per env, in order.
     """
     num_envs = venv.num_envs
     states = venv.reset()
 
-    # Track per-env episode statistics.
     ep_rewards = np.zeros(num_envs, dtype=np.float32)
     ep_lengths = np.zeros(num_envs, dtype=np.int32)
     finished = [False] * num_envs
@@ -115,12 +148,10 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
             actions.block_until_ready()
         t1 = time.perf_counter()
 
-        # Convert to NumPy for the env (MuJoCo expects CPU arrays).
         actions_np = np.asarray(actions, dtype=np.float32)
         next_states, rewards, dones, infos = venv.step(actions_np)
         t2 = time.perf_counter()
 
-        # For done envs, use the terminal observation in the buffer.
         terminal_next_states = next_states.copy()
         for i, done in enumerate(dones):
             if done and "terminal_obs" in infos[i]:
@@ -144,14 +175,12 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
             for k, v in metrics.items():
                 episode_metrics[k] = episode_metrics.get(k, 0.0) + v
 
-        # Accumulate rewards and check for finished envs.
         for i in range(num_envs):
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
             if dones[i] and not finished[i]:
                 finished[i] = True
                 finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
-                # Reset accumulator for the next episode in this env.
                 ep_rewards[i] = 0.0
                 ep_lengths[i] = 0
 
@@ -160,7 +189,6 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         if all(finished):
             break
 
-    # If some envs never finished within max_steps, record their partial stats.
     for i in range(num_envs):
         if finished_stats[i] is None:
             finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
@@ -172,7 +200,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     if profile:
         total = timing["select_action"] + timing["env_step"] + timing["update"]
         logger.info(
-            f"  Timing (vec, {num_envs} envs, {step + 1} meta-steps, {total:.1f}s total) — "
+            f"  Timing (vec, {num_envs} envs, {step + 1} meta-steps, {total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
             f"({timing['select_action']/(step+1)*1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
@@ -187,6 +215,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
 def train(args: dict, stats: StatsCollector):
     num_envs = args.get("num_envs", 1)
     use_vectorized = num_envs > 1
+    is_resume = args.get("resume") is not None and os.path.exists(args.get("resume", ""))
 
     if use_vectorized:
         venv = ParallelVectorEnv(
@@ -205,7 +234,6 @@ def train(args: dict, stats: StatsCollector):
 
     eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
-    # Initialize MPO learner components
     actor_net = ActorNetwork(action_dim)
     critic_net = CriticNetwork()
 
@@ -218,6 +246,9 @@ def train(args: dict, stats: StatsCollector):
     )
     if use_vectorized:
         buffer.set_num_envs(num_envs)
+
+    learner_state = None
+    episode = 0
 
     if args["resume"] and os.path.exists(args["resume"]):
         logger.info(f"Found existing state at {args['resume']}. Resuming...")
@@ -241,6 +272,23 @@ def train(args: dict, stats: StatsCollector):
 
     logger.info("Setup complete.")
 
+    # Curriculum phase initialization
+    use_curriculum = args.get("curriculum", False)
+    if use_curriculum:
+        current_phase = _PHASE_STAND
+        phase1_threshold = args.get("phase1_threshold", 5.0)
+        phase2_threshold = args.get("phase2_threshold", 15.0)
+        logger.info(f"Curriculum enabled: starting at phase {current_phase} "
+                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold})")
+        _propagate_phase(current_phase, use_vectorized,
+                         venv if use_vectorized else None,
+                         env if not use_vectorized else None,
+                         eval_env)
+    else:
+        current_phase = _PHASE_FULL
+        phase1_threshold = 0.0
+        phase2_threshold = 0.0
+
     duration_min = args.get("duration")
     use_duration = duration_min is not None
     max_episodes = args["episodes"]
@@ -258,23 +306,36 @@ def train(args: dict, stats: StatsCollector):
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
-    dummy_stats = {
-        "Episode_Reward": 0,
-        "Episode_Length": args["steps"],
-        "Buffer_Size": len(buffer),
-        "Episode_Loss": np.nan,
-    }
-    stats.log_stats_to_tb(0, dummy_stats)
+    if not is_resume:
+        dummy_stats = {
+            "Episode_Reward": 0,
+            "Episode_Length": args["steps"],
+            "Buffer_Size": len(buffer),
+            "Episode_Loss": np.nan,
+        }
+        stats.log_stats_to_tb(0, dummy_stats)
+
+    # Log hyperparameters to TensorBoard HParams tab (once, at start)
+    stats.log_hparams(args)
 
     profile = args.get("profile", False)
     train_start = time.perf_counter()
     time_limit_sec = duration_min * 60.0 if use_duration else None
 
-    episode = 0
+    shutdown_requested = False
+
+    def _signal_handler(signum, frame):
+        nonlocal shutdown_requested
+        logger.warning(f"Received signal {signum} - requesting graceful shutdown after current episode.")
+        shutdown_requested = True
+
+    previous_handlers = {}
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[sig] = signal.signal(sig, _signal_handler)
+
     try:
         while True:
             if use_vectorized:
-                # Each meta-episode yields num_envs completed episodes.
                 finished_stats, metrics = run_vectorized_episode(venv, agent, args, profile=profile)
                 for ep_reward, ep_length in finished_stats:
                     episode += 1
@@ -309,6 +370,17 @@ def train(args: dict, stats: StatsCollector):
                         if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                             logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
 
+                        if use_curriculum:
+                            new_phase = _check_phase_advancement(
+                                current_phase, mean_eval_reward,
+                                phase1_threshold, phase2_threshold)
+                            if new_phase != current_phase:
+                                current_phase = new_phase
+                                _propagate_phase(current_phase, use_vectorized,
+                                                 venv if use_vectorized else None,
+                                                 env if not use_vectorized else None,
+                                                 eval_env)
+
                     if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
                         logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
                         break
@@ -316,6 +388,8 @@ def train(args: dict, stats: StatsCollector):
                 if episode > max_episodes:
                     break
                 if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+                    break
+                if shutdown_requested:
                     break
             else:
                 episode += 1
@@ -361,7 +435,24 @@ def train(args: dict, stats: StatsCollector):
                     stats.save_checkpoint(agent.learner.state, "latest")
                     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                         logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
+
+                    if use_curriculum:
+                        new_phase = _check_phase_advancement(
+                            current_phase, mean_eval_reward,
+                            phase1_threshold, phase2_threshold)
+                        if new_phase != current_phase:
+                            current_phase = new_phase
+                            _propagate_phase(current_phase, use_vectorized,
+                                             venv if use_vectorized else None,
+                                             env if not use_vectorized else None,
+                                             eval_env)
+
+                if shutdown_requested:
+                    break
     finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+
         if use_vectorized:
             venv.close()
 

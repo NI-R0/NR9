@@ -4,7 +4,6 @@ import argparse
 def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
-    # General CLI args
     parser.add_argument("-t", "--task", type=str, choices=["train", "test"], default="train")
     parser.add_argument("-v", "--visualize", default=False, action="store_true",
                         help="Enables visualization. Does not work on headless servers or in WSL.")
@@ -18,11 +17,8 @@ def parse_args() -> dict:
     parser.add_argument("--resume", type=str, default=None,
                         help="Specifies path to some checkpoint file to continue training from.")
 
-    # Env-specific flags
     parser.add_argument("--env_domain", type=str, default="cartpole")
     parser.add_argument("--env_task", type=str, default="balance")
-
-    # Training-specific CLI args
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--duration", type=float, default=None,
@@ -33,7 +29,7 @@ def parse_args() -> dict:
     parser.add_argument("--warmup", type=int, default=1000,
                         help="Number of steps to fill buffer with before starting training.")
     parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=1e-4,
+    parser.add_argument("--lr", type=float, default=3e-4,
                         help="Adam learning rate (paper uses a single LR for all components).")
     parser.add_argument("--critic_lr", type=float, default=None,
                         help="Learning rate for critic. If not set, defaults to --lr (paper).")
@@ -54,7 +50,7 @@ def parse_args() -> dict:
                         help="N-step return length for the replay buffer and Bellman target.")
     parser.add_argument("--sgd_steps_per_learner_step", type=int, default=8,
                         help="Number of gradient steps per learner step (batch reuse, Acme).")
-    parser.add_argument("--target_update_period", type=int, default=100,
+    parser.add_argument("--target_update_period", type=int, default=25,
                         help="Hard target network update period in learner steps (Acme).")
     parser.add_argument("--grad_norm_clip", type=float, default=40.0,
                         help="Global gradient norm clip (Acme).")
@@ -67,8 +63,15 @@ def parse_args() -> dict:
     parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(
         "--num_eval_episodes", type=int, default=5, help="Number of episodes to run evaluation for.")
-
-    # Test-specific CLI args
+    parser.add_argument(
+        "--curriculum", default=False, action="store_true",
+        help="Enable curriculum learning with phased reward components (walker_3D_ball).")
+    parser.add_argument(
+        "--phase1_threshold", type=float, default=100.0,
+        help="Mean eval reward to advance from phase 0 (stand) to phase 1 (approach).")
+    parser.add_argument(
+        "--phase2_threshold", type=float, default=350.0,
+        help="Mean eval reward to advance from phase 1 (approach) to phase 2 (full).")
     parser.add_argument(
         "--load_dir", type=str, default=None,
         help="Path to a previous run directory to load a checkpoint from for testing.")

@@ -18,20 +18,15 @@ class ActorNetwork(nn.Module):
     def __call__(self, obs: jax.Array) -> distrax.MultivariateNormalDiag:
         dim = self.action_dim[0]
 
-        # MLP backbone: 100-100 (Control Suite setting from the paper)
-        x = nn.Dense(features=100)(obs)
+        x = nn.Dense(features=400)(obs)
+        x = nn.elu(x)
+        x = nn.Dense(features=400)(x)
+        x = nn.elu(x)
+        x = nn.Dense(features=400)(x)
         x = nn.elu(x)
 
-        x = nn.Dense(features=100)(x)
-        x = nn.elu(x)
-
-        # Mean head: unbounded (paper does not bound the mean)
         mu = nn.Dense(features=dim)(x)
 
-        # Scale head: produces log-std parameters, shifted so that the
-        # initial scale is approximately ``init_scale``.  We use a fixed
-        # bias of ``log(init_scale)`` and a zero-initialized weight so that
-        # at initialisation the output is exactly ``init_scale``.
         initial_log_std = jnp.log(
             jnp.expm1(self.init_scale)
         )
@@ -56,11 +51,11 @@ class CriticNetwork(nn.Module):
     def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
         inputs = jnp.concatenate([obs, action], axis=-1)
 
-        # MLP backbone: 200-200 (Control Suite setting from the paper)
-        x = nn.Dense(features=200)(inputs)
+        x = nn.Dense(features=400)(inputs)
         x = nn.elu(x)
-
-        x = nn.Dense(features=200)(x)
+        x = nn.Dense(features=400)(x)
+        x = nn.elu(x)
+        x = nn.Dense(features=400)(x)
         x = nn.elu(x)
 
         q_value = nn.Dense(features=1)(x)

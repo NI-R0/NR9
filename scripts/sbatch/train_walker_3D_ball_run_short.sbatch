@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=nr9_walk_run_short
+#SBATCH --job-name=nr9_walk3d_short
 #SBATCH --partition=gpu_a100_short,gpu_h100_short,gpu_h100,gpu_a100_il,gpu_h100_il,dev_gpu_h100,dev_gpu_a100_il
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
@@ -38,14 +38,14 @@
 #   2 = stagnant   (stop, likely bug - no reschedule)
 #
 # Usage:
-#   1st run (fresh):  sbatch --export=FRESH=1 scripts/sbatch/train_walker_run.sbatch
+#   1st run (fresh):  sbatch --export=FRESH=1 scripts/sbatch/train_walker_3D_ball_run_short.sbatch
 #   Subsequent runs: automatic (the script reschedules itself)
 #
 # To force a specific run to resume, set the RUN_DIR variable:
-#   sbatch --export=RUN_DIR=runs/run_20250101_120000 scripts/sbatch/train_walker_run.sbatch
+#   sbatch --export=RUN_DIR=runs/run_20250101_120000 scripts/sbatch/train_walker_3D_ball_run_short.sbatch
 #
 # To start fresh (skip auto-detect of old runs), set FRESH=1:
-#   sbatch --export=FRESH=1 scripts/sbatch/train_walker_run.sbatch
+#   sbatch --export=FRESH=1 scripts/sbatch/train_walker_3D_ball_run_short.sbatch
 
 export PATH="$HOME/.local/bin:$PATH"
 cd "$HOME/NR9"
@@ -101,12 +101,15 @@ else
 fi
 
 uv run python main.py \
-  --env_domain walker --env_task run \
+  --env_domain walker_3D_ball --env_task walk \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
   --eval_frequency "$NUM_ENVS" \
   --capacity 1000000 \
   --duration 25 \
+  --curriculum \
+  --phase1_threshold 100.0 \
+  --phase2_threshold 350.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?
@@ -152,6 +155,6 @@ elif [ $CONV_EXIT -eq 2 ]; then
 else
     echo "Training has NOT converged - scheduling next job..."
     NEW_JOB=$(sbatch --export=RUN_DIR="$ACTIVE_RUN",CONV_CONVERGENCE_EPISODES="$CONV_CONVERGENCE_EPISODES",CONV_THRESHOLD="$CONV_THRESHOLD",CONV_MIN_REWARD="$CONV_MIN_REWARD",CONV_STAGNATION_WINDOW="$CONV_STAGNATION_WINDOW",CONV_STAGNATION_THRESHOLD="$CONV_STAGNATION_THRESHOLD" \
-        scripts/sbatch/train_walker_run.sbatch)
+        scripts/sbatch/train_walker_3D_ball_run_short.sbatch)
     echo "Submitted: $NEW_JOB"
 fi
