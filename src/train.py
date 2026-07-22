@@ -254,8 +254,10 @@ def train(args: dict, stats: StatsCollector):
         logger.info(f"Found existing state at {args['resume']}. Resuming...")
         episode, learner_state, buffer, loaded_stats = stats.load_train_state(args["resume"])
 
-        # Update the passed-in stats object in place to preserve references
-        stats.__dict__.update(loaded_stats.__dict__)
+        # Restore serializable collector fields (loaded_stats is a dict:
+        # {"stats": ..., "best_eval_reward": ...})
+        stats.stats = loaded_stats["stats"]
+        stats.best_eval_reward = loaded_stats["best_eval_reward"]
         logger.success(f"Successfully resumed from episode {episode}")
 
     agent = SoccerAgent(
