@@ -1,3 +1,6 @@
+import os
+import pickle
+import signal
 import time
 import numpy as np
 import jax
@@ -20,7 +23,6 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     avg_metrics = {}
     updates_count = 0
 
-    # Per-step timing accumulators
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
     frames = [] if visualize else None
@@ -31,7 +33,6 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
         t0 = time.perf_counter()
         action = agent.select_action(state, explore=explore)
-        # Force JAX to finish compute so timing is accurate (not deferred to next np.asarray)
         if profile and hasattr(action, "block_until_ready"):
             action.block_until_ready()
         t1 = time.perf_counter()
@@ -41,7 +42,6 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
         if explore:
             metrics = agent.update(state, action, reward, next_state, done)
-            # Force JAX to finish update compute so timing is accurate
             if profile and isinstance(metrics, dict):
                 for v in metrics.values():
                     if hasattr(v, "block_until_ready"):
@@ -53,7 +53,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
                 for k, v in metrics.items():
                     episode_metrics[k] = episode_metrics.get(k, 0.0) + v
         else:
-            t3 = t2  # no update, keep timing consistent
+            t3 = t2
 
         timing["select_action"] += t1 - t0
         timing["env_step"] += t2 - t1
@@ -94,7 +94,6 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     num_envs = venv.num_envs
     states = venv.reset()
 
-    # Track per-env episode statistics.
     ep_rewards = np.zeros(num_envs, dtype=np.float32)
     ep_lengths = np.zeros(num_envs, dtype=np.int32)
     finished = [False] * num_envs
@@ -114,12 +113,10 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
             actions.block_until_ready()
         t1 = time.perf_counter()
 
-        # Convert to NumPy for the env (MuJoCo expects CPU arrays).
         actions_np = np.asarray(actions, dtype=np.float32)
         next_states, rewards, dones, infos = venv.step(actions_np)
         t2 = time.perf_counter()
 
-        # For done envs, use the terminal observation in the buffer.
         terminal_next_states = next_states.copy()
         for i, done in enumerate(dones):
             if done and "terminal_obs" in infos[i]:
@@ -143,14 +140,12 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
             for k, v in metrics.items():
                 episode_metrics[k] = episode_metrics.get(k, 0.0) + v
 
-        # Accumulate rewards and check for finished envs.
         for i in range(num_envs):
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
             if dones[i] and not finished[i]:
                 finished[i] = True
                 finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
-                # Reset accumulator for the next episode in this env.
                 ep_rewards[i] = 0.0
                 ep_lengths[i] = 0
 
@@ -159,7 +154,6 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         if all(finished):
             break
 
-    # If some envs never finished within max_steps, record their partial stats.
     for i in range(num_envs):
         if finished_stats[i] is None:
             finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
@@ -183,9 +177,30 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     return finished_stats, avg_metrics
 
 
+def _save_all(stats: StatsCollector, agent: SoccerAgent, buffer: NStepTransitionBuffer,
+              episode: int, name: str = "latest"):
+    """Save learner state, agent state, replay buffer, and training metadata."""
+    stats.save_checkpoint(agent.learner.state, name)
+
+    agent_state = {
+        "step_count": agent._step_count,
+        "random_key": agent.random_key,
+    }
+    agent_path = os.path.join(stats.checkpoint_dir, f"agent_{name}.pkl")
+    with open(agent_path, "wb") as f:
+        pickle.dump(agent_state, f)
+
+    buffer_path = os.path.join(stats.checkpoint_dir, f"buffer_{name}.pkl")
+    buffer.save_state(buffer_path)
+
+    stats.save_training_meta(episode)
+    logger.info(f"Saved checkpoint '{name}' (episode {episode}, buffer size {len(buffer)}).")
+
+
 def train(args: dict, stats: StatsCollector):
     num_envs = args.get("num_envs", 1)
     use_vectorized = num_envs > 1
+    is_resume = args.get("resume_dir") is not None
 
     if use_vectorized:
         venv = ParallelVectorEnv(
@@ -204,7 +219,6 @@ def train(args: dict, stats: StatsCollector):
 
     eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
-    # Initialize MPO learner components
     actor_net = ActorNetwork(action_dim)
     critic_net = CriticNetwork()
 
@@ -227,11 +241,34 @@ def train(args: dict, stats: StatsCollector):
         **args
     )
 
+    if is_resume:
+        learner_state = stats.load_checkpoint("latest")
+        agent.learner.state = learner_state
+        logger.info("Learner state loaded from checkpoint.")
+
+        agent_path = os.path.join(stats.checkpoint_dir, "agent_latest.pkl")
+        if os.path.isfile(agent_path):
+            with open(agent_path, "rb") as f:
+                agent_state = pickle.load(f)
+            agent._step_count = agent_state["step_count"]
+            agent.random_key = agent_state["random_key"]
+            logger.info(f"Agent state loaded (step_count={agent._step_count}).")
+        else:
+            logger.warning("No agent checkpoint found — step count starts at 0.")
+
+        buffer_path = os.path.join(stats.checkpoint_dir, "buffer_latest.pkl")
+        if os.path.isfile(buffer_path):
+            buffer.load_state(buffer_path)
+        else:
+            logger.warning("No buffer checkpoint found — starting with empty buffer.")
+
     logger.info("Setup complete.")
 
     duration_min = args.get("duration")
     use_duration = duration_min is not None
     max_episodes = args["episodes"]
+
+    episode = stats.resumed_episode
 
     if use_vectorized:
         logger.info(
@@ -246,23 +283,33 @@ def train(args: dict, stats: StatsCollector):
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
-    dummy_stats = {
-        "Episode_Reward": 0,
-        "Episode_Length": args["steps"],
-        "Buffer_Size": len(buffer),
-        "Episode_Loss": np.nan,
-    }
-    stats.log_stats_to_tb(0, dummy_stats)
+    if not is_resume:
+        dummy_stats = {
+            "Episode_Reward": 0,
+            "Episode_Length": args["steps"],
+            "Buffer_Size": len(buffer),
+            "Episode_Loss": np.nan,
+        }
+        stats.log_stats_to_tb(0, dummy_stats)
 
     profile = args.get("profile", False)
     train_start = time.perf_counter()
     time_limit_sec = duration_min * 60.0 if use_duration else None
 
-    episode = 0
+    shutdown_requested = False
+
+    def _signal_handler(signum, frame):
+        nonlocal shutdown_requested
+        logger.warning(f"Received signal {signum} — requesting graceful shutdown after current episode.")
+        shutdown_requested = True
+
+    previous_handlers = {}
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[sig] = signal.signal(sig, _signal_handler)
+
     try:
         while True:
             if use_vectorized:
-                # Each meta-episode yields num_envs completed episodes.
                 finished_stats, metrics = run_vectorized_episode(venv, agent, args, profile=profile)
                 for ep_reward, ep_length in finished_stats:
                     episode += 1
@@ -291,7 +338,7 @@ def train(args: dict, stats: StatsCollector):
                         stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
                         logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
                         stats.flush_stats_to_disk()
-                        stats.save_checkpoint(agent.learner.state, "latest")
+                        _save_all(stats, agent, buffer, episode, "latest")
                         if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                             logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
 
@@ -302,6 +349,8 @@ def train(args: dict, stats: StatsCollector):
                 if episode > max_episodes:
                     break
                 if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+                    break
+                if shutdown_requested:
                     break
             else:
                 episode += 1
@@ -342,14 +391,20 @@ def train(args: dict, stats: StatsCollector):
                     logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
 
                     stats.flush_stats_to_disk()
-                    stats.save_checkpoint(agent.learner.state, "latest")
+                    _save_all(stats, agent, buffer, episode, "latest")
                     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                         logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
+
+                if shutdown_requested:
+                    break
     finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+
         if use_vectorized:
             venv.close()
 
     stats.flush_stats_to_disk()
-    stats.save_checkpoint(agent.learner.state, "final")
+    _save_all(stats, agent, buffer, episode, "final")
     logger.info(f"Dumped training statistics to {stats.stats_file}.")
     logger.success("Training completed successfully!")

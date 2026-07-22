@@ -16,7 +16,6 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed):
     """Worker process: owns one Environment, handles step/reset commands."""
     parent_remote.close()
 
-    # Import here so each process gets its own MuJoCo state.
     from src.environment import Environment
 
     env = Environment(domain_name=domain_name, task_name=task_name, max_steps=max_steps)
@@ -28,7 +27,6 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed):
             if cmd == "step":
                 state, reward, done, info = env.step(data)
                 if done:
-                    # Store terminal observation for the buffer, then auto-reset.
                     info["terminal_obs"] = state
                     state = env.reset()
                 remote.send((state, reward, done, info))
@@ -76,7 +74,6 @@ class ParallelVectorEnv:
             self.remotes.append(parent_remote)
             self.processes.append(p)
 
-        # Query state/action dims from first worker.
         self.remotes[0].send(("get_spaces", None))
         self.state_dim, self.action_dim, self.action_min, self.action_max = \
             self.remotes[0].recv()

@@ -30,11 +30,14 @@ class StatsCollector:
     def __init__(self, args: dict, level: str = "INFO"):
         run_name = args["run_name"] or self._default_run_name()
         self.is_test = args["task"] == "test" and args["load_dir"]
+        self.is_resume = args["task"] == "train" and args.get("resume_dir") is not None
 
         if self.is_test:
             self.run_dir = os.path.join(os.getcwd(), args["load_dir"])
             self.outdir = os.path.join(self.run_dir, "test", run_name)
-
+        elif self.is_resume:
+            self.run_dir = os.path.join(os.getcwd(), args["resume_dir"])
+            self.outdir = self.run_dir
         else:
             self.run_dir = os.path.join(os.getcwd(), args["outdir"], run_name)
             self.outdir = self.run_dir
@@ -45,7 +48,15 @@ class StatsCollector:
         self.stats_file = os.path.join(self.outdir, "training_stats.json")
         self.config_file = os.path.join(self.outdir, "run_config.json")
 
-        os.makedirs(self.run_dir, exist_ok=self.is_test)
+        if self.is_resume:
+            if not os.path.isdir(self.run_dir):
+                raise FileNotFoundError(
+                    f"Resume directory '{self.run_dir}' does not exist. "
+                    "Cannot resume from a non-existent run."
+                )
+        else:
+            os.makedirs(self.run_dir, exist_ok=self.is_test)
+
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.tb_dir, exist_ok=True)
         os.makedirs(self.outdir, exist_ok=True)
@@ -65,7 +76,13 @@ class StatsCollector:
             return
 
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        self._dump_config(args)
+
+        if self.is_resume:
+            self._load_training_meta()
+            self._load_stats()
+        else:
+            self._dump_config(args)
+
         self._print_run_info(args)
 
     @staticmethod
@@ -148,6 +165,54 @@ Evaluation Configuration:
         logger.info(msg)
 
     # Public methods ####################################
+
+    def save_training_meta(self, episode: int):
+        """Persist training-level metadata (episode count, best eval reward).
+
+        Called alongside checkpoint saves so that a resumed run can pick
+        up exactly where the previous run left off.
+        """
+        meta = {
+            "episode": episode,
+            "best_eval_reward": self.best_eval_reward,
+        }
+        path = os.path.join(self.checkpoint_dir, "training_meta.json")
+        with open(path, "w") as f:
+            json.dump(meta, f, indent=4)
+
+    def _load_training_meta(self):
+        """Load training-level metadata from a previous run."""
+        path = os.path.join(self.checkpoint_dir, "training_meta.json")
+        if not os.path.isfile(path):
+            logger.warning(
+                f"No training_meta.json found in {self.checkpoint_dir}. "
+                "Resuming without episode count / best eval reward — "
+                "episode counter starts at 0, best eval reward at -inf."
+            )
+            return
+
+        with open(path) as f:
+            meta = json.load(f)
+        self._resumed_episode = meta.get("episode", 0)
+        self.best_eval_reward = meta.get("best_eval_reward", -float("inf"))
+        logger.info(
+            f"Resuming from episode {self._resumed_episode} "
+            f"with best eval reward {self.best_eval_reward:.2f}."
+        )
+
+    @property
+    def resumed_episode(self) -> int:
+        """Episode count from a previous run, or 0 for a fresh start."""
+        return getattr(self, "_resumed_episode", 0)
+
+    def _load_stats(self):
+        """Load previously saved training stats so they are preserved on resume."""
+        if os.path.isfile(self.stats_file):
+            with open(self.stats_file) as f:
+                self.stats = json.load(f)
+            logger.info(f"Loaded {len(self.stats)} episodes of stats from {self.stats_file}.")
+        else:
+            logger.warning(f"No stats file found at {self.stats_file} — starting with empty stats.")
 
     def log_stats_to_tb(self, episode: int, stats: dict):
         self.stats.setdefault(episode, {}).update(stats)

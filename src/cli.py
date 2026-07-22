@@ -4,7 +4,6 @@ import argparse
 def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
-    # General CLI args
     parser.add_argument("-t", "--task", type=str, choices=["train", "test"], default="train")
     parser.add_argument("-v", "--visualize", default=False, action="store_true",
                         help="Enables visualization. Does not work on headless servers or in WSL.")
@@ -15,12 +14,12 @@ def parse_args() -> dict:
     parser.add_argument("--run_name", default=None, type=str)
     parser.add_argument("--profile", default=False, action="store_true",
                         help="Enable profiling: cProfile + per-step timing breakdown.")
-
-    # Env-specific flags
+    parser.add_argument(
+        "--resume_dir", type=str, default=None,
+        help="Path to a previous run directory to resume training from. "
+             "Loads learner state, replay buffer, episode counter, and best eval reward.")
     parser.add_argument("--env_domain", type=str, default="cartpole")
     parser.add_argument("--env_task", type=str, default="balance")
-
-    # Training-specific CLI args
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--duration", type=float, default=None,
@@ -65,8 +64,6 @@ def parse_args() -> dict:
     parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(
         "--num_eval_episodes", type=int, default=5, help="Number of episodes to run evaluation for.")
-
-    # Test-specific CLI args
     parser.add_argument(
         "--load_dir", type=str, default=None,
         help="Path to a previous run directory to load a checkpoint from for testing.")

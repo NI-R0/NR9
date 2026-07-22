@@ -29,16 +29,11 @@ import os
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = .025
-
-# Height of head above which stand reward is 1.
 _STAND_HEIGHT = 0.7
-
-# Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 10
 FILE = 'hipp_walker.xml'
 
-# Touch sensor names for non-foot limbs (used for reward penalty).
 _NON_FOOT_TOUCHES = (
     'right_hip_touch',
     'left_hip_touch',
@@ -48,7 +43,6 @@ _NON_FOOT_TOUCHES = (
     'left_shin_touch',
 )
 
-# All touch sensor names, including feet (used for observations).
 _ALL_TOUCHES = _NON_FOOT_TOUCHES + (
     'right_right_foot_touch',
     'left_right_foot_touch',
@@ -56,7 +50,6 @@ _ALL_TOUCHES = _NON_FOOT_TOUCHES + (
     'left_left_foot_touch',
 )
 
-# Force and torque sensor names at hip, knee and ankle joints.
 _FORCE_TORQUE_SENSORS = (
     'left_hip_force', 'right_hip_force',
     'left_knee_force', 'right_knee_force',
@@ -74,7 +67,6 @@ def get_model_and_assets():
   xml_path = os.path.join(os.path.dirname(__file__), FILE)
   with open(xml_path, 'r') as f:
     xml_string = f.read()
-  # Map the common includes to the actual assets from dm_control
   assets = {f"./common/{k}": v for k, v in common.ASSETS.items()}
   return xml_string, assets
 
@@ -149,7 +141,7 @@ class Physics(mujoco.Physics):
 
   def joint_angles(self):
     """Returns the state without global orientation or position."""
-    return self.data.qpos[7:].copy()  # Skip the 7 DoFs of the free root joint.
+    return self.data.qpos[7:].copy()
   
   def touch_forces(self):
     """Returns touch forces of all limbs (including feet) as a 1-D array."""
@@ -204,11 +196,9 @@ class Hipp_walker(base.Task):
       physics: An instance of `Physics`.
 
     """
-    # Find a collision-free random initial configuration.
     penetrating = True
     while penetrating:
       randomizers.randomize_limited_and_rotational_joints(physics, self.random)
-      # Check for collisions.
       physics.after_reset()
       penetrating = physics.data.ncon > 0
     super().initialize_episode(physics)
@@ -231,15 +221,8 @@ class Hipp_walker(base.Task):
 
   def get_reward(self, physics):
      """Returns a reward to the agent."""
-     # --- Base height reward: tanh gives a non-zero gradient everywhere ---
-     # Even when the agent is on the ground (z≈0.3), tanh(0.3)=0.29 provides
-     # a learning signal. tolerance alone returns 0 below the margin, creating
-     # a "no gradient → no learning" deadlock.
      height_reward = np.tanh(physics.head_height())
 
-     # --- Bonus for reaching stand height (0 below 0.45m, 1 above 0.7m) ---
-     # Adds an extra incentive to stand fully upright, complementing tanh
-     # which saturates around z≈1.5.
      stand_bonus = rewards.tolerance(
          physics.head_height(),
          bounds=(_STAND_HEIGHT, float('inf')),
@@ -248,22 +231,12 @@ class Hipp_walker(base.Task):
          sigmoid='linear',
      )
 
-     # --- Touch penalty: non-foot limbs contacting ground, capped at 1.0 ---
-     # Without the cap, up to 4 limbs can each contribute ~1.0, drowning out
-     # the height reward (~0.9) and creating an extremely noisy signal.
      touch_penalty = sum(
          np.tanh(physics.named.data.sensordata[name].item())
          for name in _NON_FOOT_TOUCHES
      )
      touch_penalty = min(touch_penalty, 1.0)
-
-     # --- Combined positive reward ---
-     # Touch penalty weighted 0.5× to reduce reward variance (was 1.0×).
-     # The bimodal nature (standing=+0.15/step vs falling=-0.85/step) causes
-     # high Q-value variance and destabilises the critic.
      reward = height_reward + 0.5 * stand_bonus - 0.5 * touch_penalty
-
-     # --- Small control penalty (mild, multiplicative) ---
      small_control = rewards.tolerance(physics.control(), margin=1,
                                        value_at_margin=0,
                                        sigmoid='quadratic').mean()

@@ -29,11 +29,7 @@ import os
 
 _DEFAULT_TIME_LIMIT = 10
 _CONTROL_TIMESTEP = .005
-
-# Height of head above which stand reward is 1.
 _STAND_HEIGHT = 1.4
-
-# Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 10
 FILE = 'humanoid_custom.xml'
@@ -47,7 +43,6 @@ def get_model_and_assets():
   xml_path = os.path.join(os.path.dirname(__file__), FILE)
   with open(xml_path, 'r') as f:
     xml_string = f.read()
-  # Map the common includes to the actual assets from dm_control
   assets = {f"./common/{k}": v for k, v in common.ASSETS.items()}
   return xml_string, assets
 
@@ -126,7 +121,7 @@ class Physics(mujoco.Physics):
 
   def joint_angles(self):
     """Returns the state without global orientation or position."""
-    return self.data.qpos[7:].copy()  # Skip the 7 DoFs of the free root joint.
+    return self.data.qpos[7:].copy()
 
   def extremities(self):
     """Returns end effector positions in egocentric frame."""
@@ -167,24 +162,10 @@ class Humanoid(base.Task):
       physics: An instance of `Physics`.
 
     """
-    # # Find a collision-free random initial configuration.
-    # penetrating = True
-    # while penetrating:
-    #   randomizers.randomize_limited_and_rotational_joints(physics, self.random)
-    #   # Check for collisions.
-    #   physics.after_reset()
-    #   penetrating = physics.data.ncon > 0
-    # super().initialize_episode(physics)
-
-    # Set to default 'standing' pose defined in XML
     physics.reset() 
-    
-    # Add only a TINY bit of noise to joint positions
     qpos = physics.data.qpos.copy()
     qpos[7:] += self.random.uniform(-0.2, 0.2, size=len(qpos[7:]))
     physics.data.qpos[:] = qpos
-    
-    # Lift him slightly off the ground so he doesn't clip
     physics.data.qpos[2] = 1.3
     
     physics.after_reset()
@@ -206,23 +187,16 @@ class Humanoid(base.Task):
     return obs
 
   def get_reward(self, physics):
-    # Now head_height() will return ~1.5m if standing
     head_h = physics.true_head_height()
-    
-    # Standing: Full reward at 1.4m, starts giving points at 0.8m
     standing = rewards.tolerance(head_h,
                                  bounds=(1.4, float('inf')),
                                  margin=0.6) 
-    
-    # Upright: Torso must be vertical
+
     upright = rewards.tolerance(physics.torso_upright(),
                                 bounds=(0.9, float('inf')), 
                                 margin=0.4)
-    
-    # Multiplicative: must have both to get points
     stand_reward = standing * upright
-
-    # Control penalty: Encourages efficiency
+    
     small_control = rewards.tolerance(physics.control(), margin=1,
                                       value_at_margin=0,
                                       sigmoid='quadratic').mean()

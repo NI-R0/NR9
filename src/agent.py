@@ -32,9 +32,6 @@ class SoccerAgent:
         self.buffer = buffer
         self.warmup = kwargs.get("warmup", 1000)
         self.batch_size = kwargs.get("batch_size", 256)
-        # Update every N environment steps (Acme-style rhythm control).
-        # The learner internally performs sgd_steps_per_learner_step gradient
-        # steps on the same batch each time update() is called.
         self.update_every = kwargs.get("update_every", 1)
         self._step_count = 0
 

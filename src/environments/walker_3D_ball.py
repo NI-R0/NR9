@@ -40,29 +40,17 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = .025
-
-# Minimal height of torso over foot above which stand reward is 1.
 _STAND_HEIGHT = 1.2
-
-# Horizontal speeds (meters/second) above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 8
-
-# --- Task-specific constants -------------------------------------------
 _BALL_RADIUS = 0.2
 _BALL_START_POS = np.array([1.5, 0.0, 0.15])
-
-# Target placement radius (distance from origin in xy-plane).
 _TARGET_MIN_DIST = 2.0
 _TARGET_MAX_DIST = 5.0
-
-# Curriculum: target zone half-size (xy).  Starts large, shrinks on success.
-_TARGET_SIZE_MAX = 1.0       # initial half-size (meters)
-_TARGET_SIZE_MIN = 0.2       # smallest half-size
-_TARGET_SHRINK = 0.1         # decrement per curriculum step
-_SUCCESS_THRESHOLD = 5       # consecutive successes needed to shrink
-
-# Reward weights.
+_TARGET_SIZE_MAX = 1.0
+_TARGET_SIZE_MIN = 0.2
+_TARGET_SHRINK = 0.1
+_SUCCESS_THRESHOLD = 5
 _W_STAND = 0.2
 _W_APPROACH = 0.3
 _W_KICK = 0.5
@@ -81,8 +69,6 @@ def get_model_and_assets():
   assets = {f"./common/{k}": v for k, v in common.ASSETS.items()}
   return xml_string, assets
 
-
-# --- Task factory helpers ------------------------------------------------
 
 def _make_task(move_speed, time_limit, random, environment_kwargs):
   physics = Physics.from_xml_string(*get_model_and_assets())
@@ -110,8 +96,6 @@ def run(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
   """Returns the Run+Kick task."""
   return _make_task(_RUN_SPEED, time_limit, random, environment_kwargs)
 
-
-# --- Physics -----------------------------------------------------------
 
 class Physics(mujoco.Physics):
   """Physics simulation with additional features for the Walker_3D_Ball domain."""
@@ -179,15 +163,12 @@ class Physics(mujoco.Physics):
 
   def set_target_size(self, half_size):
     """Sets the target zone geom half-size in xy (box)."""
-    # model.geom_size is a (ngeom, 3) array; update the 'target_zone' row.
     self.named.model.geom_size['target_zone'] = [half_size, half_size, 0.05]
 
   def get_target_size(self):
     """Returns the current target zone half-size (xy)."""
     return float(self.named.model.geom_size['target_zone', 0])
 
-
-# --- Task ---------------------------------------------------------------
 
 class Walker3DBall(base.Task):
   """3D walker with a multi-stage ball-kick reward and target curriculum.
@@ -216,14 +197,10 @@ class Walker3DBall(base.Task):
         seed automatically (default).
     """
     self._move_speed = move_speed
-    # Curriculum state.
     self._target_size = _TARGET_SIZE_MAX
     self._consecutive_successes = 0
-    # Per-episode bookkeeping.
     self._target_pos = None
     super().__init__(random=random)
-
-  # -- Curriculum API ---------------------------------------------------
 
   def register_success(self):
     """Call when the agent successfully hits the target during evaluation.
@@ -242,8 +219,6 @@ class Walker3DBall(base.Task):
     """Reset the consecutive-success counter."""
     self._consecutive_successes = 0
 
-  # -- Episode lifecycle ------------------------------------------------
-
   def initialize_episode(self, physics):
     """Sets the state of the environment at the start of each episode.
 
@@ -251,16 +226,13 @@ class Walker3DBall(base.Task):
     joints, places the ball at its start position, and randomly places the
     target.  Also applies the current curriculum target size.
     """
-    # Reset free joint to nominal pose (upright at start height).
     physics.named.data.qpos['root'] = [0.0, 0.0, 1.3, 1.0, 0.0, 0.0, 0.0]
     physics.named.data.qvel['root'] = 0.0
     randomizers.randomize_limited_and_rotational_joints(physics, self.random)
 
-    # Reset ball to start position with zero velocity.
     physics.named.data.qpos['ball_joint'] = list(_BALL_START_POS) + [1, 0, 0, 0]
     physics.named.data.qvel['ball_joint'] = 0.0
 
-    # Apply curriculum target size and place target randomly.
     physics.set_target_size(self._target_size)
     self._place_target(physics)
 
@@ -280,8 +252,6 @@ class Walker3DBall(base.Task):
     physics.named.data.qvel['ball_joint'] = 0.0
     self._place_target(physics)
 
-  # -- Observation ------------------------------------------------------
-
   def get_observation(self, physics):
     """Returns an observation of body state, ball, and target."""
     obs = collections.OrderedDict()
@@ -289,15 +259,12 @@ class Walker3DBall(base.Task):
     obs['height'] = physics.torso_height()
     obs['velocity'] = physics.velocity()
     obs['ball_position'] = physics.ball_position()
-    obs['ball_velocity'] = physics.ball_velocity()[:3]   # linear vx, vy, vz
+    obs['ball_velocity'] = physics.ball_velocity()[:3]
     obs['target_position'] = physics.target_xy()
     return obs
 
-  # -- Reward -----------------------------------------------------------
-
   def get_reward(self, physics):
     """Multi-stage reward: stand + approach + kick + target bonus."""
-    # --- Stage 1: Stand ---
     standing = rewards.tolerance(physics.torso_height(),
                                  bounds=(_STAND_HEIGHT, float('inf')),
                                  margin=_STAND_HEIGHT / 2)
@@ -308,16 +275,12 @@ class Walker3DBall(base.Task):
     ball_xy = physics.ball_xy()
     target_xy = physics.target_xy()
     target_size = physics.get_target_size()
-
-    # --- Stage 2: Approach (walk toward ball while upright) ---
     dist_to_ball = np.linalg.norm(ball_xy - torso_xy)
-    # Normalised proximity: 1 when at the ball, 0 when far.
     approach = rewards.tolerance(dist_to_ball,
                                  bounds=(0, _BALL_RADIUS),
                                  margin=3.0,
                                  value_at_margin=0.1,
                                  sigmoid='linear')
-    # Optional move-speed component for forward velocity.
     if self._move_speed > 0:
       move_reward = rewards.tolerance(physics.horizontal_velocity(),
                                       bounds=(self._move_speed, float('inf')),
@@ -328,7 +291,6 @@ class Walker3DBall(base.Task):
     else:
       approach_reward = approach
 
-    # --- Stage 3: Kick (ball velocity toward target) ---
     ball_vel_xy = physics.ball_linear_velocity_xy()
     ball_to_target = target_xy - ball_xy
     ball_to_target_norm = np.linalg.norm(ball_to_target)
@@ -336,17 +298,13 @@ class Walker3DBall(base.Task):
       dir_to_target = ball_to_target / ball_to_target_norm
     else:
       dir_to_target = np.array([1.0, 0.0])
-    # Speed of ball along the target direction (m/s).
     ball_speed_toward = float(np.dot(ball_vel_xy, dir_to_target))
-    # Bounded kick reward: tanh so it saturates around ~10 m/s.
     kick_reward = np.tanh(ball_speed_toward / 5.0)
 
-    # --- Stage 4: Target hit ---
     dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
     target_bonus = 0.0
     if dist_ball_to_target < target_size + _BALL_RADIUS:
       target_bonus = _TARGET_BONUS
-      # Re-place ball and target so the episode continues.
       self._reset_ball_and_target(physics)
 
     reward = (_W_STAND * stand_reward
