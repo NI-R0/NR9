@@ -1,6 +1,6 @@
 import time
 import numpy as np
-import jax
+import os
 from loguru import logger
 from src.collector import StatsCollector
 from src.buffer import NStepTransitionBuffer
@@ -8,6 +8,7 @@ from src.environment import Environment
 from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
 from src.vector_env import ParallelVectorEnv
+
 
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False, profile: bool = False):
@@ -218,6 +219,14 @@ def train(args: dict, stats: StatsCollector):
     if use_vectorized:
         buffer.set_num_envs(num_envs)
 
+    if args["resume"] and os.path.exists(args["resume"]):
+        logger.info(f"Found existing state at {args['resume']}. Resuming...")
+        episode, learner_state, buffer, loaded_stats = stats.load_train_state(args["resume"])
+
+        # Update the passed-in stats object in place to preserve references
+        stats.__dict__.update(loaded_stats.__dict__)
+        logger.success(f"Successfully resumed from episode {episode}")
+
     agent = SoccerAgent(
         observation_shape=state_dim,
         action_shape=action_dim,
@@ -226,6 +235,9 @@ def train(args: dict, stats: StatsCollector):
         buffer=buffer,
         **args
     )
+
+    if learner_state is not None:
+        agent.learner.state = learner_state
 
     logger.info("Setup complete.")
 
@@ -289,7 +301,9 @@ def train(args: dict, stats: StatsCollector):
                             eval_rewards.append(eval_reward)
                         mean_eval_reward = np.mean(eval_rewards)
                         stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-                        logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+                        logger.info(
+                            f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+                        stats.save_train_state(episode, agent.learner.state, buffer, stats)
                         stats.flush_stats_to_disk()
                         stats.save_checkpoint(agent.learner.state, "latest")
                         if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
@@ -339,8 +353,10 @@ def train(args: dict, stats: StatsCollector):
 
                     mean_eval_reward = np.mean(eval_rewards)
                     stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-                    logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+                    logger.info(
+                        f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
 
+                    stats.save_train_state(episode, agent.learner.state, buffer, stats)
                     stats.flush_stats_to_disk()
                     stats.save_checkpoint(agent.learner.state, "latest")
                     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
@@ -349,6 +365,7 @@ def train(args: dict, stats: StatsCollector):
         if use_vectorized:
             venv.close()
 
+    stats.save_train_state(episode, agent.learner.state, buffer, stats)
     stats.flush_stats_to_disk()
     stats.save_checkpoint(agent.learner.state, "final")
     logger.info(f"Dumped training statistics to {stats.stats_file}.")
