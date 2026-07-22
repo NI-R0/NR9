@@ -15,6 +15,8 @@ def parse_args() -> dict:
     parser.add_argument("--run_name", default=None, type=str)
     parser.add_argument("--profile", default=False, action="store_true",
                         help="Enable profiling: cProfile + per-step timing breakdown.")
+    parser.add_argument("--continue", type=str, default=None,
+                        help="Specifies path to some checkpoint file to continue training from.")
 
     # Env-specific flags
     parser.add_argument("--env_domain", type=str, default="cartpole")

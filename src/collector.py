@@ -3,6 +3,7 @@ import sys
 import json
 import pickle
 import logging
+import cloudpickle
 from loguru import logger
 from tensorboardX import SummaryWriter
 
@@ -189,6 +190,26 @@ Evaluation Configuration:
             self.best_eval_reward = eval_reward
             self.save_checkpoint(state, "best_ckpt")
         return improved
+
+    def save_train_state(self, episode: int, learner_state, buffer, collector):
+        tmp_path = os.path.join(self.checkpoint_dir, "state.tmp")
+        path = os.path.join(self.checkpoint_dir, "state.pkl")
+        state = {
+            "episode": episode,
+            "learner_state": learner_state,
+            "buffer": buffer,
+            "collector": collector
+        }
+        with open(tmp_path, "wb") as f:
+            cloudpickle.dump(state, f)
+
+        os.replace(tmp_path, path)
+        logger.debug(f"Full training state saved to {path}.")
+
+    def load_train_state(filepath: str):
+        with open(filepath, "rb") as f:
+            state = cloudpickle.load(f)
+        return state["episode"], state["learner_state"], state["buffer"], state["collector"]
 
     def close(self):
         self.writer.close()
