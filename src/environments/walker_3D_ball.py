@@ -288,9 +288,9 @@ class Walker3DBall(base.Task):
   def get_reward(self, physics):
     """Multi-stage reward weighted by curriculum phase.
 
-    Phase 0 (stand):   stand_reward only
-    Phase 1 (approach): stand + approach, kick clamped to >= 0
-    Phase 2 (full):    stand + approach + kick (full, can be negative) + target bonus
+    Phase 0 (stand):    stand
+    Phase 1 (approach): stand + approach
+    Phase 2 (full):     stand + approach + kick (can be negative) + target bonus
     """
     standing = rewards.tolerance(physics.torso_height(),
                                  bounds=(_STAND_HEIGHT, float('inf')),
@@ -332,11 +332,8 @@ class Walker3DBall(base.Task):
     if self._phase == PHASE_STAND:
       reward = _W_STAND * stand_reward
     elif self._phase == PHASE_APPROACH:
-      # Kick clamped to >= 0 so ball-rolling-away doesn't penalize
-      kick_reward = max(0.0, kick_reward)
       reward = (_W_STAND * stand_reward
-                + _W_APPROACH * approach_reward
-                + _W_KICK * kick_reward)
+                + _W_APPROACH * approach_reward)
     else:
       # PHASE_FULL: all components
       dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
