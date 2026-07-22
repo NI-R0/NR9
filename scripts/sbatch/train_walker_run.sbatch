@@ -38,17 +38,25 @@
 #   2 = stagnant   (stop, likely bug - no reschedule)
 #
 # Usage:
-#   1st run (fresh):  sbatch --export=FRESH=1 scripts/sbatch/train_walker_run_short.sbatch
+#   1st run (fresh):  sbatch --export=FRESH=1 scripts/sbatch/train_walker_run.sbatch
 #   Subsequent runs: automatic (the script reschedules itself)
 #
 # To force a specific run to resume, set the RUN_DIR variable:
-#   sbatch --export=RUN_DIR=runs/run_20250101_120000 scripts/sbatch/train_walker_run_short.sbatch
+#   sbatch --export=RUN_DIR=runs/run_20250101_120000 scripts/sbatch/train_walker_run.sbatch
 #
 # To start fresh (skip auto-detect of old runs), set FRESH=1:
-#   sbatch --export=FRESH=1 scripts/sbatch/train_walker_run_short.sbatch
+#   sbatch --export=FRESH=1 scripts/sbatch/train_walker_run.sbatch
 
 export PATH="$HOME/.local/bin:$PATH"
 cd "$HOME/NR9"
+mkdir -p logs
+
+# Environment variables for MuJoCo and to avoid subprocesses creating competing threads
+export MUJOCO_GL="egl"
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
 uv sync --frozen
 
 CPUS=${SLURM_CPUS_PER_TASK:-16}
@@ -65,18 +73,23 @@ RESUME_ARGS=""
 ACTIVE_RUN=""
 if [ -n "$RUN_DIR" ]; then
     echo "RUN_DIR explicitly set to: $RUN_DIR"
-    RESUME_ARGS="--resume_dir $RUN_DIR"
+    STATE_FILE="$RUN_DIR/checkpoints/state.pkl"
+    if [ -f "$STATE_FILE" ]; then
+        RESUME_ARGS="--resume $STATE_FILE"
+    else
+        echo "WARNING: $STATE_FILE not found - starting fresh in $RUN_DIR"
+    fi
     ACTIVE_RUN="$RUN_DIR"
 elif [ "${FRESH:-0}" = "1" ]; then
     echo "FRESH=1 set - starting a new run, ignoring existing runs."
 elif [ -d "runs" ]; then
     LATEST_RUN=$(find runs -maxdepth 1 -type d -name "run_*" \
-        -exec sh -c '[ -f "$1/checkpoints/latest.pkl" ] && echo "$1"' _ {} \; \
+        -exec sh -c '[ -f "$1/checkpoints/state.pkl" ] && echo "$1"' _ {} \; \
         | xargs -I{} stat -c '%Y {}' {} 2>/dev/null \
         | sort -rn | head -1 | awk '{print $2}')
     if [ -n "$LATEST_RUN" ]; then
         echo "Auto-detected previous run: $LATEST_RUN"
-        RESUME_ARGS="--resume_dir $LATEST_RUN"
+        RESUME_ARGS="--resume $LATEST_RUN/checkpoints/state.pkl"
         ACTIVE_RUN="$LATEST_RUN"
     fi
 fi
@@ -106,7 +119,7 @@ fi
 
 if [ -z "$ACTIVE_RUN" ]; then
     ACTIVE_RUN=$(find runs -maxdepth 1 -type d -name "run_*" \
-        -exec sh -c '[ -f "$1/checkpoints/latest.pkl" ] && echo "$1"' _ {} \; \
+        -exec sh -c '[ -f "$1/checkpoints/state.pkl" ] && echo "$1"' _ {} \; \
         | xargs -I{} stat -c '%Y {}' {} 2>/dev/null \
         | sort -rn | head -1 | awk '{print $2}')
 fi
@@ -139,6 +152,6 @@ elif [ $CONV_EXIT -eq 2 ]; then
 else
     echo "Training has NOT converged - scheduling next job..."
     NEW_JOB=$(sbatch --export=RUN_DIR="$ACTIVE_RUN",CONV_CONVERGENCE_EPISODES="$CONV_CONVERGENCE_EPISODES",CONV_THRESHOLD="$CONV_THRESHOLD",CONV_MIN_REWARD="$CONV_MIN_REWARD",CONV_STAGNATION_WINDOW="$CONV_STAGNATION_WINDOW",CONV_STAGNATION_THRESHOLD="$CONV_STAGNATION_THRESHOLD" \
-        scripts/sbatch/train_walker_run_short.sbatch)
+        scripts/sbatch/train_walker_run.sbatch)
     echo "Submitted: $NEW_JOB"
 fi

@@ -10,6 +10,14 @@
 
 export PATH="$HOME/.local/bin:$PATH"
 cd "$HOME/NR9"
+mkdir -p logs
+
+# Environment variables for MuJoCo and to avoid subprocesses creating competing threads
+export MUJOCO_GL="egl"
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
 uv sync --frozen
 
 CPUS=${SLURM_CPUS_PER_TASK:-16}

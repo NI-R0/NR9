@@ -1,9 +1,8 @@
 import os
-import pickle
 import signal
 import time
 import numpy as np
-import jax
+import os
 from loguru import logger
 from src.collector import StatsCollector
 from src.buffer import NStepTransitionBuffer
@@ -213,30 +212,10 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     return finished_stats, avg_metrics
 
 
-def _save_all(stats: StatsCollector, agent: SoccerAgent, buffer: NStepTransitionBuffer,
-              episode: int, name: str = "latest", phase: int = 0):
-    """Save learner state, agent state, replay buffer, and training metadata."""
-    stats.save_checkpoint(agent.learner.state, name)
-
-    agent_state = {
-        "step_count": agent._step_count,
-        "random_key": agent.random_key,
-    }
-    agent_path = os.path.join(stats.checkpoint_dir, f"agent_{name}.pkl")
-    with open(agent_path, "wb") as f:
-        pickle.dump(agent_state, f)
-
-    buffer_path = os.path.join(stats.checkpoint_dir, f"buffer_{name}.pkl")
-    buffer.save_state(buffer_path)
-
-    stats.save_training_meta(episode, phase)
-    logger.info(f"Saved checkpoint '{name}' (episode {episode}, phase {phase}, buffer size {len(buffer)}).")
-
-
 def train(args: dict, stats: StatsCollector):
     num_envs = args.get("num_envs", 1)
     use_vectorized = num_envs > 1
-    is_resume = args.get("resume_dir") is not None
+    is_resume = args.get("resume") is not None and os.path.exists(args.get("resume", ""))
 
     if use_vectorized:
         venv = ParallelVectorEnv(
@@ -268,6 +247,17 @@ def train(args: dict, stats: StatsCollector):
     if use_vectorized:
         buffer.set_num_envs(num_envs)
 
+    learner_state = None
+    episode = 0
+
+    if args["resume"] and os.path.exists(args["resume"]):
+        logger.info(f"Found existing state at {args['resume']}. Resuming...")
+        episode, learner_state, buffer, loaded_stats = stats.load_train_state(args["resume"])
+
+        # Update the passed-in stats object in place to preserve references
+        stats.__dict__.update(loaded_stats.__dict__)
+        logger.success(f"Successfully resumed from episode {episode}")
+
     agent = SoccerAgent(
         observation_shape=state_dim,
         action_shape=action_dim,
@@ -277,33 +267,15 @@ def train(args: dict, stats: StatsCollector):
         **args
     )
 
-    if is_resume:
-        learner_state = stats.load_checkpoint("latest")
+    if learner_state is not None:
         agent.learner.state = learner_state
-        logger.info("Learner state loaded from checkpoint.")
-
-        agent_path = os.path.join(stats.checkpoint_dir, "agent_latest.pkl")
-        if os.path.isfile(agent_path):
-            with open(agent_path, "rb") as f:
-                agent_state = pickle.load(f)
-            agent._step_count = agent_state["step_count"]
-            agent.random_key = agent_state["random_key"]
-            logger.info(f"Agent state loaded (step_count={agent._step_count}).")
-        else:
-            logger.warning("No agent checkpoint found - step count starts at 0.")
-
-        buffer_path = os.path.join(stats.checkpoint_dir, "buffer_latest.pkl")
-        if os.path.isfile(buffer_path):
-            buffer.load_state(buffer_path)
-        else:
-            logger.warning("No buffer checkpoint found - starting with empty buffer.")
 
     logger.info("Setup complete.")
 
     # Curriculum phase initialization
     use_curriculum = args.get("curriculum", False)
     if use_curriculum:
-        current_phase = stats.resumed_phase if is_resume else _PHASE_STAND
+        current_phase = _PHASE_STAND
         phase1_threshold = args.get("phase1_threshold", 5.0)
         phase2_threshold = args.get("phase2_threshold", 15.0)
         logger.info(f"Curriculum enabled: starting at phase {current_phase} "
@@ -320,8 +292,6 @@ def train(args: dict, stats: StatsCollector):
     duration_min = args.get("duration")
     use_duration = duration_min is not None
     max_episodes = args["episodes"]
-
-    episode = stats.resumed_episode
 
     if use_vectorized:
         logger.info(
@@ -391,27 +361,12 @@ def train(args: dict, stats: StatsCollector):
                             )
                             eval_rewards.append(eval_reward)
                         mean_eval_reward = np.mean(eval_rewards)
-                        eval_reward_std = float(np.std(eval_rewards))
-                        elapsed = time.perf_counter() - train_start
-                        total_steps = agent._step_count
-                        steps_per_sec = total_steps / elapsed if elapsed > 0 else 0.0
-                        eval_stats = {
-                            "Mean_Eval_Reward": mean_eval_reward,
-                            "Eval_Reward_Std": eval_reward_std,
-                            "Best_Eval_Reward": stats.best_eval_reward,
-                            "Agent_Step_Count": total_steps,
-                            "Buffer_Capacity_Used": len(buffer) / args["capacity"],
-                            "Steps_Per_Second": steps_per_sec,
-                            "Curriculum_Phase": current_phase,
-                        }
-                        stats.log_stats_to_tb(episode, eval_stats)
+                        stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
                         logger.info(
-                            f"Eval @ ep {episode}: mean={mean_eval_reward:.2f} "
-                            f"(std={eval_reward_std:.2f}, best={stats.best_eval_reward:.2f}, "
-                            f"phase={current_phase}, steps/s={steps_per_sec:.1f})"
-                        )
+                            f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+                        stats.save_train_state(episode, agent.learner.state, buffer, stats)
                         stats.flush_stats_to_disk()
-                        _save_all(stats, agent, buffer, episode, "latest", current_phase)
+                        stats.save_checkpoint(agent.learner.state, "latest")
                         if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                             logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
 
@@ -471,28 +426,13 @@ def train(args: dict, stats: StatsCollector):
                         eval_rewards.append(eval_reward)
 
                     mean_eval_reward = np.mean(eval_rewards)
-                    eval_reward_std = float(np.std(eval_rewards))
-                    elapsed = time.perf_counter() - train_start
-                    total_steps = agent._step_count
-                    steps_per_sec = total_steps / elapsed if elapsed > 0 else 0.0
-                    eval_stats = {
-                        "Mean_Eval_Reward": mean_eval_reward,
-                        "Eval_Reward_Std": eval_reward_std,
-                        "Best_Eval_Reward": stats.best_eval_reward,
-                        "Agent_Step_Count": total_steps,
-                        "Buffer_Capacity_Used": len(buffer) / args["capacity"],
-                        "Steps_Per_Second": steps_per_sec,
-                        "Curriculum_Phase": current_phase,
-                    }
-                    stats.log_stats_to_tb(episode, eval_stats)
+                    stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
                     logger.info(
-                        f"Eval @ ep {episode}: mean={mean_eval_reward:.2f} "
-                        f"(std={eval_reward_std:.2f}, best={stats.best_eval_reward:.2f}, "
-                        f"phase={current_phase}, steps/s={steps_per_sec:.1f})"
-                    )
+                        f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
 
+                    stats.save_train_state(episode, agent.learner.state, buffer, stats)
                     stats.flush_stats_to_disk()
-                    _save_all(stats, agent, buffer, episode, "latest", current_phase)
+                    stats.save_checkpoint(agent.learner.state, "latest")
                     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
                         logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
 
@@ -516,7 +456,8 @@ def train(args: dict, stats: StatsCollector):
         if use_vectorized:
             venv.close()
 
+    stats.save_train_state(episode, agent.learner.state, buffer, stats)
     stats.flush_stats_to_disk()
-    _save_all(stats, agent, buffer, episode, "final", current_phase)
+    stats.save_checkpoint(agent.learner.state, "final")
     logger.info(f"Dumped training statistics to {stats.stats_file}.")
     logger.success("Training completed successfully!")

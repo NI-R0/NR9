@@ -27,12 +27,21 @@ class ActorNetwork(nn.Module):
 
         mu = nn.Dense(features=dim)(x)
 
+        initial_log_std = jnp.log(
+            jnp.expm1(self.init_scale)
+        )
+
         log_std = nn.Dense(
             features=dim,
             kernel_init=nn.initializers.zeros,
-            bias_init=nn.initializers.constant(jnp.log(self.init_scale)),
+            bias_init=nn.initializers.constant(initial_log_std),
         )(x)
-        scale = jax.nn.softplus(log_std) + 1e-6
+        
+        scale = jnp.clip(
+            jax.nn.softplus(log_std),
+            1e-4,
+            1.0
+        )
 
         return distrax.MultivariateNormalDiag(loc=mu, scale_diag=scale)
 

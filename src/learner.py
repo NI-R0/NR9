@@ -124,10 +124,13 @@ class MPOLearner:
                      key):
 
         distribution_next = self.actor_net.apply(target_params_actor, batch["next_state"])
-        next_actions = distribution_next.sample(seed=key)
-        next_actions = jnp.tanh(next_actions)
+        next_actions = jnp.tanh(
+            distribution_next.sample(seed=key)
+        )
+
         next_q = self.critic_net.apply(target_params_critic, batch["next_state"], next_actions)
         next_q = jnp.clip(next_q, -100.0, 100.0)
+
         target_q = batch["reward"] + batch["discount"] * (1.0 - batch["done"]) * next_q
         target_q = jnp.clip(target_q, -200.0, 200.0)
         current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
@@ -139,17 +142,32 @@ class MPOLearner:
         k = self.config["sample_k"]
 
         sampled_actions = dist_target.sample(seed=key, sample_shape=(k,))
-        tanh_actions = jnp.tanh(sampled_actions)
+        sampled_actions_for_critic = jnp.tanh(sampled_actions)
+
         vmapped_critic = jax.vmap(self.critic_net.apply, in_axes=(None, None, 0))
-        q_values = vmapped_critic(params_critic, states, tanh_actions)
-        q_values = q_values.T
+        q_values = vmapped_critic(params_critic, states, sampled_actions_for_critic)
+        q_values = q_values.T  # (batch, K)
         q_values = jax.lax.stop_gradient(q_values)
+
+        q_mean = jnp.mean(q_values)
+        q_std = jnp.std(q_values)
+        q_range_per_state = jnp.max(q_values, axis=1) - jnp.min(q_values, axis=1)
+        q_range = jnp.mean(q_range_per_state)
+        mean_q_std_per_state = jnp.mean(jnp.std(q_values, axis=1))
+        mean_q_range_per_state = jnp.mean(q_range_per_state)
+
         max_q = jnp.max(q_values, axis=1, keepdims=True)
         log_weights = (q_values - max_q) / jnp.maximum(eta, 1e-8)
 
-        sampled_actions = jnp.swapaxes(sampled_actions, 0, 1)
+        weights = jax.nn.softmax(log_weights, axis=1)
+        entropy = -jnp.mean(jnp.sum(weights * jnp.log(weights + 1e-8), axis=1))
+        max_weight = jnp.mean(jnp.max(weights, axis=1))
 
-        return log_weights, max_q, sampled_actions
+        sampled_actions = jnp.swapaxes(sampled_actions, 0, 1)  # (batch, K, action_dim)
+
+        return (log_weights, max_q, sampled_actions, 
+                q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state, 
+                entropy, max_weight)
 
     def _dual_loss(self, log_eta, log_weights, max_q, epsilon):
         """E-step dual loss (temperature eta)."""
@@ -215,18 +233,26 @@ class MPOLearner:
             + jnp.sum(jax.lax.stop_gradient(alpha_std) * kl_std)
         )
 
-        return loss_actor + loss_eta + loss_alpha_mean + loss_alpha_std
+        # Policy std for logging
+        policy_std_mean = jnp.mean(distribution_current.scale_diag)
+        policy_std_min = jnp.min(distribution_current.scale_diag)
+        policy_std_max = jnp.max(distribution_current.scale_diag)
+
+        return loss_actor + loss_eta + loss_alpha_mean + loss_alpha_std, {
+            "loss_policy": loss_policy,
+            "kl_mean": jnp.mean(kl_mean),  # mean across action dims for logging
+            "kl_std": jnp.mean(kl_std),
+            "alpha_mu": jnp.mean(alpha_mean),
+            "alpha_sigma": jnp.mean(alpha_std),
+            "policy_std": policy_std_mean,
+            "policy_std_min": policy_std_min,
+            "policy_std_max": policy_std_max,
+        }
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, state: TrainingState, batch):
-        """Performs one full learner step with sgd_steps_per_learner_step gradient updates.
+        """Performs one full learner step with sgd_steps_per_learner_step gradient updates."""
 
-        1. Critic update (N-step Bellman target).
-        2. E-Step: compute action weights from critic Q-values.
-        3. M-Step: update actor + dual variables with per-dim KL constraints.
-        4. Periodic hard target update every target_update_period steps.
-        5. Dual parameter clipping (max(-18, log_x)).
-        """
         def sgd_step(carry, _):
             state = carry
             key, key_critic, key_sample = jax.random.split(state.random_key, 3)
@@ -248,17 +274,22 @@ class MPOLearner:
             params_critic = optax.apply_updates(state.params_critic, updates_c)
 
             eta = jnp.exp(state.dual_params["log_eta"])
-            log_weights, max_q, sampled_actions = self._compute_weights(
+            (log_weights, max_q, sampled_actions, 
+             q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state, 
+             entropy, max_weight) = self._compute_weights(
                 state.params_critic, dist_sample, batch, eta, key_sample
             )
 
             def actor_dual_loss_fn(p_actor, p_dual):
-                return self._policy_and_dual_loss(
+                total_loss, aux = self._policy_and_dual_loss(
                     p_actor, p_dual, dist_old, batch,
                     log_weights, max_q, sampled_actions,
                 )
+                return total_loss, aux
 
-            grads_actor, grads_dual = jax.grad(actor_dual_loss_fn, argnums=(0, 1))(
+            (total_loss, aux), (grads_actor, grads_dual) = jax.value_and_grad(
+                actor_dual_loss_fn, argnums=(0, 1), has_aux=True
+            )(
                 state.params_actor, state.dual_params
             )
 
@@ -277,13 +308,34 @@ class MPOLearner:
                 opt_state_dual=opt_state_d,
                 random_key=key,
             )
-            return new_state, loss_c
+            
+            metrics = {
+                "loss_critic": loss_c,
+                "loss_policy": aux["loss_policy"],
+                "kl_mu": aux["kl_mean"],
+                "kl_sigma": aux["kl_std"],
+                "eta": eta,
+                "alpha_mu": aux["alpha_mu"],
+                "alpha_sigma": aux["alpha_sigma"],
+                "policy_std": aux["policy_std"],
+                "policy_std_min": aux["policy_std_min"],
+                "policy_std_max": aux["policy_std_max"],
+                "entropy": entropy,
+                "q_mean": q_mean,
+                "q_std": q_std,
+                "q_range": q_range,
+                "mean_q_std_per_state": mean_q_std_per_state,
+                "mean_q_range_per_state": mean_q_range_per_state,
+                "max_weight": max_weight,
+            }
+            
+            return new_state, metrics
 
-        state, loss_c = jax.lax.scan(
+        state, metrics_history = jax.lax.scan(
             sgd_step, state, None, length=self.config["sgd_steps_per_learner_step"]
         )
 
-        loss_c = loss_c[-1]
+        metrics = jax.tree_util.tree_map(lambda x: x[-1], metrics_history)
 
         period = self.config["target_update_period"]
         steps = state.steps + 1
@@ -301,4 +353,4 @@ class MPOLearner:
             steps=steps,
         )
 
-        return new_state, {"loss_critic": loss_c}
+        return new_state, metrics

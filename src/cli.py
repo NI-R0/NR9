@@ -14,10 +14,9 @@ def parse_args() -> dict:
     parser.add_argument("--run_name", default=None, type=str)
     parser.add_argument("--profile", default=False, action="store_true",
                         help="Enable profiling: cProfile + per-step timing breakdown.")
-    parser.add_argument(
-        "--resume_dir", type=str, default=None,
-        help="Path to a previous run directory to resume training from. "
-             "Loads learner state, replay buffer, episode counter, and best eval reward.")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Specifies path to some checkpoint file to continue training from.")
+
     parser.add_argument("--env_domain", type=str, default="cartpole")
     parser.add_argument("--env_task", type=str, default="balance")
     parser.add_argument("--seed", type=int, default=42)

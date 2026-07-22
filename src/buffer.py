@@ -1,4 +1,3 @@
-import pickle
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -110,41 +109,6 @@ class NStepTransitionBuffer:
         self._size = min(self._size + 1, self._capacity)
 
         window.pop(0)
-
-    def save_state(self, path: str):
-        """Save the replay buffer contents and internal state to a pickle file."""
-        state = {
-            "states": self._states[:self._size],
-            "next_states": self._next_states[:self._size],
-            "actions": self._actions[:self._size],
-            "rewards": self._rewards[:self._size],
-            "discounts": self._discounts[:self._size],
-            "dones": self._dones[:self._size],
-            "size": self._size,
-            "pos": self._pos,
-            "num_envs": self._num_envs,
-        }
-        with open(path, "wb") as f:
-            pickle.dump(state, f)
-        logger.debug(f"Replay buffer saved to {path} ({self._size} transitions).")
-
-    def load_state(self, path: str):
-        """Load replay buffer contents and internal state from a pickle file."""
-        with open(path, "rb") as f:
-            state = pickle.load(f)
-
-        n = state["size"]
-        self._states[:n] = state["states"]
-        self._next_states[:n] = state["next_states"]
-        self._actions[:n] = state["actions"]
-        self._rewards[:n] = state["rewards"]
-        self._discounts[:n] = state["discounts"]
-        self._dones[:n] = state["dones"]
-        self._size = n
-        self._pos = state["pos"]
-        self._num_envs = state.get("num_envs", 1)
-        self._windows = [[] for _ in range(self._num_envs)]
-        logger.info(f"Replay buffer loaded from {path} ({n} transitions).")
 
     def next(self, key, batch_size):
         """Samples a random batch of n-step transitions.
