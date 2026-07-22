@@ -30,7 +30,7 @@ class MPOActor:
         """Select actions for a batch of observations (vectorized envs).
 
         Args:
-            observations: (N, obs_dim) array — always 2-D.
+            observations: (N, obs_dim) array - always 2-D.
 
         Returns:
             actions: (N, action_dim) array.

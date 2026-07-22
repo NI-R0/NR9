@@ -186,7 +186,7 @@ Evaluation Configuration:
         if not os.path.isfile(path):
             logger.warning(
                 f"No training_meta.json found in {self.checkpoint_dir}. "
-                "Resuming without episode count / best eval reward — "
+                "Resuming without episode count / best eval reward - "
                 "episode counter starts at 0, best eval reward at -inf."
             )
             return
@@ -212,7 +212,7 @@ Evaluation Configuration:
                 self.stats = json.load(f)
             logger.info(f"Loaded {len(self.stats)} episodes of stats from {self.stats_file}.")
         else:
-            logger.warning(f"No stats file found at {self.stats_file} — starting with empty stats.")
+            logger.warning(f"No stats file found at {self.stats_file} - starting with empty stats.")
 
     def log_stats_to_tb(self, episode: int, stats: dict):
         self.stats.setdefault(episode, {}).update(stats)

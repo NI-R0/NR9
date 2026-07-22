@@ -68,7 +68,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     if profile and step > 0:
         total = timing["select_action"] + timing["env_step"] + timing["update"]
         logger.info(
-            f"  Timing (episode, {step} steps, {total:.1f}s total) — "
+            f"  Timing (episode, {step} steps, {total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
             f"({timing['select_action']/step*1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
@@ -89,7 +89,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     ``ParallelVectorEnv.step``) and the terminal observation is used for
     the buffer before the new observation is carried forward.
 
-    Returns a list of (reward, length) tuples — one per env, in order.
+    Returns a list of (reward, length) tuples - one per env, in order.
     """
     num_envs = venv.num_envs
     states = venv.reset()
@@ -165,7 +165,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     if profile:
         total = timing["select_action"] + timing["env_step"] + timing["update"]
         logger.info(
-            f"  Timing (vec, {num_envs} envs, {step + 1} meta-steps, {total:.1f}s total) — "
+            f"  Timing (vec, {num_envs} envs, {step + 1} meta-steps, {total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
             f"({timing['select_action']/(step+1)*1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
@@ -254,13 +254,13 @@ def train(args: dict, stats: StatsCollector):
             agent.random_key = agent_state["random_key"]
             logger.info(f"Agent state loaded (step_count={agent._step_count}).")
         else:
-            logger.warning("No agent checkpoint found — step count starts at 0.")
+            logger.warning("No agent checkpoint found - step count starts at 0.")
 
         buffer_path = os.path.join(stats.checkpoint_dir, "buffer_latest.pkl")
         if os.path.isfile(buffer_path):
             buffer.load_state(buffer_path)
         else:
-            logger.warning("No buffer checkpoint found — starting with empty buffer.")
+            logger.warning("No buffer checkpoint found - starting with empty buffer.")
 
     logger.info("Setup complete.")
 
@@ -300,7 +300,7 @@ def train(args: dict, stats: StatsCollector):
 
     def _signal_handler(signum, frame):
         nonlocal shutdown_requested
-        logger.warning(f"Received signal {signum} — requesting graceful shutdown after current episode.")
+        logger.warning(f"Received signal {signum} - requesting graceful shutdown after current episode.")
         shutdown_requested = True
 
     previous_handlers = {}

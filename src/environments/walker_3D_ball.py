@@ -154,7 +154,7 @@ class Physics(mujoco.Physics):
     """Moves the mocap target body to ``(x, y, 0.1)`` and recomputes kinematics.
 
     ``physics.forward()`` is needed because ``data.xpos`` for mocap bodies is
-    only updated during kinematics, which runs inside ``physics.step()`` — not
+    only updated during kinematics, which runs inside ``physics.step()`` - not
     when ``mocap_pos`` is set directly.
     """
     pos = np.array([xy[0], xy[1], 0.1], dtype=np.float64)
@@ -174,10 +174,10 @@ class Walker3DBall(base.Task):
   """3D walker with a multi-stage ball-kick reward and target curriculum.
 
   The reward progresses through stages:
-    1. *Stand* — torso height and upright orientation (always active).
-    2. *Approach* — reward for reducing torso-to-ball distance while upright.
-    3. *Kick* — reward for ball velocity in the direction of the target.
-    4. *Target hit* — large bonus when the ball enters the target zone; ball
+    1. *Stand* - torso height and upright orientation (always active).
+    2. *Approach* - reward for reducing torso-to-ball distance while upright.
+    3. *Kick* - reward for ball velocity in the direction of the target.
+    4. *Target hit* - large bonus when the ball enters the target zone; ball
        and target are then randomly re-placed so the episode continues.
 
   Curriculum: ``register_success`` increments a counter.  After

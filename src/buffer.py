@@ -150,7 +150,7 @@ class NStepTransitionBuffer:
         """Samples a random batch of n-step transitions.
 
         Uses NumPy RNG to avoid a GPU→CPU sync point inside the training
-        loop.  Each array is transferred individually via ``jnp.asarray`` —
+        loop.  Each array is transferred individually via ``jnp.asarray``
         simple host→device copies that are cheaper than concatenating on
         CPU and then slicing on GPU.
         """

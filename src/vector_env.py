@@ -94,11 +94,11 @@ class ParallelVectorEnv:
         """Step all environments with the given batched actions.
 
         Returns:
-            next_states: (N, state_dim) — observation for the *next* step
+            next_states: (N, state_dim) - observation for the *next* step
                          (auto-reset obs if the env was done).
             rewards: (N,)
             dones: (N,)
-            infos: list[dict] — ``info["terminal_obs"]`` present when done.
+            infos: list[dict] - ``info["terminal_obs"]`` present when done.
         """
         for i, remote in enumerate(self.remotes):
             remote.send(("step", actions[i]))
