@@ -223,13 +223,23 @@ Evaluation Configuration:
         return improved
 
     def save_train_state(self, episode: int, learner_state, buffer, collector):
+        """Save a full training checkpoint to disk (atomic write).
+
+        Only serializable collector fields (``stats`` dict and
+        ``best_eval_reward``) are stored – the ``SummaryWriter`` and
+        logger objects are *not* picklable because they contain
+        ``multiprocessing.Queue`` instances.
+        """
         tmp_path = os.path.join(self.checkpoint_dir, "state.tmp")
         path = os.path.join(self.checkpoint_dir, "state.pkl")
         state = {
             "episode": episode,
             "learner_state": learner_state,
             "buffer": buffer,
-            "collector": collector
+            "collector": {
+                "stats": collector.stats,
+                "best_eval_reward": collector.best_eval_reward,
+            },
         }
         with open(tmp_path, "wb") as f:
             cloudpickle.dump(state, f)
@@ -237,6 +247,7 @@ Evaluation Configuration:
         os.replace(tmp_path, path)
         logger.debug(f"Full training state saved to {path}.")
 
+    @staticmethod
     def load_train_state(filepath: str):
         with open(filepath, "rb") as f:
             state = cloudpickle.load(f)
