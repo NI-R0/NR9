@@ -68,10 +68,10 @@ def parse_args() -> dict:
         "--curriculum", default=False, action="store_true",
         help="Enable curriculum learning with phased reward components (walker_3D_ball).")
     parser.add_argument(
-        "--phase1_threshold", type=float, default=5.0,
+        "--phase1_threshold", type=float, default=100.0,
         help="Mean eval reward to advance from phase 0 (stand) to phase 1 (approach).")
     parser.add_argument(
-        "--phase2_threshold", type=float, default=15.0,
+        "--phase2_threshold", type=float, default=200.0,
         help="Mean eval reward to advance from phase 1 (approach) to phase 2 (full).")
     parser.add_argument(
         "--load_dir", type=str, default=None,

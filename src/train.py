@@ -345,6 +345,9 @@ def train(args: dict, stats: StatsCollector):
         }
         stats.log_stats_to_tb(0, dummy_stats)
 
+    # Log hyperparameters to TensorBoard HParams tab (once, at start)
+    stats.log_hparams(args)
+
     profile = args.get("profile", False)
     train_start = time.perf_counter()
     time_limit_sec = duration_min * 60.0 if use_duration else None
@@ -388,8 +391,25 @@ def train(args: dict, stats: StatsCollector):
                             )
                             eval_rewards.append(eval_reward)
                         mean_eval_reward = np.mean(eval_rewards)
-                        stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-                        logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+                        eval_reward_std = float(np.std(eval_rewards))
+                        elapsed = time.perf_counter() - train_start
+                        total_steps = agent._step_count
+                        steps_per_sec = total_steps / elapsed if elapsed > 0 else 0.0
+                        eval_stats = {
+                            "Mean_Eval_Reward": mean_eval_reward,
+                            "Eval_Reward_Std": eval_reward_std,
+                            "Best_Eval_Reward": stats.best_eval_reward,
+                            "Agent_Step_Count": total_steps,
+                            "Buffer_Capacity_Used": len(buffer) / args["capacity"],
+                            "Steps_Per_Second": steps_per_sec,
+                            "Curriculum_Phase": current_phase,
+                        }
+                        stats.log_stats_to_tb(episode, eval_stats)
+                        logger.info(
+                            f"Eval @ ep {episode}: mean={mean_eval_reward:.2f} "
+                            f"(std={eval_reward_std:.2f}, best={stats.best_eval_reward:.2f}, "
+                            f"phase={current_phase}, steps/s={steps_per_sec:.1f})"
+                        )
                         stats.flush_stats_to_disk()
                         _save_all(stats, agent, buffer, episode, "latest", current_phase)
                         if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
@@ -405,7 +425,6 @@ def train(args: dict, stats: StatsCollector):
                                                  venv if use_vectorized else None,
                                                  env if not use_vectorized else None,
                                                  eval_env)
-                                stats.log_stats_to_tb(episode, {"Curriculum_Phase": current_phase})
 
                     if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
                         logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
@@ -452,8 +471,25 @@ def train(args: dict, stats: StatsCollector):
                         eval_rewards.append(eval_reward)
 
                     mean_eval_reward = np.mean(eval_rewards)
-                    stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-                    logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+                    eval_reward_std = float(np.std(eval_rewards))
+                    elapsed = time.perf_counter() - train_start
+                    total_steps = agent._step_count
+                    steps_per_sec = total_steps / elapsed if elapsed > 0 else 0.0
+                    eval_stats = {
+                        "Mean_Eval_Reward": mean_eval_reward,
+                        "Eval_Reward_Std": eval_reward_std,
+                        "Best_Eval_Reward": stats.best_eval_reward,
+                        "Agent_Step_Count": total_steps,
+                        "Buffer_Capacity_Used": len(buffer) / args["capacity"],
+                        "Steps_Per_Second": steps_per_sec,
+                        "Curriculum_Phase": current_phase,
+                    }
+                    stats.log_stats_to_tb(episode, eval_stats)
+                    logger.info(
+                        f"Eval @ ep {episode}: mean={mean_eval_reward:.2f} "
+                        f"(std={eval_reward_std:.2f}, best={stats.best_eval_reward:.2f}, "
+                        f"phase={current_phase}, steps/s={steps_per_sec:.1f})"
+                    )
 
                     stats.flush_stats_to_disk()
                     _save_all(stats, agent, buffer, episode, "latest", current_phase)
@@ -470,7 +506,6 @@ def train(args: dict, stats: StatsCollector):
                                              venv if use_vectorized else None,
                                              env if not use_vectorized else None,
                                              eval_env)
-                            stats.log_stats_to_tb(episode, {"Curriculum_Phase": current_phase})
 
                 if shutdown_requested:
                     break
