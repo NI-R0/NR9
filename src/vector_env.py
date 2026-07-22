@@ -36,6 +36,9 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed):
             elif cmd == "get_spaces":
                 remote.send((env.state_dim, env.action_dim, env.action_spec.minimum,
                              env.action_spec.maximum))
+            elif cmd == "set_phase":
+                env.set_phase(data)
+                remote.send(None)
             elif cmd == "close":
                 remote.close()
                 break
@@ -122,3 +125,10 @@ class ParallelVectorEnv:
                 p.terminate()
         for remote in self.remotes:
             remote.close()
+
+    def set_phase(self, phase: int):
+        """Propagate curriculum phase to all worker environments."""
+        for remote in self.remotes:
+            remote.send(("set_phase", phase))
+        for remote in self.remotes:
+            remote.recv()

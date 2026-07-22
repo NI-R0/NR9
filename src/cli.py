@@ -65,6 +65,15 @@ def parse_args() -> dict:
     parser.add_argument(
         "--num_eval_episodes", type=int, default=5, help="Number of episodes to run evaluation for.")
     parser.add_argument(
+        "--curriculum", default=False, action="store_true",
+        help="Enable curriculum learning with phased reward components (walker_3D_ball).")
+    parser.add_argument(
+        "--phase1_threshold", type=float, default=5.0,
+        help="Mean eval reward to advance from phase 0 (stand) to phase 1 (approach).")
+    parser.add_argument(
+        "--phase2_threshold", type=float, default=15.0,
+        help="Mean eval reward to advance from phase 1 (approach) to phase 2 (full).")
+    parser.add_argument(
         "--load_dir", type=str, default=None,
         help="Path to a previous run directory to load a checkpoint from for testing.")
     parser.add_argument("--checkpoint", type=str, default="best_ckpt", help="Checkpoint name to load.")

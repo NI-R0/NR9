@@ -83,6 +83,9 @@ uv run python main.py \
   --eval_frequency "$NUM_ENVS" \
   --capacity 1000000 \
   --duration 25 \
+  --curriculum \
+  --phase1_threshold 5.0 \
+  --phase2_threshold 15.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?

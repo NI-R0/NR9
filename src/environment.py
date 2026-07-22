@@ -55,3 +55,9 @@ class Environment:
         Author's Note: Rendering process designed by Claude. 
         """
         return self.env.physics.render(height=height, width=width, camera_id=camera_id)
+
+    def set_phase(self, phase: int):
+        """Propagate curriculum phase to the underlying task, if supported."""
+        task = getattr(self.env, 'task', None)
+        if task is not None and hasattr(task, 'set_phase'):
+            task.set_phase(phase)

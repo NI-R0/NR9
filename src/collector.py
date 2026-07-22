@@ -166,8 +166,8 @@ Evaluation Configuration:
 
     # Public methods ####################################
 
-    def save_training_meta(self, episode: int):
-        """Persist training-level metadata (episode count, best eval reward).
+    def save_training_meta(self, episode: int, phase: int = 0):
+        """Persist training-level metadata (episode count, best eval reward, phase).
 
         Called alongside checkpoint saves so that a resumed run can pick
         up exactly where the previous run left off.
@@ -175,6 +175,7 @@ Evaluation Configuration:
         meta = {
             "episode": episode,
             "best_eval_reward": self.best_eval_reward,
+            "phase": phase,
         }
         path = os.path.join(self.checkpoint_dir, "training_meta.json")
         with open(path, "w") as f:
@@ -195,15 +196,22 @@ Evaluation Configuration:
             meta = json.load(f)
         self._resumed_episode = meta.get("episode", 0)
         self.best_eval_reward = meta.get("best_eval_reward", -float("inf"))
+        self._resumed_phase = meta.get("phase", 0)
         logger.info(
             f"Resuming from episode {self._resumed_episode} "
-            f"with best eval reward {self.best_eval_reward:.2f}."
+            f"with best eval reward {self.best_eval_reward:.2f} "
+            f"and phase {self._resumed_phase}."
         )
 
     @property
     def resumed_episode(self) -> int:
         """Episode count from a previous run, or 0 for a fresh start."""
         return getattr(self, "_resumed_episode", 0)
+
+    @property
+    def resumed_phase(self) -> int:
+        """Curriculum phase from a previous run, or 0 for a fresh start."""
+        return getattr(self, "_resumed_phase", 0)
 
     def _load_stats(self):
         """Load previously saved training stats so they are preserved on resume."""

@@ -56,6 +56,11 @@ _W_APPROACH = 0.3
 _W_KICK = 0.5
 _TARGET_BONUS = 10.0
 
+# Curriculum phases
+PHASE_STAND = 0
+PHASE_APPROACH = 1
+PHASE_FULL = 2
+_NUM_PHASES = 3
 
 SUITE = containers.TaggedTasks()
 FILE = 'walker_3D_ball.xml'
@@ -186,7 +191,7 @@ class Walker3DBall(base.Task):
   consecutive-success counter.
   """
 
-  def __init__(self, move_speed, random=None):
+  def __init__(self, move_speed, random=None, phase=PHASE_STAND):
     """Initializes an instance of `Walker3DBall`.
 
     Args:
@@ -195,11 +200,14 @@ class Walker3DBall(base.Task):
       random: Optional, either a `numpy.random.RandomState` instance, an
         integer seed for creating a new `RandomState`, or None to select a
         seed automatically (default).
+      phase: Curriculum phase (0=stand, 1=approach, 2=full). Controls which
+        reward components are active.
     """
     self._move_speed = move_speed
     self._target_size = _TARGET_SIZE_MAX
     self._consecutive_successes = 0
     self._target_pos = None
+    self._phase = phase
     super().__init__(random=random)
 
   def register_success(self):
@@ -218,6 +226,20 @@ class Walker3DBall(base.Task):
   def register_failure(self):
     """Reset the consecutive-success counter."""
     self._consecutive_successes = 0
+
+  def set_phase(self, phase: int):
+    """Set the curriculum phase (0=stand, 1=approach, 2=full).
+
+    Called externally from the training loop after evaluation thresholds
+    are met.  Controls which reward components are active.
+    """
+    if phase < 0 or phase >= _NUM_PHASES:
+      raise ValueError(f"Invalid phase {phase}; must be 0-{_NUM_PHASES - 1}.")
+    self._phase = phase
+
+  @property
+  def phase(self) -> int:
+    return self._phase
 
   def initialize_episode(self, physics):
     """Sets the state of the environment at the start of each episode.
@@ -264,7 +286,12 @@ class Walker3DBall(base.Task):
     return obs
 
   def get_reward(self, physics):
-    """Multi-stage reward: stand + approach + kick + target bonus."""
+    """Multi-stage reward weighted by curriculum phase.
+
+    Phase 0 (stand):   stand_reward only
+    Phase 1 (approach): stand + approach, kick clamped to >= 0
+    Phase 2 (full):    stand + approach + kick (full, can be negative) + target bonus
+    """
     standing = rewards.tolerance(physics.torso_height(),
                                  bounds=(_STAND_HEIGHT, float('inf')),
                                  margin=_STAND_HEIGHT / 2)
@@ -301,14 +328,24 @@ class Walker3DBall(base.Task):
     ball_speed_toward = float(np.dot(ball_vel_xy, dir_to_target))
     kick_reward = np.tanh(ball_speed_toward / 5.0)
 
-    dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
-    target_bonus = 0.0
-    if dist_ball_to_target < target_size + _BALL_RADIUS:
-      target_bonus = _TARGET_BONUS
-      self._reset_ball_and_target(physics)
-
-    reward = (_W_STAND * stand_reward
-              + _W_APPROACH * approach_reward
-              + _W_KICK * kick_reward
-              + target_bonus)
+    # Phase-weighted reward
+    if self._phase == PHASE_STAND:
+      reward = _W_STAND * stand_reward
+    elif self._phase == PHASE_APPROACH:
+      # Kick clamped to >= 0 so ball-rolling-away doesn't penalize
+      kick_reward = max(0.0, kick_reward)
+      reward = (_W_STAND * stand_reward
+                + _W_APPROACH * approach_reward
+                + _W_KICK * kick_reward)
+    else:
+      # PHASE_FULL: all components
+      dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
+      target_bonus = 0.0
+      if dist_ball_to_target < target_size + _BALL_RADIUS:
+        target_bonus = _TARGET_BONUS
+        self._reset_ball_and_target(physics)
+      reward = (_W_STAND * stand_reward
+                + _W_APPROACH * approach_reward
+                + _W_KICK * kick_reward
+                + target_bonus)
     return float(reward)
