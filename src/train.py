@@ -403,18 +403,6 @@ def train(args: dict, stats: StatsCollector):
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
-    if not is_resume:
-        dummy_stats = {
-            "Episode_Reward": 0,
-            "Episode_Length": args["steps"],
-            "Buffer_Size": len(buffer),
-            "Episode_Loss": np.nan,
-        }
-        stats.log_stats_to_tb(0, dummy_stats)
-
-    # Log hyperparameters to TensorBoard HParams tab (once, at start)
-    stats.log_hparams(args)
-
     profile = args.get("profile", False)
     train_start = time.perf_counter()
     time_limit_sec = duration_min * 60.0 if use_duration else None

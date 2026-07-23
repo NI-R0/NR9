@@ -191,9 +191,9 @@ def main():
     )
     parser.add_argument("--run_dir", type=str, required=True,
                         help="Path to the run directory to check.")
-    parser.add_argument("--convergence_episodes", type=int, default=2000,
+    parser.add_argument("--convergence_episodes", type=int, default=10,
                         help="Number of recent episodes to check for convergence "
-                             "(default: 2000). All eval points within this episode "
+                             "(default: 10). All eval points within this episode "
                              "range are smoothed (mean of first vs second half).")
     parser.add_argument("--threshold", type=float, default=10.0,
                         help="Maximum smoothed improvement to consider converged "
@@ -208,8 +208,8 @@ def main():
                         action="store_false",
                         help="Allow convergence in any curriculum phase.")
 
-    parser.add_argument("--stagnation_window", type=int, default=20,
-                        help="Number of evals to check for stagnation (default: 20). "
+    parser.add_argument("--stagnation_window", type=int, default=10,
+                        help="Number of evals to check for stagnation (default: 10). "
                              "Must be >= 2× the comparison half.")
     parser.add_argument("--stagnation_threshold", type=float, default=1.0,
                         help="If improvement over stagnation_window evals is below "

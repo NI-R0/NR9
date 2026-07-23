@@ -61,7 +61,7 @@ _W_APPROACH = 0.3
 _W_KICK = 0.2
 _TARGET_BONUS = 100.0
 _W_LEG_SPREAD = 0.1
-_LEG_SPREAD_THRESHOLD = 0.25
+_LEG_SPREAD_THRESHOLD = 0.2
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -362,12 +362,14 @@ class Walker3DBall(base.Task):
     Phase 2 (approach): feet + control + stand + approach
     Phase 3 (full):     feet + control + stand + approach + kick + target bonus
     """
-    # --- Feet reward: penalise non-foot contact, reward foot-only stance ---
+    # --- Feet reward: reward foot-only stance, penalise any non-foot contact ---
     feet_touch = physics.feet_touch()
     non_foot_touch = physics.non_foot_touch()
     # feet_touch in [0, 2], non_foot_touch in [0, 5]
-    # +1 when feet on ground and nothing else touches, -1 when non-foot touches
-    feet_reward = np.tanh(feet_touch) - np.tanh(non_foot_touch)
+    # feet_only gates the positive part: no foot reward when non-foot
+    # body parts also touch the ground (prevents rocking/kneeling exploit).
+    feet_only = 1.0 - np.tanh(non_foot_touch)  # 1 when only feet touch, 0 otherwise
+    feet_reward = np.tanh(feet_touch) * feet_only - np.tanh(non_foot_touch)
     # Clip to [-1, 1]
     feet_reward = float(np.clip(feet_reward, -1.0, 1.0))
 
@@ -387,7 +389,6 @@ class Walker3DBall(base.Task):
     # _STAND_HEIGHT now refers to the top of the torso capsule.
     # Gated by feet_only: no stand reward when non-foot body parts touch
     # the ground (e.g. kneeling, lying on torso/knees/shins).
-    feet_only = 1.0 - np.tanh(non_foot_touch)  # 1 when only feet touch, 0 otherwise
     standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
     upright = (1 + physics.torso_upright()) / 2
     stand_reward = (3 * standing + upright) / 4  # in [0, 1]

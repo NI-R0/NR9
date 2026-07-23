@@ -40,7 +40,6 @@ class ActorNetwork(nn.Module):
         scale = jnp.clip(
             jax.nn.softplus(log_std),
             1e-4,
-            1.0
         )
 
         return distrax.MultivariateNormalDiag(loc=mu, scale_diag=scale)

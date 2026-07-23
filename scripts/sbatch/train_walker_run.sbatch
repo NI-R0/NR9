@@ -26,10 +26,10 @@
 # submitted.  Otherwise a new job is automatically scheduled.
 #
 # Convergence parameters (override via --export):
-#   CONV_CONVERGENCE_EPISODES=2000 - episodes to check for convergence
+#   CONV_CONVERGENCE_EPISODES=10 - episodes to check for convergence
 #   CONV_THRESHOLD=10.0         - max smoothed improvement to consider converged
 #   CONV_MIN_REWARD=100.0       - don't converge below this reward
-#   CONV_STAGNATION_WINDOW=20   - evals to check for stagnation
+#   CONV_STAGNATION_WINDOW=10   - evals to check for stagnation
 #   CONV_STAGNATION_THRESHOLD=1.0 - improvement below this over stagnation_window = stagnant
 #
 # Exit codes from check_convergence.py:
@@ -63,10 +63,10 @@ CPUS=${SLURM_CPUS_PER_TASK:-16}
 NUM_ENVS=$((CPUS * 3))
 echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
-CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-2000}"
+CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-10}"
 CONV_THRESHOLD="${CONV_THRESHOLD:-10.0}"
 CONV_MIN_REWARD="${CONV_MIN_REWARD:-100.0}"
-CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-20}"
+CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-10}"
 CONV_STAGNATION_THRESHOLD="${CONV_STAGNATION_THRESHOLD:-1.0}"
 
 RESUME_ARGS=""

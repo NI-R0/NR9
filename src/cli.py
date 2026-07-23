@@ -42,9 +42,9 @@ def parse_args() -> dict:
                         help="KL constraint for E-step.")
     parser.add_argument("--epsilon_mean", type=float, default=0.0025,
                         help="KL constraint for M-step (mean).")
-    parser.add_argument("--epsilon_std", type=float, default=1e-6,
+    parser.add_argument("--epsilon_std", type=float, default=1e-4,
                         help="KL constraint for M-step (std).")
-    parser.add_argument("--sample_k", type=int, default=20,
+    parser.add_argument("--sample_k", type=int, default=10,
                         help="Number of action samples per state in E-step.")
     parser.add_argument("--n_step", type=int, default=5,
                         help="N-step return length for the replay buffer and Bellman target.")

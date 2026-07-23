@@ -26,10 +26,10 @@
 # submitted.  Otherwise a new job is automatically scheduled.
 #
 # Convergence parameters (override via --export):
-#   CONV_CONVERGENCE_EPISODES=2000 - episodes to check for convergence
+#   CONV_CONVERGENCE_EPISODES=10 - episodes to check for convergence
 #   CONV_THRESHOLD=10.0         - max smoothed improvement to consider converged
 #   CONV_MIN_REWARD=100.0       - don't converge below this reward
-#   CONV_STAGNATION_WINDOW=20   - evals to check for stagnation
+#   CONV_STAGNATION_WINDOW=10   - evals to check for stagnation
 #   CONV_STAGNATION_THRESHOLD=1.0 - improvement below this over stagnation_window = stagnant
 #
 # Exit codes from check_convergence.py:
@@ -63,10 +63,10 @@ CPUS=${SLURM_CPUS_PER_TASK:-16}
 NUM_ENVS=$((CPUS * 3))
 echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
-CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-2000}"
+CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-10}"
 CONV_THRESHOLD="${CONV_THRESHOLD:-10.0}"
 CONV_MIN_REWARD="${CONV_MIN_REWARD:-100.0}"
-CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-20}"
+CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-10}"
 CONV_STAGNATION_THRESHOLD="${CONV_STAGNATION_THRESHOLD:-1.0}"
 
 RESUME_ARGS=""
@@ -104,14 +104,14 @@ uv run python main.py \
   --env_domain walker_3D_ball --env_task walk \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
-  --eval_frequency 2 \
+  --eval_frequency 5 \
   --num_eval_episodes "$CPUS" \
   --capacity 1000000 \
   --duration 25 \
   --curriculum \
-  --phase1_threshold 200.0 \
+  --phase1_threshold 180.0 \
   --phase2_threshold 400.0 \
-  --phase3_threshold 700.0 \
+  --phase3_threshold 630.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?
