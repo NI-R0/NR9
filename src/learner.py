@@ -21,11 +21,23 @@ class TrainingState(typing.NamedTuple):
 
 
 def _clip_log_dual_params(dual_params: dict) -> dict:
-    """Clip dual parameters in log-space to ``max(-18, log_x)`` (Acme)."""
+    """Clip dual parameters in log-space."""
     return {
-        "log_eta": jnp.maximum(dual_params["log_eta"], -18.0),
-        "log_alpha_mean": jnp.maximum(dual_params["log_alpha_mean"], -18.0),
-        "log_alpha_std": jnp.maximum(dual_params["log_alpha_std"], -18.0),
+        "log_eta": jnp.clip(
+            dual_params["log_eta"],
+            -18.0,
+            5.0
+        ),
+        "log_alpha_mean": jnp.clip(
+            dual_params["log_alpha_mean"],
+            -18.0,
+            5.0
+        ),
+        "log_alpha_std": jnp.clip(
+            dual_params["log_alpha_std"],
+            -18.0,
+            5.0
+        ),
     }
 
 
@@ -281,13 +293,17 @@ class MPOLearner:
     def _update_step(self, state: TrainingState, batch):
         """Performs one full learner step with sgd_steps_per_learner_step gradient updates."""
 
+        dist_old = self.actor_net.apply(
+            state.target_params_actor,
+            batch["state"]
+        )
+
+        # E-step samples are drawn from the same fixed reference policy.
+        dist_sample = dist_old
+
         def sgd_step(carry, _):
             state = carry
             key, key_critic, key_sample = jax.random.split(state.random_key, 3)
-
-            # Distributions for E-step / M-step
-            dist_sample = self.actor_net.apply(state.target_params_actor, batch["state"])
-            dist_old = self.actor_net.apply(state.params_actor, batch["state"])
 
             # --- Critic update ---
             def critic_loss_fn(p):
