@@ -41,7 +41,7 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = .025
-_STAND_HEIGHT = 1.5  # top of torso capsule; ~1.6 when fully upright
+_STAND_HEIGHT = 1.6  # top of torso capsule; requires fully upright stance
 _WALK_SPEED = 1
 _RUN_SPEED = 8
 _BALL_RADIUS = 0.2
@@ -55,11 +55,13 @@ _SUCCESS_THRESHOLD = 5
 
 # Reward weights (additive across phases, not normalised)
 _W_FEET = 0.2
-_W_CONTROL = 0.1
-_W_STAND = 0.2
+_W_EFFORT = 0.05
+_W_STAND = 0.25
 _W_APPROACH = 0.3
 _W_KICK = 0.2
 _TARGET_BONUS = 100.0
+_W_LEG_SPREAD = 0.1
+_LEG_SPREAD_THRESHOLD = 0.25
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -185,6 +187,12 @@ class Physics(mujoco.Physics):
         np.tanh(self.named.data.sensordata[name].item())
         for name in _NON_FOOT_TOUCHES
     )
+
+  def feet_horizontal_distance(self):
+    """Returns the xy-distance between the two feet."""
+    right_foot = self.named.data.xpos['right_foot'][:2]
+    left_foot = self.named.data.xpos['left_foot'][:2]
+    return float(np.linalg.norm(right_foot - left_foot))
 
   def ball_position(self):
     """Returns the [x, y, z] position of the ball."""
@@ -363,13 +371,13 @@ class Walker3DBall(base.Task):
     # Clip to [-1, 1]
     feet_reward = float(np.clip(feet_reward, -1.0, 1.0))
 
-    # --- Small control penalty: discourage excessive motor commands ---
-    small_control = rewards.tolerance(physics.control(), margin=1,
-                                      value_at_margin=0,
-                                      sigmoid='quadratic').mean()
-    control_reward = float((4 + small_control) / 5)  # in [0.8, 1.0]
+    # --- Effort penalty: quadratic per-motor cost (like muscle fatigue) ---
+    # mean(a_i^2): ~0 at 10% effort, ~0.25 at 50%, ~1.0 at 100%.
+    # Small enough that standing up still pays off, but discourages
+    # unnecessarily high motor commands.
+    effort_penalty = float(np.mean(physics.control() ** 2))
 
-    reward = _W_FEET * feet_reward + _W_CONTROL * control_reward
+    reward = _W_FEET * feet_reward - _W_EFFORT * effort_penalty
 
     if self._phase == PHASE_FEET:
       return float(reward)
@@ -377,10 +385,23 @@ class Walker3DBall(base.Task):
     # --- Stand reward: torso height + upright orientation ---
     # Linear reward: 0 when torso top at ground, 1 when at or above _STAND_HEIGHT.
     # _STAND_HEIGHT now refers to the top of the torso capsule.
+    # Gated by feet_only: no stand reward when non-foot body parts touch
+    # the ground (e.g. kneeling, lying on torso/knees/shins).
+    feet_only = 1.0 - np.tanh(non_foot_touch)  # 1 when only feet touch, 0 otherwise
     standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
     upright = (1 + physics.torso_upright()) / 2
     stand_reward = (3 * standing + upright) / 4  # in [0, 1]
-    reward += _W_STAND * stand_reward
+    reward += _W_STAND * stand_reward * feet_only
+
+    # --- Leg-spread penalty: discourage wide stance / split ---
+    # Linear penalty: 0 when feet within threshold, -1 when very wide.
+    # Multiplied by standing so it only bites when the agent is actually
+    # trying to stand (not while falling or on the ground).
+    feet_dist = physics.feet_horizontal_distance()
+    leg_spread = float(np.clip(
+        (feet_dist - _LEG_SPREAD_THRESHOLD) / _LEG_SPREAD_THRESHOLD, 0.0, 1.0
+    ))
+    reward -= _W_LEG_SPREAD * leg_spread * standing * feet_only
 
     if self._phase == PHASE_STAND:
       return float(reward)
