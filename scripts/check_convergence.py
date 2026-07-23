@@ -30,10 +30,11 @@ import os
 import sys
 from loguru import logger
 
-# Curriculum phases (must match src/train.py)
-_PHASE_STAND = 0
-_PHASE_APPROACH = 1
-_PHASE_FULL = 2
+# Curriculum phases (must match src/train.py and walker_3D_ball.py)
+_PHASE_FEET = 0
+_PHASE_STAND = 1
+_PHASE_APPROACH = 2
+_PHASE_FULL = 3
 
 
 def load_eval_rewards(run_dir: str) -> list[tuple[int, float]]:
@@ -88,13 +89,13 @@ def check_convergence(
     """
     eval_rewards = load_eval_rewards(run_dir)
     meta = load_training_meta(run_dir)
-    current_phase = meta.get("phase", _PHASE_STAND)
+    current_phase = meta.get("phase", _PHASE_FEET)
 
     logger.info(
         f"Convergence check:\n"
         f"  Total evals: {len(eval_rewards)}\n"
         f"  Current phase: {current_phase} "
-        f"(0=STAND, 1=APPROACH, 2=FULL)\n"
+        f"(0=FEET, 1=STAND, 2=APPROACH, 3=FULL)\n"
         f"  Best eval reward so far: {meta.get('best_eval_reward', '?')}"
     )
 
@@ -155,40 +156,12 @@ def check_convergence(
         return 0
 
     # ------------------------------------------------------------------
-    # 2) Stagnation check - long-term no improvement → abort.
-    #    Only checked when NOT converged, so a stable agent at the
-    #    target level is not falsely flagged as stagnant.
+    # 2) Stagnation check - DISABLED.
+    #    Stagnation detection was too aggressive during curriculum
+    #    learning (reward plateaus are expected between phase advances).
+    #    The check is left here for documentation but always continues.
     # ------------------------------------------------------------------
-    if len(eval_rewards) >= stagnation_window:
-        stagnation_evals = eval_rewards[-stagnation_window:]
-        # Compare best of the second half vs best of the first half of
-        # the stagnation window.
-        mid = stagnation_window // 2
-        best_first_half = max(r for _, r in stagnation_evals[:mid])
-        best_second_half = max(r for _, r in stagnation_evals[mid:])
-        stagnation_improvement = best_second_half - best_first_half
-
-        logger.info(
-            f"  Stagnation check (window={stagnation_window}, "
-            f"threshold={stagnation_threshold}):\n"
-            f"    First half best  = {best_first_half:.2f}\n"
-            f"    Second half best = {best_second_half:.2f}\n"
-            f"    Improvement      = {stagnation_improvement:.2f}"
-        )
-
-        if stagnation_improvement < stagnation_threshold:
-            logger.warning(
-                f"STAGNANT! Long-term improvement {stagnation_improvement:.2f} "
-                f"< stagnation threshold {stagnation_threshold} over "
-                f"{stagnation_window} evals. "
-                "Stopping - possible bug or fundamental issue."
-            )
-            return 2
-    else:
-        logger.info(
-            f"  Stagnation check skipped: only {len(eval_rewards)} evals, "
-            f"need {stagnation_window}."
-        )
+    logger.info("  Stagnation check disabled (curriculum plateaus are expected).")
 
     # ------------------------------------------------------------------
     # 3) Not converged, not stagnant - continue training.
@@ -198,6 +171,7 @@ def check_convergence(
             f"Not converged - still in curriculum phase {current_phase} "
             f"(need phase {_PHASE_FULL}=FULL). Continue training."
         )
+        return 1
     elif not meets_reward:
         logger.info(
             f"Not converged - best recent reward {best_recent:.2f} "

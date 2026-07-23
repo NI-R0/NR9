@@ -29,7 +29,15 @@ class InterceptHandler(logging.Handler):
 
 class StatsCollector:
     def __init__(self, args: dict, level: str = "INFO"):
-        run_name = args["run_name"] or self._default_run_name()
+        # When resuming, derive the run name from the checkpoint path so
+        # the same run directory is reused instead of creating a new one.
+        resume_path = args.get("resume")
+        if resume_path and os.path.exists(resume_path):
+            # resume path is .../<run_name>/checkpoints/state.pkl
+            run_dir_from_resume = os.path.dirname(os.path.dirname(resume_path))
+            run_name = os.path.basename(run_dir_from_resume)
+        else:
+            run_name = args["run_name"] or self._default_run_name()
         self.is_test = args["task"] == "test" and args["load_dir"]
 
         if self.is_test:
@@ -48,7 +56,7 @@ class StatsCollector:
         if self.is_test:
             os.makedirs(self.run_dir, exist_ok=True)
         else:
-            os.makedirs(self.run_dir, exist_ok=False)
+            os.makedirs(self.run_dir, exist_ok=bool(resume_path))
 
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.tb_dir, exist_ok=True)

@@ -15,7 +15,8 @@
 
 """Walker_3D_Ball domain: free-floating 3D walker with ball-kick task.
 
-Multi-stage reward:
+Multi-stage reward (additive curriculum):
+  0. Feet on ground only (penalise non-foot contact)
   1. Stand upright (height + orientation)
   2. Approach the ball (walking toward it while upright)
   3. Kick the ball toward the target (ball velocity in target direction)
@@ -40,7 +41,7 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = .025
-_STAND_HEIGHT = 1.2
+_STAND_HEIGHT = 1.5  # top of torso capsule; ~1.6 when fully upright
 _WALK_SPEED = 1
 _RUN_SPEED = 8
 _BALL_RADIUS = 0.2
@@ -54,8 +55,8 @@ _SUCCESS_THRESHOLD = 5
 
 # Reward weights (additive across phases, not normalised)
 _W_FEET = 0.2
-_W_CONTROL = 0.1
-_W_STAND = 0.2
+_W_CONTROL = 0.05
+_W_STAND = 0.3
 _W_APPROACH = 0.3
 _W_KICK = 0.2
 _TARGET_BONUS = 10.0
@@ -129,8 +130,17 @@ class Physics(mujoco.Physics):
     return self.named.data.xmat['torso', 'zz']
 
   def torso_height(self):
-    """Returns the height of the torso."""
-    return self.named.data.xpos['torso', 'z']
+    """Returns the world-z height of the top end of the torso capsule.
+
+    The torso geom is a capsule with half-length 0.3 along the body's
+    local z-axis.  The actual top position in world coordinates depends
+    on the body orientation, so we project the half-length onto the
+    world z-axis via ``xmat['torso', 'zz']`` (the z-component of the
+    local z-axis in world frame).
+    """
+    center_z = self.named.data.xpos['torso', 'z']
+    local_z_in_world = self.named.data.xmat['torso', 'zz']
+    return center_z + 0.3 * local_z_in_world
 
   def torso_xy(self):
     """Returns the [x, y] position of the torso."""
@@ -153,11 +163,12 @@ class Physics(mujoco.Physics):
   def touch_forces(self):
     """Returns touch forces of all body parts (including feet) as a 1-D array.
 
-    Each force is passed through ``tanh(force - 3)`` so that light grazes
-    produce ~0 while firm contacts saturate to ~1.
+    Each force is passed through ``tanh(force)`` so that light grazes
+    produce ~0 while firm contacts saturate to ~1.  Consistent with
+    ``feet_touch`` and ``non_foot_touch`` (no ``-3`` offset).
     """
     return np.array([
-        np.tanh(self.named.data.sensordata[name].item() - 3)
+        np.tanh(self.named.data.sensordata[name].item())
         for name in _ALL_TOUCHES
     ])
 
@@ -222,8 +233,9 @@ class Physics(mujoco.Physics):
 class Walker3DBall(base.Task):
   """3D walker with a multi-stage ball-kick reward and target curriculum.
 
-  The reward progresses through stages:
-    1. *Stand* - torso height and upright orientation (always active).
+  The reward progresses through stages (additive curriculum):
+    0. *Feet* - reward foot-ground contact, penalise non-foot contact.
+    1. *Stand* - torso height and upright orientation (added on top).
     2. *Approach* - reward for reducing torso-to-ball distance while upright.
     3. *Kick* - reward for ball velocity in the direction of the target.
     4. *Target hit* - large bonus when the ball enters the target zone; ball
@@ -244,7 +256,7 @@ class Walker3DBall(base.Task):
       random: Optional, either a `numpy.random.RandomState` instance, an
         integer seed for creating a new `RandomState`, or None to select a
         seed automatically (default).
-      phase: Curriculum phase (0=stand, 1=approach, 2=full). Controls which
+      phase: Curriculum phase (0=feet, 1=stand, 2=approach, 3=full). Controls which
         reward components are active.
     """
     self._move_speed = move_speed
@@ -272,7 +284,7 @@ class Walker3DBall(base.Task):
     self._consecutive_successes = 0
 
   def set_phase(self, phase: int):
-    """Set the curriculum phase (0=stand, 1=approach, 2=full).
+    """Set the curriculum phase (0=feet, 1=stand, 2=approach, 3=full).
 
     Called externally from the training loop after evaluation thresholds
     are met.  Controls which reward components are active.
@@ -363,9 +375,9 @@ class Walker3DBall(base.Task):
       return float(reward)
 
     # --- Stand reward: torso height + upright orientation ---
-    standing = rewards.tolerance(physics.torso_height(),
-                                 bounds=(_STAND_HEIGHT, float('inf')),
-                                 margin=_STAND_HEIGHT / 2)
+    # Linear reward: 0 when torso top at ground, 1 when at or above _STAND_HEIGHT.
+    # _STAND_HEIGHT now refers to the top of the torso capsule.
+    standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
     upright = (1 + physics.torso_upright()) / 2
     stand_reward = (3 * standing + upright) / 4  # in [0, 1]
     reward += _W_STAND * stand_reward
