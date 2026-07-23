@@ -20,4 +20,4 @@ export OPENBLAS_NUM_THREADS=1
 
 uv sync --frozen
 
-uv run python main.py --env_domain walker --env_task stand --episodes 10000 --num_envs 24 --eval_frequency 24 --sgd_steps_per_learner_step 24
+uv run python main.py --env_domain walker --env_task stand --episodes 10000 --num_envs 24 --eval_frequency 2 --num_eval_episodes 8 --sgd_steps_per_learner_step 24

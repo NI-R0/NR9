@@ -55,11 +55,11 @@ _SUCCESS_THRESHOLD = 5
 
 # Reward weights (additive across phases, not normalised)
 _W_FEET = 0.2
-_W_CONTROL = 0.05
-_W_STAND = 0.3
+_W_CONTROL = 0.1
+_W_STAND = 0.2
 _W_APPROACH = 0.3
 _W_KICK = 0.2
-_TARGET_BONUS = 10.0
+_TARGET_BONUS = 100.0
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (

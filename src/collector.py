@@ -174,6 +174,7 @@ Evaluation Configuration:
         The final metric (Mean_Eval_Reward) is used as the HParams metric.
         """
         hparam_keys = [
+            "env_domain", "env_task", "steps",
             "seed", "warmup", "batch_size", "lr", "critic_lr", "dual_lr",
             "capacity", "gamma", "epsilon", "epsilon_mean", "epsilon_std",
             "sample_k", "n_step", "sgd_steps_per_learner_step",
@@ -231,13 +232,18 @@ Evaluation Configuration:
             self.save_checkpoint(state, "best_ckpt")
         return improved
 
-    def save_train_state(self, episode: int, learner_state, buffer, collector):
+    def save_train_state(self, episode: int, learner_state, buffer, collector,
+                         current_phase: int = 0, agent_step_count: int = 0):
         """Save a full training checkpoint to disk (atomic write).
 
         Only serializable collector fields (``stats`` dict and
         ``best_eval_reward``) are stored – the ``SummaryWriter`` and
         logger objects are *not* picklable because they contain
         ``multiprocessing.Queue`` instances.
+
+        ``current_phase`` is stored so curriculum progress survives resume.
+        ``agent_step_count`` is stored so the warmup/update_every timing
+        is preserved across restarts.
         """
         tmp_path = os.path.join(self.checkpoint_dir, "state.tmp")
         path = os.path.join(self.checkpoint_dir, "state.pkl")
@@ -249,6 +255,8 @@ Evaluation Configuration:
                 "stats": collector.stats,
                 "best_eval_reward": collector.best_eval_reward,
             },
+            "current_phase": current_phase,
+            "agent_step_count": agent_step_count,
         }
         with open(tmp_path, "wb") as f:
             cloudpickle.dump(state, f)
@@ -260,7 +268,9 @@ Evaluation Configuration:
     def load_train_state(filepath: str):
         with open(filepath, "rb") as f:
             state = cloudpickle.load(f)
-        return state["episode"], state["learner_state"], state["buffer"], state["collector"]
+        return (state["episode"], state["learner_state"], state["buffer"],
+                state["collector"], state.get("current_phase", 0),
+                state.get("agent_step_count", 0))
 
     def close(self):
         self.writer.close()

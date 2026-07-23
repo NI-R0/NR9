@@ -131,7 +131,8 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     ``ParallelVectorEnv.step``) and the terminal observation is used for
     the buffer before the new observation is carried forward.
 
-    Returns a list of (reward, length) tuples - one per env, in order.
+    Returns ``(reward_mean, reward_std, length_mean, length_std, avg_metrics)``
+    aggregated over all parallel envs.
     """
     num_envs = venv.num_envs
     states = venv.reset()
@@ -200,6 +201,9 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         if finished_stats[i] is None:
             finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
 
+    rewards_arr = np.array([s[0] for s in finished_stats], dtype=np.float32)
+    lengths_arr = np.array([s[1] for s in finished_stats], dtype=np.float32)
+
     avg_metrics = {}
     if updates_count > 0:
         avg_metrics = {k: float(v) / updates_count for k, v in episode_metrics.items()}
@@ -216,7 +220,82 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
             f"({timing['update']/(step+1)*1000:.1f}ms/step)"
         )
 
-    return finished_stats, avg_metrics
+    reward_mean = float(np.mean(rewards_arr))
+    reward_std = float(np.std(rewards_arr))
+    length_mean = float(np.mean(lengths_arr))
+    length_std = float(np.std(lengths_arr))
+
+    logger.info(
+        f"  Meta-episode: reward {reward_mean:.2f} ± {reward_std:.2f} "
+        f"(per-env: {rewards_arr.tolist()}), "
+        f"length {length_mean:.1f} ± {length_std:.1f}"
+    )
+
+    return reward_mean, reward_std, length_mean, length_std, avg_metrics
+
+
+def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
+                    visualize: bool = False):
+    """Run ``num_eval_episodes`` evaluation episodes and return stats.
+
+    Returns ``(mean_reward, std_reward)``.
+    """
+    eval_rewards = []
+    for eval_episode in range(1, args["num_eval_episodes"] + 1):
+        eval_reward, _, _, _ = run_episode(
+            eval_env, agent, args, explore=False,
+            visualize=visualize and (eval_episode == 1),
+        )
+        eval_rewards.append(eval_reward)
+    eval_rewards_arr = np.array(eval_rewards, dtype=np.float32)
+    return float(np.mean(eval_rewards_arr)), float(np.std(eval_rewards_arr))
+
+
+def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
+                 current_phase, use_vectorized, venv, env,
+                 use_curriculum, phase1_threshold, phase2_threshold,
+                 phase3_threshold):
+    """Run evaluation, log results, save state, and check curriculum advancement.
+
+    Returns the (possibly updated) ``current_phase``.
+    """
+    logger.info(f"Starting evaluation at episode {episode}.")
+    visualize = args["visualize"]
+    if use_vectorized:
+        visualize = False  # vis not supported with vectorized eval
+
+    mean_eval_reward, std_eval_reward = _run_evaluation(
+        eval_env, agent, args, visualize=visualize
+    )
+
+    stats.log_stats_to_tb(episode, {
+        "Mean_Eval_Reward": mean_eval_reward,
+        "Eval_Reward_Std": std_eval_reward,
+    })
+    logger.info(
+        f"Mean evaluation reward over {args['num_eval_episodes']} episodes: "
+        f"{mean_eval_reward:.2f} ± {std_eval_reward:.2f}"
+    )
+
+    stats.save_train_state(episode, agent.learner.state, buffer, stats,
+                           current_phase=current_phase, agent_step_count=agent._step_count)
+    stats.flush_stats_to_disk()
+    stats.save_checkpoint(agent.learner.state, "latest")
+    if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
+        logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
+
+    if use_curriculum:
+        new_phase = _check_phase_advancement(
+            current_phase, mean_eval_reward,
+            phase1_threshold, phase2_threshold, phase3_threshold)
+        if new_phase != current_phase:
+            current_phase = new_phase
+            _propagate_phase(current_phase, use_vectorized,
+                             venv if use_vectorized else None,
+                             env if not use_vectorized else None,
+                             eval_env)
+
+    return current_phase
 
 
 def train(args: dict, stats: StatsCollector):
@@ -256,16 +335,20 @@ def train(args: dict, stats: StatsCollector):
 
     learner_state = None
     episode = 0
+    loaded_phase = None
+    loaded_step_count = 0
 
     if args["resume"] and os.path.exists(args["resume"]):
         logger.info(f"Found existing state at {args['resume']}. Resuming...")
-        episode, learner_state, buffer, loaded_stats = stats.load_train_state(args["resume"])
+        (episode, learner_state, buffer, loaded_stats, loaded_phase,
+         loaded_step_count) = stats.load_train_state(args["resume"])
 
         # Restore serializable collector fields (loaded_stats is a dict:
         # {"stats": ..., "best_eval_reward": ...})
         stats.stats = loaded_stats["stats"]
         stats.best_eval_reward = loaded_stats["best_eval_reward"]
-        logger.success(f"Successfully resumed from episode {episode}")
+        logger.success(f"Successfully resumed from episode {episode} "
+                       f"(phase={loaded_phase}, step_count={loaded_step_count})")
 
     agent = SoccerAgent(
         observation_shape=state_dim,
@@ -278,13 +361,16 @@ def train(args: dict, stats: StatsCollector):
 
     if learner_state is not None:
         agent.learner.state = learner_state
+    if loaded_step_count > 0:
+        agent._step_count = loaded_step_count
+        logger.info(f"Restored agent step count to {loaded_step_count}.")
 
     logger.info("Setup complete.")
 
     # Curriculum phase initialization
     use_curriculum = args.get("curriculum", False)
     if use_curriculum:
-        current_phase = _PHASE_FEET
+        current_phase = loaded_phase if loaded_phase is not None else _PHASE_FEET
         phase1_threshold = args.get("phase1_threshold", 200.0)
         phase2_threshold = args.get("phase2_threshold", 400.0)
         phase3_threshold = args.get("phase3_threshold", 700.0)
@@ -346,124 +432,53 @@ def train(args: dict, stats: StatsCollector):
 
     try:
         while True:
+            episode += 1
+            if episode > max_episodes:
+                break
+            if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+                logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
+                break
+
             if use_vectorized:
-                finished_stats, metrics = run_vectorized_episode(venv, agent, args, profile=profile)
-                for ep_reward, ep_length in finished_stats:
-                    episode += 1
-                    if episode > max_episodes:
-                        break
-                    ep_stats = {
-                        "Episode_Reward": ep_reward,
-                        "Episode_Length": ep_length,
-                        "Buffer_Size": len(buffer),
-                        "Curriculum_Phase": current_phase,
-                        **metrics,
-                    }
-                    stats.log_stats_to_tb(episode, ep_stats)
-                    total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
-                    stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
-
-                    if episode % args["eval_frequency"] == 0:
-                        logger.info(f"Starting evaluation at episode {episode}.")
-                        eval_rewards = []
-                        for eval_episode in range(1, args["num_eval_episodes"] + 1):
-                            eval_reward, _, _, _ = run_episode(
-                                eval_env, agent, args, explore=False,
-                                visualize=args["visualize"] and (eval_episode == 1),
-                            )
-                            eval_rewards.append(eval_reward)
-                        mean_eval_reward = np.mean(eval_rewards)
-                        stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-                        logger.info(
-                            f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
-                        stats.save_train_state(episode, agent.learner.state, buffer, stats)
-                        stats.flush_stats_to_disk()
-                        stats.save_checkpoint(agent.learner.state, "latest")
-                        if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
-                            logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
-
-                        if use_curriculum:
-                            new_phase = _check_phase_advancement(
-                                current_phase, mean_eval_reward,
-                                phase1_threshold, phase2_threshold,
-                                phase3_threshold)
-                            if new_phase != current_phase:
-                                current_phase = new_phase
-                                _propagate_phase(current_phase, use_vectorized,
-                                                 venv if use_vectorized else None,
-                                                 env if not use_vectorized else None,
-                                                 eval_env)
-
-                    if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                        logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
-                        break
-
-                if episode > max_episodes:
-                    break
-                if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                    break
-                if shutdown_requested:
-                    break
+                reward_mean, reward_std, length_mean, length_std, metrics = \
+                    run_vectorized_episode(venv, agent, args, profile=profile)
+                ep_stats = {
+                    "Episode_Reward": reward_mean,
+                    "Episode_Reward_Std": reward_std,
+                    "Episode_Length": length_mean,
+                    "Episode_Length_Std": length_std,
+                    "Buffer_Size": len(buffer),
+                    "Curriculum_Phase": current_phase,
+                    **metrics,
+                }
             else:
-                episode += 1
-                if episode > max_episodes:
-                    break
-                if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                    logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
-                    break
                 ep_reward, ep_length, metrics, _ = run_episode(env, agent, args, profile=profile)
                 ep_stats = {
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
                     "Buffer_Size": len(buffer),
                     "Curriculum_Phase": current_phase,
-                    **metrics
+                    **metrics,
                 }
 
-                stats.log_stats_to_tb(episode, ep_stats)
+            stats.log_stats_to_tb(episode, ep_stats)
+            total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
+            stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
-                total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
-                stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
+            if episode % args["eval_frequency"] == 0:
+                current_phase = _handle_eval(
+                    episode, eval_env, agent, args, stats, buffer,
+                    current_phase, use_vectorized,
+                    venv if use_vectorized else None,
+                    env if not use_vectorized else None,
+                    use_curriculum, phase1_threshold, phase2_threshold,
+                    phase3_threshold)
 
-                if episode % args["eval_frequency"] == 0:
-                    logger.info(f"Starting evaluation at episode {episode}.")
-                    eval_rewards = []
-
-                    for eval_episode in range(1, args["num_eval_episodes"] + 1):
-                        eval_reward, _, _, _ = run_episode(
-                            eval_env,
-                            agent,
-                            args,
-                            explore=False,
-                            visualize=args["visualize"] and (eval_episode == 1)  # only vis. first eval episode
-                        )
-                        eval_rewards.append(eval_reward)
-
-                    mean_eval_reward = np.mean(eval_rewards)
-                    stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-                    logger.info(
-                        f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
-
-                    stats.save_train_state(episode, agent.learner.state, buffer, stats)
-                    stats.flush_stats_to_disk()
-                    stats.save_checkpoint(agent.learner.state, "latest")
-                    if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
-                        logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
-
-                    if use_curriculum:
-                        new_phase = _check_phase_advancement(
-                            current_phase, mean_eval_reward,
-                            phase1_threshold, phase2_threshold,
-                            phase3_threshold)
-                        if new_phase != current_phase:
-                            current_phase = new_phase
-                            _propagate_phase(current_phase, use_vectorized,
-                                             venv if use_vectorized else None,
-                                             env if not use_vectorized else None,
-                                             eval_env)
-
-                if shutdown_requested:
-                    break
+            if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+                logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
+                break
+            if shutdown_requested:
+                break
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
@@ -471,7 +486,9 @@ def train(args: dict, stats: StatsCollector):
         if use_vectorized:
             venv.close()
 
-    stats.save_train_state(episode, agent.learner.state, buffer, stats)
+    stats.save_train_state(episode, agent.learner.state, buffer, stats,
+                           current_phase=current_phase if use_curriculum else 0,
+                           agent_step_count=agent._step_count)
     stats.flush_stats_to_disk()
     stats.save_checkpoint(agent.learner.state, "final")
     logger.info(f"Dumped training statistics to {stats.stats_file}.")

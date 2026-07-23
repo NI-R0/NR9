@@ -104,12 +104,13 @@ uv run python main.py \
   --env_domain walker_3D_ball --env_task walk \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
-  --eval_frequency "$NUM_ENVS" \
+  --eval_frequency 2 \
+  --num_eval_episodes "$CPUS" \
   --capacity 1000000 \
   --duration 25 \
   --curriculum \
   --phase1_threshold 200.0 \
-  --phase2_threshold 300.0 \
+  --phase2_threshold 400.0 \
   --phase3_threshold 700.0 \
   $RESUME_ARGS
 
