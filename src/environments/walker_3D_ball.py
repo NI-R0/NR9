@@ -53,11 +53,11 @@ _TARGET_SHRINK = 0.1
 _SUCCESS_THRESHOLD = 5
 
 # Reward weights (additive across phases, not normalised)
-_W_FEET = 0.3
+_W_FEET = 0.2
 _W_CONTROL = 0.1
 _W_STAND = 0.2
 _W_APPROACH = 0.3
-_W_KICK = 0.1
+_W_KICK = 0.2
 _TARGET_BONUS = 10.0
 
 # Touch sensor names for feet reward
@@ -164,14 +164,14 @@ class Physics(mujoco.Physics):
   def feet_touch(self):
     """Returns summed tanh-saturated touch force for feet only."""
     return sum(
-        np.tanh(self.named.data.sensordata[name].item() - 3)
+        np.tanh(self.named.data.sensordata[name].item())
         for name in _FOOT_TOUCHES
     )
 
   def non_foot_touch(self):
     """Returns summed tanh-saturated touch force for non-foot body parts."""
     return sum(
-        np.tanh(self.named.data.sensordata[name].item() - 3)
+        np.tanh(self.named.data.sensordata[name].item())
         for name in _NON_FOOT_TOUCHES
     )
 
