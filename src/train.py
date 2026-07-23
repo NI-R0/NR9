@@ -64,6 +64,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     episode_metrics = {}
     avg_metrics = {}
     updates_count = 0
+    reward_components_sum: dict[str, float] = {}
 
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
@@ -79,8 +80,12 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
             action.block_until_ready()
         t1 = time.perf_counter()
 
-        next_state, reward, done, _ = env.step(action)
+        next_state, reward, done, info = env.step(action)
         t2 = time.perf_counter()
+
+        if "reward_components" in info:
+            for k, v in info["reward_components"].items():
+                reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v
 
         if explore:
             metrics = agent.update(state, action, reward, next_state, done)
@@ -119,7 +124,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
             f"({timing['update']/step*1000:.1f}ms/step)"
         )
 
-    return episode_reward, step, avg_metrics, frames
+    return episode_reward, step, avg_metrics, frames, reward_components_sum
 
 
 def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: dict,
@@ -144,6 +149,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
 
     episode_metrics = {}
     updates_count = 0
+    reward_components_sum: dict[str, float] = {}
 
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
@@ -184,6 +190,9 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
                 episode_metrics[k] = episode_metrics.get(k, 0.0) + v
 
         for i in range(num_envs):
+            if "reward_components" in infos[i]:
+                for k, v in infos[i]["reward_components"].items():
+                    reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
             if dones[i] and not finished[i]:
@@ -231,7 +240,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         f"length {length_mean:.1f} ± {length_std:.1f}"
     )
 
-    return reward_mean, reward_std, length_mean, length_std, avg_metrics
+    return reward_mean, reward_std, length_mean, length_std, avg_metrics, reward_components_sum
 
 
 def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
@@ -242,7 +251,7 @@ def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
     """
     eval_rewards = []
     for eval_episode in range(1, args["num_eval_episodes"] + 1):
-        eval_reward, _, _, _ = run_episode(
+        eval_reward, _, _, _, _ = run_episode(
             eval_env, agent, args, explore=False,
             visualize=visualize and (eval_episode == 1),
         )
@@ -428,7 +437,7 @@ def train(args: dict, stats: StatsCollector):
                 break
 
             if use_vectorized:
-                reward_mean, reward_std, length_mean, length_std, metrics = \
+                reward_mean, reward_std, length_mean, length_std, metrics, reward_comp = \
                     run_vectorized_episode(venv, agent, args, profile=profile)
                 ep_stats = {
                     "Episode_Reward": reward_mean,
@@ -440,7 +449,7 @@ def train(args: dict, stats: StatsCollector):
                     **metrics,
                 }
             else:
-                ep_reward, ep_length, metrics, _ = run_episode(env, agent, args, profile=profile)
+                ep_reward, ep_length, metrics, _, reward_comp = run_episode(env, agent, args, profile=profile)
                 ep_stats = {
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
@@ -448,6 +457,10 @@ def train(args: dict, stats: StatsCollector):
                     "Curriculum_Phase": current_phase,
                     **metrics,
                 }
+
+            # Log individual reward components to TensorBoard and console
+            for comp_name, comp_value in reward_comp.items():
+                ep_stats[f"Reward_{comp_name}"] = comp_value
 
             stats.log_stats_to_tb(episode, ep_stats)
             total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)

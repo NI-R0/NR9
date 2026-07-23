@@ -272,6 +272,7 @@ class Walker3DBall(base.Task):
     self._consecutive_successes = 0
     self._target_pos = None
     self._phase = phase
+    self._reward_components: dict[str, float] = {}
     super().__init__(random=random)
 
   def register_success(self):
@@ -381,7 +382,14 @@ class Walker3DBall(base.Task):
 
     reward = _W_FEET * feet_reward - _W_EFFORT * effort_penalty
 
+    # Store individual reward components for logging
+    components = {
+        'feet': _W_FEET * feet_reward,
+        'effort': -_W_EFFORT * effort_penalty,
+    }
+
     if self._phase == PHASE_FEET:
+      self._reward_components = components
       return float(reward)
 
     # --- Stand reward: torso height + upright orientation ---
@@ -404,7 +412,11 @@ class Walker3DBall(base.Task):
     ))
     reward -= _W_LEG_SPREAD * leg_spread * standing * feet_only
 
+    components['stand'] = _W_STAND * stand_reward * feet_only
+    components['leg_spread'] = -_W_LEG_SPREAD * leg_spread * standing * feet_only
+
     if self._phase == PHASE_STAND:
+      self._reward_components = components
       return float(reward)
 
     # --- Approach reward: reduce torso-to-ball distance ---
@@ -427,7 +439,10 @@ class Walker3DBall(base.Task):
       approach_reward = approach
     reward += _W_APPROACH * approach_reward
 
+    components['approach'] = _W_APPROACH * approach_reward
+
     if self._phase == PHASE_APPROACH:
+      self._reward_components = components
       return float(reward)
 
     # --- Kick reward: ball velocity toward target ---
@@ -446,8 +461,13 @@ class Walker3DBall(base.Task):
     # --- Target bonus: large reward when ball enters target zone ---
     target_size = physics.get_target_size()
     dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
-    if dist_ball_to_target < target_size + _BALL_RADIUS:
+    target_hit = dist_ball_to_target < target_size + _BALL_RADIUS
+    if target_hit:
       reward += _TARGET_BONUS
       self._reset_ball_and_target(physics)
 
+    components['kick'] = _W_KICK * kick_reward
+    components['target'] = _TARGET_BONUS if target_hit else 0.0
+
+    self._reward_components = components
     return float(reward)

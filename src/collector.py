@@ -206,6 +206,14 @@ Evaluation Configuration:
             + (f" | {metrics_str}" if metrics_str else "")
         )
 
+        # Log reward component breakdown
+        reward_comp = {k: v for k, v in ep_stats.items() if k.startswith("Reward_")}
+        if reward_comp:
+            comp_str = ", ".join(
+                f"{k.replace('Reward_', '')}: {v:+.3f}" for k, v in sorted(reward_comp.items())
+            )
+            logger.info(f"  Reward breakdown → {comp_str}")
+
     def flush_stats_to_disk(self):
         with open(self.stats_file, "w") as f:
             json.dump(self.stats, f, indent=4)

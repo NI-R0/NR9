@@ -43,7 +43,12 @@ class Environment:
         reward = timestep.reward if timestep.reward is not None else 0.0
         done = timestep.last()
 
-        return state, reward, done, {}
+        info = {}
+        task = getattr(self.env, 'task', None)
+        if task is not None and hasattr(task, '_reward_components'):
+            info['reward_components'] = dict(task._reward_components)
+
+        return state, reward, done, info
 
     def render(self, height: int = 240, width: int = 320, camera_id: int = 0):
         """Returns the current frame as an (H, W, 3) uint8 RGB array.

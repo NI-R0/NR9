@@ -109,9 +109,9 @@ uv run python main.py \
   --capacity 1000000 \
   --duration 25 \
   --curriculum \
-  --phase1_threshold 180.0 \
-  --phase2_threshold 400.0 \
-  --phase3_threshold 630.0 \
+  --phase1_threshold 100.0 \
+  --phase2_threshold 320.0 \
+  --phase3_threshold 540.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?
