@@ -93,7 +93,7 @@ def test(args: dict, stats: StatsCollector):
     episode_rewards = []
     frames = [] if visualize else None
     for episode in range(1, args["num_eval_episodes"] + 1):
-        ep_reward, ep_length, _, ep_frames = run_episode(
+        ep_reward, ep_length, _, ep_frames, _ = run_episode(
             env, agent, args, explore=False, visualize=visualize
         )
         episode_rewards.append(ep_reward)

@@ -34,19 +34,36 @@ class Environment:
         # Concatenates position, velocity, etc. into a flat vector for the MLPs
         return np.concatenate([np.asarray(val).ravel() for val in obs_dict.values()]).astype(np.float32)
 
+    def _get_reward_components(self):
+        task = getattr(self.env, "task", None)
+
+        if task is None:
+            task = getattr(self.env, "_task", None)
+
+        if task is not None and hasattr(task, "get_reward_components"):
+            return task.get_reward_components()
+
+        return {}
+
     def reset(self) -> np.ndarray:
         return self._flatten_observation(self.env.reset().observation)
 
     def step(self, action: np.ndarray):
         # Clip action to physics bounds to prevent MuJoCo integration crashes
-        action = np.clip(action, self.action_spec.minimum, self.action_spec.maximum)
+        action = np.clip(
+            action,
+            self.action_spec.minimum,
+            self.action_spec.maximum
+        )
         timestep = self.env.step(action)
 
         state = self._flatten_observation(timestep.observation)
         reward = timestep.reward if timestep.reward is not None else 0.0
         done = timestep.last()
 
-        return state, reward, done, {}
+        info = self._get_reward_components()
+
+        return state, reward, done, info
 
     def render(self, height: int = 240, width: int = 320, camera_id: int = 0):
         """Returns the current frame as an (H, W, 3) uint8 RGB array.

@@ -22,6 +22,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
 
     # Per-step timing accumulators
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
+    reward_component_sums = {}
 
     frames = [] if visualize else None
     while not done and step < env.ep_max_steps:
@@ -36,8 +37,14 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
             action.block_until_ready()
         t1 = time.perf_counter()
 
-        next_state, reward, done, _ = env.step(action)
+        next_state, reward, done, info = env.step(action)
         t2 = time.perf_counter()
+
+        for key, value in info.items():
+            reward_component_sums[key] = (
+                reward_component_sums.get(key, 0.0)
+                + float(value)
+            )
 
         if explore:
             metrics = agent.update(state, action, reward, next_state, done)
@@ -77,7 +84,18 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
             f"({timing['update']/step*1000:.1f}ms/step)"
         )
 
-    return episode_reward, step, avg_metrics, frames
+    reward_component_means = {
+        f"Mean_{key}": value / max(step, 1)
+        for key, value in reward_component_sums.items()
+    }
+
+    return (
+        episode_reward,
+        step,
+        avg_metrics,
+        frames,
+        reward_component_means,
+    )
 
 
 def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: dict,
@@ -98,7 +116,12 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     ep_rewards = np.zeros(num_envs, dtype=np.float32)
     ep_lengths = np.zeros(num_envs, dtype=np.int32)
     finished = [False] * num_envs
-    finished_stats: list[tuple[float, int]] = [None] * num_envs
+    finished_stats: list[tuple[float, int, dict]] = [None] * num_envs
+
+    reward_component_sums = [
+        {}
+        for _ in range(num_envs)
+    ]
 
     episode_metrics = {}
     updates_count = 0
@@ -118,6 +141,16 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         actions_np = np.asarray(actions, dtype=np.float32)
         next_states, rewards, dones, infos = venv.step(actions_np)
         t2 = time.perf_counter()
+
+        for i, info in enumerate(infos):
+            for key, value in info.items():
+                if key == "terminal_obs":
+                    continue
+
+                reward_component_sums[i][key] = (
+                    reward_component_sums[i].get(key, 0.0)
+                    + float(value)
+                )
 
         # For done envs, use the terminal observation in the buffer.
         terminal_next_states = next_states.copy()
@@ -149,10 +182,22 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
             ep_lengths[i] += 1
             if dones[i] and not finished[i]:
                 finished[i] = True
-                finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
+
+                component_means = {
+                    f"Mean_{key}": value / int(ep_lengths[i])
+                    for key, value in reward_component_sums[i].items()
+                }
+
+                finished_stats[i] = (
+                    float(ep_rewards[i]),
+                    int(ep_lengths[i]),
+                    component_means,
+                )
+
                 # Reset accumulator for the next episode in this env.
                 ep_rewards[i] = 0.0
                 ep_lengths[i] = 0
+                reward_component_sums[i] = {}
 
         states = next_states
 
@@ -162,7 +207,16 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     # If some envs never finished within max_steps, record their partial stats.
     for i in range(num_envs):
         if finished_stats[i] is None:
-            finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
+            component_means = {
+                f"Mean_{key}": value / max(int(ep_lengths[i]), 1)
+                for key, value in reward_component_sums[i].items()
+            }
+
+            finished_stats[i] = (
+                float(ep_rewards[i]),
+                int(ep_lengths[i]),
+                component_means,
+            )
 
     avg_metrics = {}
     if updates_count > 0:
@@ -264,7 +318,7 @@ def train(args: dict, stats: StatsCollector):
             if use_vectorized:
                 # Each meta-episode yields num_envs completed episodes.
                 finished_stats, metrics = run_vectorized_episode(venv, agent, args, profile=profile)
-                for ep_reward, ep_length in finished_stats:
+                for ep_reward, ep_length, reward_components in finished_stats:
                     episode += 1
                     if episode > max_episodes:
                         break
@@ -272,6 +326,7 @@ def train(args: dict, stats: StatsCollector):
                         "Episode_Reward": ep_reward,
                         "Episode_Length": ep_length,
                         "Buffer_Size": len(buffer),
+                        **reward_components,
                         **metrics,
                     }
                     stats.log_stats_to_tb(episode, ep_stats)
@@ -282,7 +337,7 @@ def train(args: dict, stats: StatsCollector):
                         logger.info(f"Starting evaluation at episode {episode}.")
                         eval_rewards = []
                         for eval_episode in range(1, args["num_eval_episodes"] + 1):
-                            eval_reward, _, _, _ = run_episode(
+                            eval_reward, _, _, _, _ = run_episode(
                                 eval_env, agent, args, explore=False,
                                 visualize=args["visualize"] and (eval_episode == 1),
                             )
@@ -310,11 +365,12 @@ def train(args: dict, stats: StatsCollector):
                 if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
                     logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
                     break
-                ep_reward, ep_length, metrics, _ = run_episode(env, agent, args, profile=profile)
+                ep_reward, ep_length, metrics, _, reward_components = run_episode(env, agent, args, profile=profile)
                 ep_stats = {
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
                     "Buffer_Size": len(buffer),
+                    **reward_components,
                     **metrics
                 }
 
@@ -328,7 +384,7 @@ def train(args: dict, stats: StatsCollector):
                     eval_rewards = []
 
                     for eval_episode in range(1, args["num_eval_episodes"] + 1):
-                        eval_reward, _, _, _ = run_episode(
+                        eval_reward, _, _, _, _ = run_episode(
                             eval_env,
                             agent,
                             args,

@@ -158,6 +158,7 @@ class Humanoid(base.Task):
     """
     self._move_speed = move_speed
     self._pure_state = pure_state
+    self.last_reward_components = {}
     super().__init__(random=random)
 
   def initialize_episode(self, physics):
@@ -181,7 +182,7 @@ class Humanoid(base.Task):
     
     # Add only a TINY bit of noise to joint positions
     qpos = physics.data.qpos.copy()
-    qpos[7:] += self.random.uniform(-0.2, 0.2, size=len(qpos[7:]))
+    qpos[7:] += self.random.uniform(-0.01, 0.01, size=len(qpos[7:]))
     physics.data.qpos[:] = qpos
     
     # Lift him slightly off the ground so he doesn't clip
@@ -204,6 +205,9 @@ class Humanoid(base.Task):
       obs['velocity'] = physics.velocity()
       obs['sensors'] = physics.data.sensordata.copy()
     return obs
+  
+  def get_reward_components(self):
+    return self.last_reward_components.copy()
 
   def get_reward(self, physics):
     # Now head_height() will return ~1.5m if standing
@@ -212,12 +216,13 @@ class Humanoid(base.Task):
     # Standing: Full reward at 1.4m, starts giving points at 0.8m
     standing = rewards.tolerance(head_h,
                                  bounds=(1.4, float('inf')),
-                                 margin=0.6) 
+                                 margin=1.4) 
     
     # Upright: Torso must be vertical
     upright = rewards.tolerance(physics.torso_upright(),
                                 bounds=(0.9, float('inf')), 
-                                margin=0.4)
+                                margin=1.9,
+                                sigmoid='linear')
     
     # Multiplicative: must have both to get points
     stand_reward = standing * upright
@@ -227,4 +232,19 @@ class Humanoid(base.Task):
                                       value_at_margin=0,
                                       sigmoid='quadratic').mean()
 
-    return max(stand_reward * (0.5 + 0.5 * small_control), 1e-8)
+    reward = max(
+        stand_reward * (0.5 + 0.5 * small_control),
+        1e-8
+    )
+
+    self.last_reward_components = {
+        "head_height": float(head_h),
+        "torso_upright": float(physics.torso_upright()),
+        "standing": float(standing),
+        "upright": float(upright),
+        "stand_reward": float(stand_reward),
+        "small_control": float(small_control),
+        "reward": float(reward),
+    }
+
+    return reward
