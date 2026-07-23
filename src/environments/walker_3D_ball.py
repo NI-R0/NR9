@@ -51,16 +51,35 @@ _TARGET_SIZE_MAX = 1.0
 _TARGET_SIZE_MIN = 0.2
 _TARGET_SHRINK = 0.1
 _SUCCESS_THRESHOLD = 5
+
+# Reward weights (additive across phases, not normalised)
+_W_FEET = 0.3
+_W_CONTROL = 0.1
 _W_STAND = 0.2
 _W_APPROACH = 0.3
-_W_KICK = 0.5
+_W_KICK = 0.1
 _TARGET_BONUS = 10.0
 
+# Touch sensor names for feet reward
+_NON_FOOT_TOUCHES = (
+    'torso_touch',
+    'right_thigh_touch',
+    'left_thigh_touch',
+    'right_leg_touch',
+    'left_leg_touch',
+)
+_FOOT_TOUCHES = (
+    'right_foot_touch',
+    'left_foot_touch',
+)
+_ALL_TOUCHES = _NON_FOOT_TOUCHES + _FOOT_TOUCHES
+
 # Curriculum phases
-PHASE_STAND = 0
-PHASE_APPROACH = 1
-PHASE_FULL = 2
-_NUM_PHASES = 3
+PHASE_FEET = 0
+PHASE_STAND = 1
+PHASE_APPROACH = 2
+PHASE_FULL = 3
+_NUM_PHASES = 4
 
 SUITE = containers.TaggedTasks()
 FILE = 'walker_3D_ball.xml'
@@ -131,6 +150,31 @@ class Physics(mujoco.Physics):
     """
     return self.named.data.xmat[1:, ['xx', 'xz']].ravel()
 
+  def touch_forces(self):
+    """Returns touch forces of all body parts (including feet) as a 1-D array.
+
+    Each force is passed through ``tanh(force - 3)`` so that light grazes
+    produce ~0 while firm contacts saturate to ~1.
+    """
+    return np.array([
+        np.tanh(self.named.data.sensordata[name].item() - 3)
+        for name in _ALL_TOUCHES
+    ])
+
+  def feet_touch(self):
+    """Returns summed tanh-saturated touch force for feet only."""
+    return sum(
+        np.tanh(self.named.data.sensordata[name].item() - 3)
+        for name in _FOOT_TOUCHES
+    )
+
+  def non_foot_touch(self):
+    """Returns summed tanh-saturated touch force for non-foot body parts."""
+    return sum(
+        np.tanh(self.named.data.sensordata[name].item() - 3)
+        for name in _NON_FOOT_TOUCHES
+    )
+
   def ball_position(self):
     """Returns the [x, y, z] position of the ball."""
     return np.array(self.named.data.qpos['ball_joint'][:3])
@@ -191,7 +235,7 @@ class Walker3DBall(base.Task):
   consecutive-success counter.
   """
 
-  def __init__(self, move_speed, random=None, phase=PHASE_STAND):
+  def __init__(self, move_speed, random=None, phase=PHASE_FEET):
     """Initializes an instance of `Walker3DBall`.
 
     Args:
@@ -275,7 +319,7 @@ class Walker3DBall(base.Task):
     self._place_target(physics)
 
   def get_observation(self, physics):
-    """Returns an observation of body state, ball, and target."""
+    """Returns an observation of body state, ball, target, and touches."""
     obs = collections.OrderedDict()
     obs['orientations'] = physics.orientations()
     obs['height'] = physics.torso_height()
@@ -283,25 +327,55 @@ class Walker3DBall(base.Task):
     obs['ball_position'] = physics.ball_position()
     obs['ball_velocity'] = physics.ball_velocity()[:3]
     obs['target_position'] = physics.target_xy()
+    obs['touches'] = physics.touch_forces()
     return obs
 
   def get_reward(self, physics):
-    """Multi-stage reward weighted by curriculum phase.
+    """Multi-stage reward, additive across curriculum phases.
 
-    Phase 0 (stand):    stand
-    Phase 1 (approach): stand + approach
-    Phase 2 (full):     stand + approach + kick (can be negative) + target bonus
+    Each phase adds new reward components on top of the previous ones
+    (no re-weighting), so Q-value predictions stay approximately stable
+    when advancing phases.
+
+    Phase 0 (feet):     feet + control
+    Phase 1 (stand):    feet + control + stand
+    Phase 2 (approach): feet + control + stand + approach
+    Phase 3 (full):     feet + control + stand + approach + kick + target bonus
     """
+    # --- Feet reward: penalise non-foot contact, reward foot-only stance ---
+    feet_touch = physics.feet_touch()
+    non_foot_touch = physics.non_foot_touch()
+    # feet_touch in [0, 2], non_foot_touch in [0, 5]
+    # +1 when feet on ground and nothing else touches, -1 when non-foot touches
+    feet_reward = np.tanh(feet_touch) - np.tanh(non_foot_touch)
+    # Clip to [-1, 1]
+    feet_reward = float(np.clip(feet_reward, -1.0, 1.0))
+
+    # --- Small control penalty: discourage excessive motor commands ---
+    small_control = rewards.tolerance(physics.control(), margin=1,
+                                      value_at_margin=0,
+                                      sigmoid='quadratic').mean()
+    control_reward = float((4 + small_control) / 5)  # in [0.8, 1.0]
+
+    reward = _W_FEET * feet_reward + _W_CONTROL * control_reward
+
+    if self._phase == PHASE_FEET:
+      return float(reward)
+
+    # --- Stand reward: torso height + upright orientation ---
     standing = rewards.tolerance(physics.torso_height(),
                                  bounds=(_STAND_HEIGHT, float('inf')),
                                  margin=_STAND_HEIGHT / 2)
     upright = (1 + physics.torso_upright()) / 2
-    stand_reward = (3 * standing + upright) / 4
+    stand_reward = (3 * standing + upright) / 4  # in [0, 1]
+    reward += _W_STAND * stand_reward
 
+    if self._phase == PHASE_STAND:
+      return float(reward)
+
+    # --- Approach reward: reduce torso-to-ball distance ---
     torso_xy = physics.torso_xy()
     ball_xy = physics.ball_xy()
-    target_xy = physics.target_xy()
-    target_size = physics.get_target_size()
     dist_to_ball = np.linalg.norm(ball_xy - torso_xy)
     approach = rewards.tolerance(dist_to_ball,
                                  bounds=(0, _BALL_RADIUS),
@@ -317,7 +391,13 @@ class Walker3DBall(base.Task):
       approach_reward = approach * (5 * move_reward + 1) / 6
     else:
       approach_reward = approach
+    reward += _W_APPROACH * approach_reward
 
+    if self._phase == PHASE_APPROACH:
+      return float(reward)
+
+    # --- Kick reward: ball velocity toward target ---
+    target_xy = physics.target_xy()
     ball_vel_xy = physics.ball_linear_velocity_xy()
     ball_to_target = target_xy - ball_xy
     ball_to_target_norm = np.linalg.norm(ball_to_target)
@@ -327,21 +407,13 @@ class Walker3DBall(base.Task):
       dir_to_target = np.array([1.0, 0.0])
     ball_speed_toward = float(np.dot(ball_vel_xy, dir_to_target))
     kick_reward = np.tanh(ball_speed_toward / 5.0)
+    reward += _W_KICK * kick_reward
 
-    # Phase-weighted reward
-    if self._phase == PHASE_STAND:
-      reward = stand_reward
-    elif self._phase == PHASE_APPROACH:
-      reward = (_W_STAND * stand_reward + _W_APPROACH * approach_reward) / (_W_STAND +_W_APPROACH)
-    else:
-      # PHASE_FULL: all components
-      dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
-      target_bonus = 0.0
-      if dist_ball_to_target < target_size + _BALL_RADIUS:
-        target_bonus = _TARGET_BONUS
-        self._reset_ball_and_target(physics)
-      reward = (_W_STAND * stand_reward
-                + _W_APPROACH * approach_reward
-                + _W_KICK * kick_reward
-                + target_bonus)
+    # --- Target bonus: large reward when ball enters target zone ---
+    target_size = physics.get_target_size()
+    dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
+    if dist_ball_to_target < target_size + _BALL_RADIUS:
+      reward += _TARGET_BONUS
+      self._reset_ball_and_target(physics)
+
     return float(reward)

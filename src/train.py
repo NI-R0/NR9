@@ -2,7 +2,6 @@ import os
 import signal
 import time
 import numpy as np
-import os
 from loguru import logger
 from src.collector import StatsCollector
 from src.buffer import NStepTransitionBuffer
@@ -12,27 +11,35 @@ from src.networks import ActorNetwork, CriticNetwork
 from src.vector_env import ParallelVectorEnv
 
 # Curriculum phases (must match src/environments/walker_3D_ball.py)
-_PHASE_STAND = 0
-_PHASE_APPROACH = 1
-_PHASE_FULL = 2
+_PHASE_FEET = 0
+_PHASE_STAND = 1
+_PHASE_APPROACH = 2
+_PHASE_FULL = 3
 
 
 def _check_phase_advancement(current_phase: int, mean_eval_reward: float,
-                             phase1_threshold: float, phase2_threshold: float) -> int:
+                             phase1_threshold: float, phase2_threshold: float,
+                             phase3_threshold: float) -> int:
     """Check if the curriculum phase should advance based on eval reward.
 
     Returns the new phase (same as current if no advancement).
     """
-    if current_phase == _PHASE_STAND and mean_eval_reward >= phase1_threshold:
+    if current_phase == _PHASE_FEET and mean_eval_reward >= phase1_threshold:
         logger.info(
-            f"Curriculum: advancing from STAND to APPROACH "
+            f"Curriculum: advancing from FEET to STAND "
             f"(eval reward {mean_eval_reward:.2f} >= threshold {phase1_threshold:.2f})"
         )
+        return _PHASE_STAND
+    elif current_phase == _PHASE_STAND and mean_eval_reward >= phase2_threshold:
+        logger.info(
+            f"Curriculum: advancing from STAND to APPROACH "
+            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase2_threshold:.2f})"
+        )
         return _PHASE_APPROACH
-    elif current_phase == _PHASE_APPROACH and mean_eval_reward >= phase2_threshold:
+    elif current_phase == _PHASE_APPROACH and mean_eval_reward >= phase3_threshold:
         logger.info(
             f"Curriculum: advancing from APPROACH to FULL "
-            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase2_threshold:.2f})"
+            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase3_threshold:.2f})"
         )
         return _PHASE_FULL
     return current_phase
@@ -277,11 +284,12 @@ def train(args: dict, stats: StatsCollector):
     # Curriculum phase initialization
     use_curriculum = args.get("curriculum", False)
     if use_curriculum:
-        current_phase = _PHASE_STAND
-        phase1_threshold = args.get("phase1_threshold", 5.0)
-        phase2_threshold = args.get("phase2_threshold", 15.0)
+        current_phase = _PHASE_FEET
+        phase1_threshold = args.get("phase1_threshold", 200.0)
+        phase2_threshold = args.get("phase2_threshold", 400.0)
+        phase3_threshold = args.get("phase3_threshold", 700.0)
         logger.info(f"Curriculum enabled: starting at phase {current_phase} "
-                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold})")
+                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold}, phase3={phase3_threshold})")
         _propagate_phase(current_phase, use_vectorized,
                          venv if use_vectorized else None,
                          env if not use_vectorized else None,
@@ -290,6 +298,7 @@ def train(args: dict, stats: StatsCollector):
         current_phase = _PHASE_FULL
         phase1_threshold = 0.0
         phase2_threshold = 0.0
+        phase3_threshold = 0.0
 
     duration_min = args.get("duration")
     use_duration = duration_min is not None
@@ -347,6 +356,7 @@ def train(args: dict, stats: StatsCollector):
                         "Episode_Reward": ep_reward,
                         "Episode_Length": ep_length,
                         "Buffer_Size": len(buffer),
+                        "Curriculum_Phase": current_phase,
                         **metrics,
                     }
                     stats.log_stats_to_tb(episode, ep_stats)
@@ -375,7 +385,8 @@ def train(args: dict, stats: StatsCollector):
                         if use_curriculum:
                             new_phase = _check_phase_advancement(
                                 current_phase, mean_eval_reward,
-                                phase1_threshold, phase2_threshold)
+                                phase1_threshold, phase2_threshold,
+                                phase3_threshold)
                             if new_phase != current_phase:
                                 current_phase = new_phase
                                 _propagate_phase(current_phase, use_vectorized,
@@ -405,6 +416,7 @@ def train(args: dict, stats: StatsCollector):
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
                     "Buffer_Size": len(buffer),
+                    "Curriculum_Phase": current_phase,
                     **metrics
                 }
 
@@ -441,7 +453,8 @@ def train(args: dict, stats: StatsCollector):
                     if use_curriculum:
                         new_phase = _check_phase_advancement(
                             current_phase, mean_eval_reward,
-                            phase1_threshold, phase2_threshold)
+                            phase1_threshold, phase2_threshold,
+                            phase3_threshold)
                         if new_phase != current_phase:
                             current_phase = new_phase
                             _propagate_phase(current_phase, use_vectorized,

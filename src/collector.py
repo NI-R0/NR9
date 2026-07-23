@@ -172,6 +172,7 @@ Evaluation Configuration:
             "target_update_period", "grad_norm_clip", "update_every",
             "num_envs", "eval_frequency", "num_eval_episodes",
             "curriculum", "phase1_threshold", "phase2_threshold",
+            "phase3_threshold",
         ]
         hparams = {}
         for k in hparam_keys:
