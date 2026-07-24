@@ -1,5 +1,6 @@
 import os
 import signal
+import shutil
 import time
 import numpy as np
 from loguru import logger
@@ -13,35 +14,36 @@ from src.vector_env import ParallelVectorEnv
 # Curriculum phases (must match src/environments/walker_3D_ball.py)
 _PHASE_FEET = 0
 _PHASE_STAND = 1
-_PHASE_APPROACH = 2
-_PHASE_FULL = 3
+_PHASE_WEIGHT_SHIFT = 2
+_PHASE_MARCH = 3
+_PHASE_APPROACH = 4
+_PHASE_FULL = 5
 
 
 def _check_phase_advancement(current_phase: int, mean_eval_reward: float,
                              phase1_threshold: float, phase2_threshold: float,
-                             phase3_threshold: float) -> int:
+                             phase3_threshold: float,
+                             phase4_threshold: float = 0.0,
+                             phase5_threshold: float = 0.0) -> int:
     """Check if the curriculum phase should advance based on eval reward.
 
     Returns the new phase (same as current if no advancement).
     """
-    if current_phase == _PHASE_FEET and mean_eval_reward >= phase1_threshold:
-        logger.info(
-            f"Curriculum: advancing from FEET to STAND "
-            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase1_threshold:.2f})"
-        )
-        return _PHASE_STAND
-    elif current_phase == _PHASE_STAND and mean_eval_reward >= phase2_threshold:
-        logger.info(
-            f"Curriculum: advancing from STAND to APPROACH "
-            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase2_threshold:.2f})"
-        )
-        return _PHASE_APPROACH
-    elif current_phase == _PHASE_APPROACH and mean_eval_reward >= phase3_threshold:
-        logger.info(
-            f"Curriculum: advancing from APPROACH to FULL "
-            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase3_threshold:.2f})"
-        )
-        return _PHASE_FULL
+    thresholds = {
+        _PHASE_FEET: (phase1_threshold, _PHASE_STAND, "FEET", "STAND"),
+        _PHASE_STAND: (phase2_threshold, _PHASE_WEIGHT_SHIFT, "STAND", "WEIGHT_SHIFT"),
+        _PHASE_WEIGHT_SHIFT: (phase3_threshold, _PHASE_MARCH, "WEIGHT_SHIFT", "MARCH"),
+        _PHASE_MARCH: (phase4_threshold, _PHASE_APPROACH, "MARCH", "APPROACH"),
+        _PHASE_APPROACH: (phase5_threshold, _PHASE_FULL, "APPROACH", "FULL"),
+    }
+    if current_phase in thresholds:
+        threshold, next_phase, cur_name, next_name = thresholds[current_phase]
+        if mean_eval_reward >= threshold:
+            logger.info(
+                f"Curriculum: advancing from {cur_name} to {next_name} "
+                f"(eval reward {mean_eval_reward:.2f} >= threshold {threshold:.2f})"
+            )
+            return next_phase
     return current_phase
 
 
@@ -263,7 +265,7 @@ def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
 def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
                  current_phase, use_vectorized, venv, env,
                  use_curriculum, phase1_threshold, phase2_threshold,
-                 phase3_threshold):
+                 phase3_threshold, phase4_threshold, phase5_threshold):
     """Run evaluation, log results, save state, and check curriculum advancement.
 
     Returns the (possibly updated) ``current_phase``.
@@ -296,8 +298,17 @@ def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
     if use_curriculum:
         new_phase = _check_phase_advancement(
             current_phase, mean_eval_reward,
-            phase1_threshold, phase2_threshold, phase3_threshold)
+            phase1_threshold, phase2_threshold, phase3_threshold,
+            phase4_threshold, phase5_threshold)
         if new_phase != current_phase:
+            # Save a snapshot of the best model at the end of the old phase
+            # so we can inspect what the agent learned at each stage.
+            best_ckpt_path = os.path.join(stats.checkpoint_dir, "best_ckpt.pkl")
+            phase_ckpt_path = os.path.join(stats.checkpoint_dir, f"best_phase_{current_phase}.pkl")
+            if os.path.exists(best_ckpt_path):
+                shutil.copy2(best_ckpt_path, phase_ckpt_path)
+                logger.info(f"Saved phase-{current_phase} snapshot to {phase_ckpt_path}")
+
             current_phase = new_phase
             _propagate_phase(current_phase, use_vectorized,
                              venv if use_vectorized else None,
@@ -382,9 +393,12 @@ def train(args: dict, stats: StatsCollector):
         current_phase = loaded_phase if loaded_phase is not None else _PHASE_FEET
         phase1_threshold = args.get("phase1_threshold", 200.0)
         phase2_threshold = args.get("phase2_threshold", 400.0)
-        phase3_threshold = args.get("phase3_threshold", 700.0)
+        phase3_threshold = args.get("phase3_threshold", 500.0)
+        phase4_threshold = args.get("phase4_threshold", 600.0)
+        phase5_threshold = args.get("phase5_threshold", 800.0)
         logger.info(f"Curriculum enabled: starting at phase {current_phase} "
-                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold}, phase3={phase3_threshold})")
+                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold}, "
+                     f"phase3={phase3_threshold}, phase4={phase4_threshold}, phase5={phase5_threshold})")
         _propagate_phase(current_phase, use_vectorized,
                          venv if use_vectorized else None,
                          env if not use_vectorized else None,
@@ -394,6 +408,8 @@ def train(args: dict, stats: StatsCollector):
         phase1_threshold = 0.0
         phase2_threshold = 0.0
         phase3_threshold = 0.0
+        phase4_threshold = 0.0
+        phase5_threshold = 0.0
 
     duration_min = args.get("duration")
     use_duration = duration_min is not None
@@ -473,7 +489,7 @@ def train(args: dict, stats: StatsCollector):
                     venv if use_vectorized else None,
                     env if not use_vectorized else None,
                     use_curriculum, phase1_threshold, phase2_threshold,
-                    phase3_threshold)
+                    phase3_threshold, phase4_threshold, phase5_threshold)
 
             if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
                 logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
