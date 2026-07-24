@@ -17,8 +17,8 @@
 
 Multi-stage reward (additive curriculum):
   0. Feet on ground only (penalise non-foot contact)
-  1. Stand upright (height + orientation)
-  2. Approach the ball (walking toward it while upright)
+  1. Stand upright (height + orientation + hip alignment)
+  2. Approach the ball (walking toward it while upright, with gait quality)
   3. Kick the ball toward the target (ball velocity in target direction)
   4. Target hit: large bonus, then ball and target are randomly re-placed
 
@@ -62,6 +62,12 @@ _W_KICK = 0.2
 _TARGET_BONUS = 100.0
 _W_LEG_SPREAD = 0.1
 _LEG_SPREAD_THRESHOLD = 0.2
+_W_HIP_ALIGN = 0.1          # Hip-yaw/roll alignment penalty weight
+_W_GAIT = 0.15              # Gait quality reward weight (foot clearance + single support)
+_GAIT_MIN_VELOCITY = 0.3    # Min horizontal velocity (m/s) for gait reward to activate
+_FOOT_CLEARANCE_TARGET = 0.12  # Target foot lift height (m) for gait reward
+_HIP_YAW_MAX = np.radians(45)   # Max hip-yaw range for normalization
+_HIP_ROLL_MAX = np.radians(45)  # Max hip-roll deviation from neutral for normalization
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -237,6 +243,42 @@ class Physics(mujoco.Physics):
     """Returns the current target zone half-size (xy)."""
     return float(self.named.model.geom_size['target_zone', 0])
 
+  def hip_yaw_angles(self):
+    """Returns [right_hip_yaw, left_hip_yaw] joint angles in radians."""
+    return np.array([
+        self.named.data.qpos['right_hip_yaw'],
+        self.named.data.qpos['left_hip_yaw'],
+    ])
+
+  def hip_roll_angles(self):
+    """Returns [right_hip_roll, left_hip_roll] joint angles in radians."""
+    return np.array([
+        self.named.data.qpos['right_hip_roll'],
+        self.named.data.qpos['left_hip_roll'],
+    ])
+
+  def foot_heights(self):
+    """Returns [right_foot_z, left_foot_z] world-z heights of the feet."""
+    return np.array([
+        self.named.data.xpos['right_foot'][2],
+        self.named.data.xpos['left_foot'][2],
+    ])
+
+  def joint_positions(self):
+    """Returns all non-root joint angles as a 1-D array (10 joints).
+
+    Order: right_hip_yaw, right_hip_roll, right_hip_pitch, right_knee,
+    right_ankle, left_hip_yaw, left_hip_roll, left_hip_pitch,
+    left_knee, left_ankle.
+    """
+    joint_names = [
+        'right_hip_yaw', 'right_hip_roll', 'right_hip_pitch',
+        'right_knee', 'right_ankle',
+        'left_hip_yaw', 'left_hip_roll', 'left_hip_pitch',
+        'left_knee', 'left_ankle',
+    ]
+    return np.array([self.named.data.qpos[name] for name in joint_names]).ravel()
+
 
 class Walker3DBall(base.Task):
   """3D walker with a multi-stage ball-kick reward and target curriculum.
@@ -340,7 +382,7 @@ class Walker3DBall(base.Task):
     self._place_target(physics)
 
   def get_observation(self, physics):
-    """Returns an observation of body state, ball, target, and touches."""
+    """Returns an observation of body state, ball, target, touches, and joints."""
     obs = collections.OrderedDict()
     obs['orientations'] = physics.orientations()
     obs['height'] = physics.torso_height()
@@ -349,6 +391,7 @@ class Walker3DBall(base.Task):
     obs['ball_velocity'] = physics.ball_velocity()[:3]
     obs['target_position'] = physics.target_xy()
     obs['touches'] = physics.touch_forces()
+    obs['joint_positions'] = physics.joint_positions()
     return obs
 
   def get_reward(self, physics):
@@ -359,9 +402,10 @@ class Walker3DBall(base.Task):
     when advancing phases.
 
     Phase 0 (feet):     feet + control
-    Phase 1 (stand):    feet + control + stand
-    Phase 2 (approach): feet + control + stand + approach
-    Phase 3 (full):     feet + control + stand + approach + kick + target bonus
+    Phase 1 (stand):    feet + control + stand + hip_align
+    Phase 2 (approach): feet + control + stand + hip_align + approach + gait
+    Phase 3 (full):     feet + control + stand + hip_align + approach + gait
+                        + kick + target bonus
     """
     # --- Feet reward: reward foot-only stance, penalise any non-foot contact ---
     feet_touch = physics.feet_touch()
@@ -412,8 +456,22 @@ class Walker3DBall(base.Task):
     ))
     reward -= _W_LEG_SPREAD * leg_spread * standing * feet_only
 
+    # --- Hip-alignment penalty: discourage twisted legs ---
+    # Penalises hip-yaw and hip-roll deviation from neutral (0 rad).
+    # When yaw/roll are non-zero, the legs point sideways/rotated instead
+    # of forward, which looks unnatural and makes walking inefficient.
+    # Gated by standing * feet_only so it only applies when upright.
+    hip_yaw = physics.hip_yaw_angles()
+    hip_roll = physics.hip_roll_angles()
+    hip_align_penalty = float(
+        np.mean(np.abs(hip_yaw) / _HIP_YAW_MAX)
+        + np.mean(np.abs(hip_roll) / _HIP_ROLL_MAX)
+    ) / 2.0  # in [0, 1]
+    reward -= _W_HIP_ALIGN * hip_align_penalty * standing * feet_only
+
     components['stand'] = _W_STAND * stand_reward * feet_only
     components['leg_spread'] = -_W_LEG_SPREAD * leg_spread * standing * feet_only
+    components['hip_align'] = -_W_HIP_ALIGN * hip_align_penalty * standing * feet_only
 
     if self._phase == PHASE_STAND:
       self._reward_components = components
@@ -439,7 +497,44 @@ class Walker3DBall(base.Task):
       approach_reward = approach
     reward += _W_APPROACH * approach_reward
 
+    # --- Gait quality reward: encourage proper walking, not shuffling ---
+    # Two sub-components, both gated by horizontal velocity > threshold
+    # (no point rewarding gait when standing still):
+    #
+    # 1. Foot clearance: reward the swing foot for lifting off the ground.
+    #    Uses tolerance around _FOOT_CLEARANCE_TARGET so the agent gets
+    #    most reward for lifting a foot to ~12 cm.
+    #
+    # 2. Single support: reward having exactly one foot in contact.
+    #    tanh(touch_r) + tanh(touch_l) ≈ 2 (double support = bad for walking)
+    #    ≈ 1 (single support = good). We reward |sum - 1| being small.
+    h_vel = physics.horizontal_velocity()
+    gait_gate = float(np.clip(h_vel / _GAIT_MIN_VELOCITY, 0.0, 1.0))
+
+    foot_z = physics.foot_heights()
+    # foot_clearance: reward the higher foot (the swing foot)
+    swing_foot_z = float(np.max(foot_z))
+    foot_clearance = rewards.tolerance(
+        swing_foot_z, bounds=(_FOOT_CLEARANCE_TARGET, float('inf')),
+        margin=_FOOT_CLEARANCE_TARGET, value_at_margin=0.1,
+        sigmoid='linear',
+    )
+
+    # single support: ideally one foot touches, the other is in the air
+    touch_r = float(np.tanh(physics.named.data.sensordata['right_foot_touch'].item()))
+    touch_l = float(np.tanh(physics.named.data.sensordata['left_foot_touch'].item()))
+    touch_sum = touch_r + touch_l
+    # Best when touch_sum ≈ 1 (exactly one foot in firm contact)
+    single_support = rewards.tolerance(
+        touch_sum, bounds=(0.7, 1.3),
+        margin=1.0, value_at_margin=0.1, sigmoid='linear',
+    )
+
+    gait_reward = gait_gate * (foot_clearance + single_support) / 2.0  # in [0, 1]
+    reward += _W_GAIT * gait_reward
+
     components['approach'] = _W_APPROACH * approach_reward
+    components['gait'] = _W_GAIT * gait_reward
 
     if self._phase == PHASE_APPROACH:
       self._reward_components = components
