@@ -76,6 +76,14 @@ def parse_args() -> dict:
         "--phase3_threshold", type=float, default=700.0,
         help="Mean eval reward to advance from phase 2 (approach) to phase 3 (full).")
     parser.add_argument(
+        "--phase4_threshold", type=float, default=0.0,
+        help="Mean eval reward to advance from phase 3 (march) to phase 4 (approach). "
+             "Set to 0.0 to disable phases 4-5 (no advancement past march).")
+    parser.add_argument(
+        "--phase5_threshold", type=float, default=0.0,
+        help="Mean eval reward to advance from phase 4 (approach) to phase 5 (full). "
+             "Set to 0.0 to disable advancement past approach.")
+    parser.add_argument(
         "--load_dir", type=str, default=None,
         help="Path to a previous run directory to load a checkpoint from for testing.")
     parser.add_argument("--checkpoint", type=str, default="best_ckpt", help="Checkpoint name to load.")
