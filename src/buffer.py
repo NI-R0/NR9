@@ -113,12 +113,13 @@ class NStepTransitionBuffer:
     def next(self, key, batch_size):
         """Samples a random batch of n-step transitions.
 
-        Uses NumPy RNG to avoid a GPU→CPU sync point inside the training
-        loop.  Each array is transferred individually via ``jnp.asarray``
-        simple host→device copies that are cheaper than concatenating on
-        CPU and then slicing on GPU.
+        Uses the provided JAX PRNG key for reproducible sampling.  Indices
+        are generated on-device then converted to a Python list to avoid a
+        GPU→CPU array-deref sync point.  Each array is transferred
+        individually via ``jnp.asarray`` simple host→device copies that
+        are cheaper than concatenating on CPU and then slicing on GPU.
         """
-        indices = np.random.randint(0, self._size, size=batch_size)
+        indices = jax.random.randint(key, (batch_size,), 0, self._size).tolist()
 
         return {
             "state": jnp.asarray(self._states[indices]),

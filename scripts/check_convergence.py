@@ -33,8 +33,10 @@ from loguru import logger
 # Curriculum phases (must match src/train.py and walker_3D_ball.py)
 _PHASE_FEET = 0
 _PHASE_STAND = 1
-_PHASE_APPROACH = 2
-_PHASE_FULL = 3
+_PHASE_WEIGHT_SHIFT = 2
+_PHASE_MARCH = 3
+_PHASE_APPROACH = 4
+_PHASE_FULL = 5
 
 
 def load_eval_rewards(run_dir: str) -> list[tuple[int, float]]:
@@ -95,7 +97,7 @@ def check_convergence(
         f"Convergence check:\n"
         f"  Total evals: {len(eval_rewards)}\n"
         f"  Current phase: {current_phase} "
-        f"(0=FEET, 1=STAND, 2=APPROACH, 3=FULL)\n"
+        f"(0=FEET, 1=STAND, 2=WEIGHT_SHIFT, 3=MARCH, 4=APPROACH, 5=FULL)\n"
         f"  Best eval reward so far: {meta.get('best_eval_reward', '?')}"
     )
 
@@ -107,7 +109,10 @@ def check_convergence(
     cutoff_episode = latest_episode - convergence_episodes
     window_evals = [(ep, r) for ep, r in eval_rewards if ep > cutoff_episode]
 
-    if len(window_evals) < 4 or (latest_episode - eval_rewards[0][0]) < convergence_episodes:
+    if (
+        len(window_evals) < 4
+        or (latest_episode - eval_rewards[0][0]) < convergence_episodes
+    ):
         logger.info(
             f"Not enough eval data yet: only {len(window_evals)} evals in the "
             f"last {convergence_episodes} episodes (need >= 4), or training "
@@ -189,31 +194,58 @@ def main():
     parser = argparse.ArgumentParser(
         description="Check training convergence, stagnation, or continue."
     )
-    parser.add_argument("--run_dir", type=str, required=True,
-                        help="Path to the run directory to check.")
-    parser.add_argument("--convergence_episodes", type=int, default=10,
-                        help="Number of recent episodes to check for convergence "
-                             "(default: 10). All eval points within this episode "
-                             "range are smoothed (mean of first vs second half).")
-    parser.add_argument("--threshold", type=float, default=10.0,
-                        help="Maximum smoothed improvement to consider converged "
-                             "(default: 10.0).")
+    parser.add_argument(
+        "--run_dir", type=str, required=True, help="Path to the run directory to check."
+    )
+    parser.add_argument(
+        "--convergence_episodes",
+        type=int,
+        default=10,
+        help="Number of recent episodes to check for convergence "
+        "(default: 10). All eval points within this episode "
+        "range are smoothed (mean of first vs second half).",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=10.0,
+        help="Maximum smoothed improvement to consider converged (default: 10.0).",
+    )
 
-    parser.add_argument("--min_reward", type=float, default=100.0,
-                        help="Minimum best recent reward to allow convergence "
-                             "(default: 100.0). Below this, always continue.")
-    parser.add_argument("--require_final_phase", action="store_true", default=True,
-                        help="Only converge in the final curriculum phase (default: True).")
-    parser.add_argument("--no_require_final_phase", dest="require_final_phase",
-                        action="store_false",
-                        help="Allow convergence in any curriculum phase.")
+    parser.add_argument(
+        "--min_reward",
+        type=float,
+        default=600.0,
+        help="Minimum best recent reward to allow convergence "
+        "(default: 600.0). Below this, always continue.",
+    )
+    parser.add_argument(
+        "--require_final_phase",
+        action="store_true",
+        default=True,
+        help="Only converge in the final curriculum phase (default: True).",
+    )
+    parser.add_argument(
+        "--no_require_final_phase",
+        dest="require_final_phase",
+        action="store_false",
+        help="Allow convergence in any curriculum phase.",
+    )
 
-    parser.add_argument("--stagnation_window", type=int, default=10,
-                        help="Number of evals to check for stagnation (default: 10). "
-                             "Must be >= 2× the comparison half.")
-    parser.add_argument("--stagnation_threshold", type=float, default=1.0,
-                        help="If improvement over stagnation_window evals is below "
-                             "this, training is stagnant (default: 1.0).")
+    parser.add_argument(
+        "--stagnation_window",
+        type=int,
+        default=10,
+        help="Number of evals to check for stagnation (default: 10). "
+        "Must be >= 2× the comparison half.",
+    )
+    parser.add_argument(
+        "--stagnation_threshold",
+        type=float,
+        default=1.0,
+        help="If improvement over stagnation_window evals is below "
+        "this, training is stagnant (default: 1.0).",
+    )
     args = parser.parse_args()
 
     result = check_convergence(

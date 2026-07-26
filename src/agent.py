@@ -61,7 +61,8 @@ class SoccerAgent:
         self._step_count += 1
 
         if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
-            batch = self.buffer.next(self.random_key, self.batch_size)
+            self.random_key, sample_key = jax.random.split(self.random_key)
+            batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
             return metrics
         return {}
@@ -77,7 +78,8 @@ class SoccerAgent:
         self._step_count += self.buffer._num_envs
 
         if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
-            batch = self.buffer.next(self.random_key, self.batch_size)
+            self.random_key, sample_key = jax.random.split(self.random_key)
+            batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
             return metrics
         return {}

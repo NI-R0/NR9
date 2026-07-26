@@ -38,7 +38,8 @@ def _check_phase_advancement(current_phase: int, mean_eval_reward: float,
     }
     if current_phase in thresholds:
         threshold, next_phase, cur_name, next_name = thresholds[current_phase]
-        if mean_eval_reward >= threshold:
+        # A threshold of 0.0 means the phase is disabled (no advancement).
+        if threshold > 0.0 and mean_eval_reward >= threshold:
             logger.info(
                 f"Curriculum: advancing from {cur_name} to {next_name} "
                 f"(eval reward {mean_eval_reward:.2f} >= threshold {threshold:.2f})"
@@ -194,7 +195,7 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         for i in range(num_envs):
             if "reward_components" in infos[i]:
                 for k, v in infos[i]["reward_components"].items():
-                    reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v
+                    reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v / num_envs
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
             if dones[i] and not finished[i]:
@@ -321,7 +322,6 @@ def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
 def train(args: dict, stats: StatsCollector):
     num_envs = args.get("num_envs", 1)
     use_vectorized = num_envs > 1
-    is_resume = args.get("resume") is not None and os.path.exists(args.get("resume", ""))
 
     if use_vectorized:
         venv = ParallelVectorEnv(
@@ -367,6 +367,14 @@ def train(args: dict, stats: StatsCollector):
         # {"stats": ..., "best_eval_reward": ...})
         stats.stats = loaded_stats["stats"]
         stats.best_eval_reward = loaded_stats["best_eval_reward"]
+
+        # Ensure the loaded buffer's parallel-env config matches the
+        # current run.  set_num_envs also reinitialises the per-env
+        # n-step windows, which is safe on resume (pending partial
+        # n-step transitions are discarded).
+        if use_vectorized:
+            buffer.set_num_envs(num_envs)
+
         logger.success(f"Successfully resumed from episode {episode} "
                        f"(phase={loaded_phase}, step_count={loaded_step_count})")
 
@@ -387,15 +395,18 @@ def train(args: dict, stats: StatsCollector):
 
     logger.info("Setup complete.")
 
+    # Log hyperparameters to TensorBoard HParams tab (once, before training).
+    stats.log_hparams(args)
+
     # Curriculum phase initialization
     use_curriculum = args.get("curriculum", False)
     if use_curriculum:
         current_phase = loaded_phase if loaded_phase is not None else _PHASE_FEET
-        phase1_threshold = args.get("phase1_threshold", 200.0)
-        phase2_threshold = args.get("phase2_threshold", 400.0)
-        phase3_threshold = args.get("phase3_threshold", 500.0)
-        phase4_threshold = args.get("phase4_threshold", 600.0)
-        phase5_threshold = args.get("phase5_threshold", 800.0)
+        phase1_threshold = args.get("phase1_threshold", 120.0)
+        phase2_threshold = args.get("phase2_threshold", 270.0)
+        phase3_threshold = args.get("phase3_threshold", 350.0)
+        phase4_threshold = args.get("phase4_threshold", 500.0)
+        phase5_threshold = args.get("phase5_threshold", 700.0)
         logger.info(f"Curriculum enabled: starting at phase {current_phase} "
                      f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold}, "
                      f"phase3={phase3_threshold}, phase4={phase4_threshold}, phase5={phase5_threshold})")

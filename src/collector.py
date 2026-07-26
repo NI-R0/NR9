@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import pickle
 import logging
 import cloudpickle
 from loguru import logger
@@ -221,7 +220,7 @@ Evaluation Configuration:
     def save_checkpoint(self, state, name: str) -> str:
         path = os.path.join(self.checkpoint_dir, f"{name}.pkl")
         with open(path, "wb") as f:
-            pickle.dump(state, f)
+            cloudpickle.dump(state, f)
         return path
 
     def load_checkpoint(self, name: str):
@@ -231,7 +230,7 @@ Evaluation Configuration:
     @staticmethod
     def load_checkpoint_file(path: str):
         with open(path, "rb") as f:
-            return pickle.load(f)
+            return cloudpickle.load(f)
 
     def update_best_checkpoint(self, eval_reward: float, state) -> bool:
         improved = eval_reward > self.best_eval_reward
@@ -271,6 +270,19 @@ Evaluation Configuration:
 
         os.replace(tmp_path, path)
         logger.debug(f"Full training state saved to {path}.")
+
+        # Also write a small JSON file with metadata that external tools
+        # (e.g. check_convergence.py) can read without unpickling the
+        # full state.
+        meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
+        meta = {
+            "episode": episode,
+            "phase": current_phase,
+            "best_eval_reward": collector.best_eval_reward,
+            "agent_step_count": agent_step_count,
+        }
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
 
     @staticmethod
     def load_train_state(filepath: str):

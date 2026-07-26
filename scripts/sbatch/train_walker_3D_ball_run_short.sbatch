@@ -28,7 +28,7 @@
 # Convergence parameters (override via --export):
 #   CONV_CONVERGENCE_EPISODES=10 - episodes to check for convergence
 #   CONV_THRESHOLD=10.0         - max smoothed improvement to consider converged
-#   CONV_MIN_REWARD=100.0       - don't converge below this reward
+#   CONV_MIN_REWARD=600.0       - don't converge below this reward
 #   CONV_STAGNATION_WINDOW=10   - evals to check for stagnation
 #   CONV_STAGNATION_THRESHOLD=1.0 - improvement below this over stagnation_window = stagnant
 #
@@ -65,7 +65,7 @@ echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
 CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-10}"
 CONV_THRESHOLD="${CONV_THRESHOLD:-10.0}"
-CONV_MIN_REWARD="${CONV_MIN_REWARD:-100.0}"
+CONV_MIN_REWARD="${CONV_MIN_REWARD:-600.0}"
 CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-10}"
 CONV_STAGNATION_THRESHOLD="${CONV_STAGNATION_THRESHOLD:-1.0}"
 
@@ -109,11 +109,11 @@ uv run python main.py \
   --capacity 1000000 \
   --duration 25 \
   --curriculum \
-  --phase1_threshold 100.0 \
-  --phase2_threshold 200.0 \
-  --phase3_threshold 250.0 \
-  --phase4_threshold 300.0 \
-  --phase5_threshold 400.0 \
+  --phase1_threshold 637.0 \
+  --phase2_threshold 650.0 \
+  --phase3_threshold 661.0 \
+  --phase4_threshold 670.0 \
+  --phase5_threshold 678.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?
