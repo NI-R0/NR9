@@ -165,8 +165,8 @@ class MPOLearner:
 
         sampled_actions = jnp.swapaxes(sampled_actions, 0, 1)  # (batch, K, action_dim)
 
-        return (log_weights, max_q, sampled_actions, 
-                q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state, 
+        return (log_weights, max_q, sampled_actions,
+                q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state,
                 entropy, max_weight)
 
     def _dual_loss(self, log_eta, log_weights, max_q, epsilon):
@@ -252,13 +252,14 @@ class MPOLearner:
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, state: TrainingState, batch):
         """Performs one full learner step with sgd_steps_per_learner_step gradient updates."""
+        # MPO requires the distribution to be fixed over all sgd sub-steps
+        dist_old = self.actor_net.apply(state.params_actor, batch["state"])
 
         def sgd_step(carry, _):
             state = carry
             key, key_critic, key_sample = jax.random.split(state.random_key, 3)
 
             dist_sample = self.actor_net.apply(state.target_params_actor, batch["state"])
-            dist_old = self.actor_net.apply(state.params_actor, batch["state"])
 
             def critic_loss_fn(p):
                 return self._critic_loss(
@@ -274,10 +275,10 @@ class MPOLearner:
             params_critic = optax.apply_updates(state.params_critic, updates_c)
 
             eta = jnp.exp(state.dual_params["log_eta"])
-            (log_weights, max_q, sampled_actions, 
-             q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state, 
+            (log_weights, max_q, sampled_actions,
+             q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state,
              entropy, max_weight) = self._compute_weights(
-                state.params_critic, dist_sample, batch, eta, key_sample
+                params_critic, dist_sample, batch, eta, key_sample
             )
 
             def actor_dual_loss_fn(p_actor, p_dual):
@@ -308,7 +309,7 @@ class MPOLearner:
                 opt_state_dual=opt_state_d,
                 random_key=key,
             )
-            
+
             metrics = {
                 "loss_critic": loss_c,
                 "loss_policy": aux["loss_policy"],
@@ -328,7 +329,7 @@ class MPOLearner:
                 "mean_q_range_per_state": mean_q_range_per_state,
                 "max_weight": max_weight,
             }
-            
+
             return new_state, metrics
 
         state, metrics_history = jax.lax.scan(

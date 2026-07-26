@@ -2,11 +2,13 @@ import os
 import subprocess
 import cProfile
 import pstats
+import numpy as np
 from loguru import logger
 from src.cli import parse_args
 from src.collector import StatsCollector
 from src.train import train
 from src.test import test
+
 
 def _nvidia_gpu_available() -> bool:
     """Check whether an NVIDIA GPU with working drivers is present."""
@@ -32,10 +34,10 @@ else:
     )
 
 
-
 @logger.catch
 def main():
     args = parse_args()
+    np.random.seed(args["seed"])
     stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
 
     profiler = None
