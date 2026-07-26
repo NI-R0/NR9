@@ -74,9 +74,9 @@ class SoccerAgent:
         to total environment steps (not meta-steps).
         """
         self.buffer.add_many(states, actions, rewards, next_states, dones)
+        previous_count = self._step_count
         self._step_count += self.buffer._num_envs
 
-        previous_count = self._step_count
         should_update = (self._step_count // self.update_every) > (previous_count // self.update_every)
 
         if len(self.buffer) > self.warmup and should_update:
