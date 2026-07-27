@@ -2,3 +2,4 @@
 logs/
 runs/
 __pycache__/
+*.code-workspace

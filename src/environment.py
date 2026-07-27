@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Union
 import src.environments.suite as suite
 from dm_control import suite as dm_suite
 from loguru import logger
@@ -45,7 +46,7 @@ class Environment:
 
         return state, reward, done, {}
 
-    def render(self, height: int = 240, width: int = 320, camera_id: int = 0):
+    def render(self, height: int = 240, width: int = 320, camera_id: Union[str, int] = 0):
         """Returns the current frame as an (H, W, 3) uint8 RGB array.
 
         Requires a configured MuJoCo GL backend (env var MUJOCO_GL=egl or

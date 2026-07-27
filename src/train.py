@@ -50,6 +50,9 @@ def _propagate_phase(phase: int, use_vectorized: bool, venv, env, eval_env):
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False, profile: bool = False):
     state = env.reset()
+    # print(env.env.physics.model.ncam)
+    # print(env.env.physics.model.name2id("side", "camera"))
+    # print(env.env.physics.model.name2id("back", "camera"))
     episode_reward = 0.0
     done = False
     step = 0
@@ -63,6 +66,7 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
     frames = [] if visualize else None
     while not done and step < env.ep_max_steps:
         if visualize:
+            # frame = env.render(height=480, width=640, camera_id="side")
             frame = env.render()
             frames.append(frame)
 
