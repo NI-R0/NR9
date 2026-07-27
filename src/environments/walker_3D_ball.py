@@ -88,7 +88,7 @@ _SUCCESS_THRESHOLD = 5
 #
 # Phase   positive components (sum=1.0)              penalties (on top)
 # -----   ----------------------------------------    ---------------------------
-# 0 FEET  feet                                       effort, feet_under
+# 0 FEET  feet, stand                                  effort, feet_under
 # 1 STAND feet, stand, symmetry, feet_under          effort, hip_align, leg_spread, smoothness
 # 2 WS    + weight_shift                             (same penalties, reduced)
 # 3 MARCH + march                                    (same penalties, reduced)
@@ -102,7 +102,8 @@ _SUCCESS_THRESHOLD = 5
 # ---------------------------------------------------------------------------
 
 # Phase 0 (FEET) – pos sum = 1.0, neg on top
-_W_FEET_0 = 1.0
+_W_FEET_0 = 0.75
+_W_STAND_0 = 0.25  # light standing nudge so the agent doesn't stay curled up
 _W_EFFORT_0 = 0.15  # penalty
 _W_FEET_UNDER_0 = 0.3  # penalty: feet should be under COM, not just under body
 
@@ -658,7 +659,7 @@ class Walker3DBall(base.Task):
         ``_reward_components`` stores **raw (unweighted)** values so logged
         components directly show each sub-reward's quality in [0, 1] or [-1, 0].
 
-        Phase 0 (feet):          feet + effort + feet_under penalty
+        Phase 0 (feet):          feet + stand + effort + feet_under penalty
         Phase 1 (stand):         + stand + symmetry + hip_align
                                  + leg_spread + smoothness + feet_under
         Phase 2 (weight_shift):  + weight_shift (shift COM left/right, stay still)
@@ -758,13 +759,21 @@ class Walker3DBall(base.Task):
             # the torso body origin; instead the feet must be under the actual
             # centre of mass.  Penalty ∈ [-1, 0], 0 when feet are under COM.
             feet_under_penalty = feet_under - 1.0
+            # Light standing nudge: rewards upright height/orientation, but only
+            # when no non-foot body part is touching the ground (stand_gate).
+            # This steers the agent out of the curled "foetus" pose toward an
+            # upright stance already in phase 0, without making standing the
+            # dominant objective.
+            stand_reward_0 = stand_reward * stand_gate
             reward = (
                 _W_FEET_0 * feet_reward
+                + _W_STAND_0 * stand_reward_0
                 + _W_EFFORT_0 * effort_penalty
                 + _W_FEET_UNDER_0 * feet_under_penalty
             )
             self._reward_components = {
                 "feet": feet_reward,
+                "stand": stand_reward_0,
                 "effort": effort_penalty,
                 "feet_under": feet_under_penalty,
             }
