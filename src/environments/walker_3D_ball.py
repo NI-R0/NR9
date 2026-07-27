@@ -81,7 +81,7 @@ _SUCCESS_THRESHOLD = 5
 #
 # Phase   positive components (sum=1.0)              penalties (on top)
 # -----   ----------------------------------------    ---------------------------
-# 0 FEET  feet                                       effort
+# 0 FEET  feet                                       effort, feet_under
 # 1 STAND feet, stand, symmetry, feet_under          effort, hip_align, leg_spread, smoothness
 # 2 WS    + weight_shift                             (same penalties, reduced)
 # 3 MARCH + march                                    (same penalties, reduced)
@@ -97,6 +97,7 @@ _SUCCESS_THRESHOLD = 5
 # Phase 0 (FEET) – pos sum = 1.0, neg on top
 _W_FEET_0 = 1.0
 _W_EFFORT_0 = 0.3  # penalty
+_W_FEET_UNDER_0 = 0.05  # penalty: feet should be under COM, not just under body
 
 # Phase 1 (STAND) – pos sum = 1.0
 _W_FEET_1 = 0.25
@@ -455,16 +456,19 @@ class Physics(mujoco.Physics):
         return np.array([com_y - right_foot_y, com_y - left_foot_y])
 
     def feet_xy_offset(self):
-        """Returns the xy-distance from the feet midpoint to the torso.
+        """Returns the xy-distance from the feet midpoint to the centre of mass.
 
-        A value near 0 means the feet are directly under the torso (correct
-        standing posture).  Used by the ``feet_under`` reward component.
+        A value near 0 means the feet are directly under the COM (correct
+        support posture).  Uses ``subtree_com["torso"]`` (the actual centre
+        of mass of the torso subtree) rather than ``xpos["torso"]`` so the
+        feet must be under the **centre of mass**, not merely under the
+        torso body origin.  Used by the ``feet_under`` reward component.
         """
-        torso_xy = self.named.data.xpos["torso"][:2]
+        com_xy = self.named.data.subtree_com["torso"][:2]
         right_foot_xy = self.named.data.xpos["right_foot"][:2]
         left_foot_xy = self.named.data.xpos["left_foot"][:2]
         feet_mid = (right_foot_xy + left_foot_xy) / 2.0
-        return float(np.linalg.norm(torso_xy - feet_mid))
+        return float(np.linalg.norm(com_xy - feet_mid))
 
 
 class Walker3DBall(base.Task):
@@ -615,7 +619,7 @@ class Walker3DBall(base.Task):
         ``_reward_components`` stores **raw (unweighted)** values so logged
         components directly show each sub-reward's quality in [0, 1] or [-1, 0].
 
-        Phase 0 (feet):          feet + effort
+        Phase 0 (feet):          feet + effort + feet_under penalty
         Phase 1 (stand):         + stand + symmetry + hip_align
                                  + leg_spread + smoothness + feet_under
         Phase 2 (weight_shift):  + weight_shift (shift COM left/right, stay still)
@@ -694,10 +698,20 @@ class Walker3DBall(base.Task):
         # Phase 0: FEET
         # ======================================================================
         if self._phase == PHASE_FEET:
-            reward = _W_FEET_0 * feet_reward + _W_EFFORT_0 * effort_penalty
+            # Small penalty when feet are not under the COM.  This prevents the
+            # agent from simply lying down and pulling the feet together under
+            # the torso body origin; instead the feet must be under the actual
+            # centre of mass.  Penalty ∈ [-1, 0], 0 when feet are under COM.
+            feet_under_penalty = feet_under - 1.0
+            reward = (
+                _W_FEET_0 * feet_reward
+                + _W_EFFORT_0 * effort_penalty
+                + _W_FEET_UNDER_0 * feet_under_penalty
+            )
             self._reward_components = {
                 "feet": feet_reward,
                 "effort": effort_penalty,
+                "feet_under": feet_under_penalty,
             }
             self._prev_action = ctrl.copy()
             return float(reward)
