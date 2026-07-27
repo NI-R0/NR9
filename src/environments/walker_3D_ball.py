@@ -25,14 +25,17 @@ Multi-stage reward (additive curriculum):
   5. Kick the ball toward the target (ball velocity in target direction)
   6. Target hit: bonus, then ball and target are randomly re-placed
 
-All reward components are normalised to [0, 1] (rewards) or [-1, 0]
-(penalties).  Positive weights sum to 1.0 per phase so a perfect step
-yields reward = 1.0.  Penalty weights are on top of the 1.0 budget,
-so the realistic optimum (task fulfilled with some unavoidable control
-cost) lands slightly below 1.0.
+Most reward components are normalised to [0, 1] (rewards) or [-1, 0]
+(penalties).  The exception is the *kick* reward in phase 5, which is
+in [-1, 1] so that a ball rolling *away* from the target actively lowers
+the reward.  Positive weights sum to 1.0 per phase so a perfect step
+(with ball moving toward the target) yields reward = 1.0.  Penalty
+weights are on top of the 1.0 budget, so the realistic optimum (task
+fulfilled with some unavoidable control cost) lands slightly below 1.0.
 
 Logged reward components are **raw (unweighted)** values in [0, 1] or
-[-1, 0], making it easy to inspect each sub-reward's quality directly.
+[-1, 0] (kick in [-1, 1]), making it easy to inspect each sub-reward's
+quality directly.
 
 Curriculum: the target zone shrinks after enough successful hits during
 evaluation (success counter incremented externally via ``register_success``).
@@ -68,10 +71,14 @@ _SUCCESS_THRESHOLD = 5
 # ---------------------------------------------------------------------------
 # Reward design
 # ---------------------------------------------------------------------------
-# Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties).
+# Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties),
+# **except** the kick reward (phase 5) which is in [-1, 1]: a ball moving
+# toward the target yields positive values, a ball moving away yields
+# negative values.
 #
 # **Positive weights** sum to exactly 1.0 in each phase → a perfect step
-# (all rewards = 1, all penalties = 0) yields reward = 1.0.
+# (all rewards = 1, all penalties = 0, ball moving toward target) yields
+# reward = 1.0.
 #
 # **Negative (penalty) weights** are *on top* of the 1.0 budget.  They
 # pull the reward below 1.0 by an amount proportional to the penalty
@@ -96,8 +103,8 @@ _SUCCESS_THRESHOLD = 5
 
 # Phase 0 (FEET) – pos sum = 1.0, neg on top
 _W_FEET_0 = 1.0
-_W_EFFORT_0 = 0.3  # penalty
-_W_FEET_UNDER_0 = 0.05  # penalty: feet should be under COM, not just under body
+_W_EFFORT_0 = 0.15  # penalty
+_W_FEET_UNDER_0 = 0.3  # penalty: feet should be under COM, not just under body
 
 # Phase 1 (STAND) – pos sum = 1.0
 _W_FEET_1 = 0.25
@@ -171,9 +178,15 @@ _W_SMOOTHNESS_5 = 0.01
 _LEG_SPREAD_THRESHOLD = 0.2
 _HIP_YAW_MAX = np.radians(45)  # Max hip-yaw range for normalization
 _HIP_ROLL_MAX = np.radians(45)  # Max hip-roll deviation from neutral for normalization
+# Symmetry: joint indices whose sign must be flipped when comparing left vs
+# right, because the joint axes are NOT mirrored in the XML (e.g. hip_roll
+# uses axis="1 0 0" for both legs).  Indices refer to the 5-joint per-leg
+# block returned by Physics.joint_positions():
+#   0=hip_yaw, 1=hip_roll, 2=hip_pitch, 3=knee, 4=ankle
+_SYMMETRY_MIRROR_INDICES = (1,)  # hip_roll must be sign-flipped for comparison
 _SYMMETRY_JOINT_MAX = np.radians(45)  # Normalization for symmetry reward
 _GAIT_MIN_VELOCITY = 0.3  # Min horizontal velocity (m/s) for gait reward to activate
-_FOOT_CLEARANCE_TARGET = 0.12  # Target foot lift height (m) for gait reward
+_SHIN_LENGTH = 0.25  # Shin (leg) capsule half-length in m; used as foot-clearance target
 _MARCH_KNEE_TARGET = np.radians(60)  # Target knee lift angle for marching
 _MARCH_HIP_PITCH_TARGET = np.radians(45)  # Target hip pitch for knee lift
 _FEET_UNDER_MAX_OFFSET = (
@@ -213,6 +226,19 @@ _NUM_PHASES = 6
 
 SUITE = containers.TaggedTasks()
 FILE = "walker_3D_ball.xml"
+
+
+def _sigmoid(x: float, k: float = 1.0) -> float:
+    """Numerically stable logistic sigmoid, output ∈ (0, 1).
+
+    ``k`` controls steepness.  Used for smooth [0, 1] reward shaping
+    instead of hard binary thresholds.
+    """
+    z = k * x
+    if z >= 0:
+        return float(1.0 / (1.0 + np.exp(-z)))
+    ez = np.exp(z)
+    return float(ez / (1.0 + ez))
 
 
 def get_model_and_assets():
@@ -322,6 +348,18 @@ class Physics(mujoco.Physics):
         right_foot = self.named.data.xpos["right_foot"][:2]
         left_foot = self.named.data.xpos["left_foot"][:2]
         return float(np.linalg.norm(right_foot - left_foot))
+
+    def feet_lateral_distance(self):
+        """Returns the absolute y-distance between the two feet.
+
+        Used to normalise the weight-shift reward, which measures how far
+        the COM is shifted *laterally* (in y) over one foot.  Using the
+        pure y-distance (rather than the full xy-distance) prevents the
+        reward from being trivialised by spreading the feet in x.
+        """
+        right_foot_y = self.named.data.xpos["right_foot"][1]
+        left_foot_y = self.named.data.xpos["left_foot"][1]
+        return float(abs(right_foot_y - left_foot_y))
 
     def ball_position(self):
         """Returns the [x, y, z] position of the ball."""
@@ -467,8 +505,9 @@ class Physics(mujoco.Physics):
         com_xy = self.named.data.subtree_com["torso"][:2]
         right_foot_xy = self.named.data.xpos["right_foot"][:2]
         left_foot_xy = self.named.data.xpos["left_foot"][:2]
-        feet_mid = (right_foot_xy + left_foot_xy) / 2.0
-        return float(np.linalg.norm(com_xy - feet_mid))
+        right_foot_com = float(np.linalg.norm(com_xy - right_foot_xy))
+        left_foot_com = float(np.linalg.norm(com_xy - left_foot_xy))
+        return float((right_foot_com + left_foot_com) / 2)
 
 
 class Walker3DBall(base.Task):
@@ -632,13 +671,18 @@ class Walker3DBall(base.Task):
         # ======================================================================
         # Shared quantities (computed once, used across phases)
         # ======================================================================
-        feet_touch = physics.feet_touch()
-        non_foot_touch = physics.non_foot_touch()
-        feet_only = 0 if (non_foot_touch > 0) else 1
+        feet_touch_raw = physics.feet_touch()
+        non_foot_touch_raw = physics.non_foot_touch()
 
+        # --- Smooth [0, 1] contact signals via sigmoid ---
+        feet_contact = _sigmoid(feet_touch_raw - 0.5, k=4.0)
+        non_foot_contact = _sigmoid(non_foot_touch_raw - 0.5, k=4.0)
 
-        # --- Feet reward [0, 1]: foot contact * no non-foot contact ---
-        feet_reward = -1 if (non_foot_touch > 0) else (1 if (feet_touch > 0) else 0)
+        # feet_only: 1 when no non-foot contact, 0 when any. ∈ [0, 1].
+        feet_only = 1.0 - non_foot_contact
+
+        # --- Feet reward [0, 1]: foot contact scaled by absence of non-foot contact ---
+        feet_reward = feet_contact * feet_only
 
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
         effort_penalty = -float(np.mean(ctrl**2))
@@ -672,9 +716,14 @@ class Walker3DBall(base.Task):
         )
 
         # --- Symmetry reward [0, 1] ---
+        # hip_roll has the same axis ("1 0 0") for both legs, so a physically
+        # symmetric stance means right_hip_roll == -left_hip_roll.  We flip the
+        # sign of those joints before comparing so the reward matches the true
+        # symmetric pose.
         joints = physics.joint_positions()
-        right_joints = joints[:5]
+        right_joints = joints[:5].copy()
         left_joints = joints[5:]
+        right_joints[list(_SYMMETRY_MIRROR_INDICES)] *= -1.0
         symmetry_err = float(
             np.mean(np.abs(right_joints - left_joints) / _SYMMETRY_JOINT_MAX)
         )
@@ -693,7 +742,12 @@ class Walker3DBall(base.Task):
             np.clip(feet_offset / _FEET_UNDER_MAX_OFFSET, 0.0, 1.0)
         )
 
-        stand_gate = standing * feet_only
+        # Gate that activates standing-dependent rewards only when no non-foot
+        # body part is touching the ground.  We deliberately do NOT multiply by
+        # ``standing`` here because ``stand_reward`` already contains the height
+        # term (weight 3/4); gating with ``standing`` again would double-weight
+        # the height.
+        stand_gate = feet_only
 
         # ======================================================================
         # Phase 0: FEET
@@ -751,7 +805,10 @@ class Walker3DBall(base.Task):
         # Phase 2+: WEIGHT_SHIFT
         # ======================================================================
         com_to_feet = physics.com_lateral_to_foot()
-        half_foot_dist = max(feet_dist / 2.0, 1e-6)
+        # Normalise by the *lateral* (y) foot separation, not the full xy
+        # distance, so that spreading the feet in x cannot trivialise the
+        # weight-shift reward.
+        half_foot_dist = max(physics.feet_lateral_distance() / 2.0, 1e-6)
         shift_right = 1.0 - float(
             np.clip(np.abs(com_to_feet[0]) / half_foot_dist, 0.0, 1.0)
         )
@@ -933,25 +990,24 @@ class Walker3DBall(base.Task):
 
         h_vel = physics.horizontal_velocity()
         gait_gate = float(np.clip(h_vel / _GAIT_MIN_VELOCITY, 0.0, 1.0))
-        swing_foot_z = float(np.max(foot_z))
+        # Foot clearance measured relative to the support foot (the lower one)
+        # so that the reward reflects the actual *lift* of the swing foot,
+        # independent of the robot's absolute height.  The target lift is one
+        # shin length (_SHIN_LENGTH ≈ 0.25 m).
+        support_foot_z = float(np.min(foot_z))
+        swing_foot_lift = float(np.max(foot_z)) - support_foot_z
         foot_clearance = float(
             rewards.tolerance(
-                swing_foot_z,
-                bounds=(_FOOT_CLEARANCE_TARGET, float("inf")),
-                margin=_FOOT_CLEARANCE_TARGET,
+                swing_foot_lift,
+                bounds=(_SHIN_LENGTH, float("inf")),
+                margin=_SHIN_LENGTH,
                 value_at_margin=0.1,
                 sigmoid="linear",
             )
         )
-        single_support_gait = float(
-            rewards.tolerance(
-                touch_sum,
-                bounds=(0.7, 1.3),
-                margin=1.0,
-                value_at_margin=0.1,
-                sigmoid="linear",
-            )
-        )
+        # Reuse the single_support signal computed in phase 3 instead of
+        # recomputing the identical tolerance.
+        single_support_gait = single_support
         gait_reward = gait_gate * (foot_clearance + single_support_gait) / 2.0
 
         reward = (
