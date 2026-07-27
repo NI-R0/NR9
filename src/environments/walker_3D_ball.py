@@ -634,13 +634,14 @@ class Walker3DBall(base.Task):
         # ======================================================================
         feet_touch = physics.feet_touch()
         non_foot_touch = physics.non_foot_touch()
-        feet_only = 1.0 - np.tanh(non_foot_touch)  # 1 when only feet touch
+        feet_only = 0 if (non_foot_touch > 0) else 1
+
 
         # --- Feet reward [0, 1]: foot contact * no non-foot contact ---
-        feet_reward = float(np.clip(np.tanh(feet_touch) * feet_only, 0.0, 1.0))
+        feet_reward = -1 if (non_foot_touch > 0) else (1 if (feet_touch > 0) else 0)
 
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
-        effort_penalty = -float(np.clip(np.mean(ctrl**2), 0.0, 1.0))
+        effort_penalty = -float(np.mean(ctrl**2))
 
         # --- Standing [0, 1]: height + upright orientation ---
         standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
@@ -698,7 +699,7 @@ class Walker3DBall(base.Task):
         # Phase 0: FEET
         # ======================================================================
         if self._phase == PHASE_FEET:
-            # Small penalty when feet are not under the COM.  This prevents the
+            # Small penalty when feet are not under the COM. This prevents the
             # agent from simply lying down and pulling the feet together under
             # the torso body origin; instead the feet must be under the actual
             # centre of mass.  Penalty ∈ [-1, 0], 0 when feet are under COM.
