@@ -120,6 +120,7 @@ _W_EFFORT = 0.03
 _W_FEET_UNDER = 0.03      # fades via (1 - gate_march)
 _W_HIP_ALIGN = 0.03       # fades via (1 - gate_march)
 _W_LEG_SPREAD = 0.02      # fades via (1 - gate_march)
+_W_ANKLE_FLAT = 0.02      # fades via (1 - gate_march)
 _W_SMOOTHNESS = 0.02      # always active
 
 # Gate smoothing window (steps)
@@ -629,20 +630,18 @@ class Walker3DBall(base.Task):
         # feet_only: 1 when no non-foot contact, 0 when any. ∈ [0, 1].
         feet_only = 1.0 - non_foot_contact
 
-        # --- Flat-foot bonus [0, 1]: rewards ankles near neutral (0 rad).
-        # In a toe-stand the ankles are strongly plantarflexed (large |angle|),
-        # while flat standing keeps them near 0.  Indices 4 and 9 in
+        # --- Flat-foot signal [0, 1]: 1 when ankles near neutral (flat feet),
+        # 0 when strongly plantarflexed (toe-stand).  Indices 4 and 9 in
         # joint_positions() are right_ankle and left_ankle respectively.
+        # Used as a weak penalty (toe-stand → penalty) that fades once marching.
         joints = physics.joint_positions()
         ankle_angles = np.array([joints[4], joints[9]])
         ankle_flat = 1.0 - float(
             np.clip(np.mean(np.abs(ankle_angles)) / _ANKLE_FLAT_MAX, 0.0, 1.0)
         )
 
-        # --- Feet reward [0, 1]: contact × no-non-foot × flat-foot bonus.
-        # ankle_flat is blended at 50 % so toe-stand still gets partial credit
-        # (better than kneeling), but flat feet are clearly preferred.
-        feet_reward = feet_contact * feet_only * (0.5 + 0.5 * ankle_flat)
+        # --- Feet reward [0, 1]: foot contact scaled by absence of non-foot contact ---
+        feet_reward = feet_contact * feet_only
 
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
         effort_penalty = -float(np.mean(ctrl**2))
@@ -944,13 +943,13 @@ class Walker3DBall(base.Task):
             + _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade
             + _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade
             + _W_LEG_SPREAD * leg_spread * stand_penalty_fade
+            + _W_ANKLE_FLAT * (ankle_flat - 1.0) * stand_penalty_fade
             + _W_SMOOTHNESS * smoothness_penalty
         )
 
         # Log raw (unweighted) values for inspection
         self._reward_components = {
             "feet": feet_reward,
-            "ankle_flat": ankle_flat,
             "stand": stand_gated,
             "symmetry": symmetry_reward * gate_stand,
             "weight_shift": ws_gated,
@@ -963,6 +962,7 @@ class Walker3DBall(base.Task):
             "feet_under": (feet_under - 1.0) * stand_penalty_fade,
             "hip_align": hip_align_penalty * stand_penalty_fade,
             "leg_spread": leg_spread * stand_penalty_fade,
+            "ankle_flat": (ankle_flat - 1.0) * stand_penalty_fade,
             "smoothness": smoothness_penalty,
             "gate_stand": gate_stand,
             "gate_ws": gate_ws,
