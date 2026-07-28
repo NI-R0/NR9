@@ -21,11 +21,13 @@ class TrainingState(typing.NamedTuple):
 
 
 def _clip_log_dual_params(dual_params: dict) -> dict:
-    """Clip dual parameters in log-space to ``max(-18, log_x)`` (Acme)."""
+    """Clip dual parameters in log-space to stay within a reasonable range.
+    Prevents explosion (too high) and collapse (too low).
+    """
     return {
-        "log_eta": jnp.maximum(dual_params["log_eta"], -18.0),
-        "log_alpha_mean": jnp.maximum(dual_params["log_alpha_mean"], -18.0),
-        "log_alpha_std": jnp.maximum(dual_params["log_alpha_std"], -18.0),
+        "log_eta": jnp.clip(dual_params["log_eta"], -18.0, 10.0),
+        "log_alpha_mean": jnp.clip(dual_params["log_alpha_mean"], -18.0, 10.0),
+        "log_alpha_std": jnp.clip(dual_params["log_alpha_std"], -18.0, 10.0),
     }
 
 
@@ -81,15 +83,15 @@ class MPOLearner:
         self.critic_net = critic_net
 
         critic_lr = critic_lr if critic_lr is not None else lr
-        dual_lr = dual_lr if dual_lr is not None else 0.01
+        dual_lr = dual_lr if dual_lr is not None else 1e-4
 
         self.config = {
             "epsilon": kwargs.get("epsilon", 0.1),
             "epsilon_mean": kwargs.get("epsilon_mean", 0.0025),
             "epsilon_std": kwargs.get("epsilon_std", 1e-4),
-            "sample_k": kwargs.get("sample_k", 10),
+            "sample_k": kwargs.get("sample_k", 20),
             "sgd_steps_per_learner_step": kwargs.get("sgd_steps_per_learner_step", 8),
-            "target_update_period": kwargs.get("target_update_period", 25),
+            "target_update_period": kwargs.get("target_update_period", 100),
             "grad_norm_clip": kwargs.get("grad_norm_clip", 40.0),
         }
 
