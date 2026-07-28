@@ -15,30 +15,39 @@
 
 """Walker_3D_Ball domain: free-floating 3D walker with ball-kick task.
 
-Multi-stage reward (additive curriculum):
-  0. Feet on ground only (penalise non-foot contact)
-  1. Stand upright (height + orientation + hip alignment + symmetry
-     + smoothness + feet under torso)
-  2. Weight shift (shift centre of mass left/right while standing still)
-  3. March in place (alternating knee lifts, single support, no forward motion)
-  4. Approach the ball (walking toward it while upright, with gait quality)
-  5. Kick the ball toward the target (ball velocity in target direction)
-  6. Target hit: bonus, then ball and target are randomly re-placed
+Single-phase reward with cascading smoothed gates:
+  All reward components are always active, but each is gated by a
+  smoothed rolling mean of the *previous* component's gated value.
+  This lets the agent naturally progress from standing to walking to
+  kicking without hard phase switches, and prevents it from skipping
+  or forgetting earlier skills.
+
+  Gate cascade (each = clamp(mean(prev_gated, last 10 steps), 0, 1)):
+    gate_stand    ← feet_reward
+    gate_ws       ← stand_reward * gate_stand
+    gate_march    ← weight_shift_reward * gate_ws
+    gate_approach ← march_reward * gate_march
+    gate_full     ← approach_reward * gate_approach
+
+  Stand-specific penalties (hip_align, leg_spread, feet_under,
+  symmetry) fade out via ``(1 - gate_march)`` so they don't block
+  walking or kicking.
 
 Most reward components are normalised to [0, 1] (rewards) or [-1, 0]
-(penalties).  The exception is the *kick* reward in phase 5, which is
-in [-1, 1] so that a ball rolling *away* from the target actively lowers
-the reward.  Positive weights sum to 1.0 per phase so a perfect step
-(with ball moving toward the target) yields reward = 1.0.  Penalty
-weights are on top of the 1.0 budget, so the realistic optimum (task
-fulfilled with some unavoidable control cost) lands slightly below 1.0.
+(penalties).  The exception is the *kick* reward, which is in [-1, 1]
+so that a ball rolling *away* from the target actively lowers the
+reward.  Positive weights sum to 1.0 so a perfect step (with ball
+moving toward the target) yields reward = 1.0.  Penalty weights are on
+top of the 1.0 budget, so the realistic optimum (task fulfilled with
+some unavoidable control cost) lands slightly below 1.0.
 
 Logged reward components are **raw (unweighted)** values in [0, 1] or
 [-1, 0] (kick in [-1, 1]), making it easy to inspect each sub-reward's
 quality directly.
 
-Curriculum: the target zone shrinks after enough successful hits during
-evaluation (success counter incremented externally via ``register_success``).
+Target curriculum: the target zone shrinks after enough successful hits
+during evaluation (success counter incremented externally via
+``register_success``).
 """
 
 import collections
@@ -69,16 +78,14 @@ _TARGET_SHRINK = 0.1
 _SUCCESS_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
-# Reward design
+# Reward design – cascading gates, single set of weights
 # ---------------------------------------------------------------------------
 # Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties),
-# **except** the kick reward (phase 5) which is in [-1, 1]: a ball moving
-# toward the target yields positive values, a ball moving away yields
-# negative values.
+# **except** the kick reward which is in [-1, 1]: a ball moving toward the
+# target yields positive values, a ball moving away yields negative values.
 #
-# **Positive weights** sum to exactly 1.0 in each phase → a perfect step
-# (all rewards = 1, all penalties = 0, ball moving toward target) yields
-# reward = 1.0.
+# **Positive weights** sum to exactly 1.0 → a perfect step (all rewards = 1,
+# all penalties = 0, ball moving toward target) yields reward = 1.0.
 #
 # **Negative (penalty) weights** are *on top* of the 1.0 budget.  They
 # pull the reward below 1.0 by an amount proportional to the penalty
@@ -86,94 +93,37 @@ _SUCCESS_THRESHOLD = 5
 # with some unavoidable effort/control cost) lands slightly below 1.0,
 # while the theoretical maximum is 1.0.
 #
-# Phase   positive components (sum=1.0)              penalties (on top)
-# -----   ----------------------------------------    ---------------------------
-# 0 FEET  feet, stand                                  effort, feet_under
-# 1 STAND feet, stand, symmetry, feet_under          effort, hip_align, leg_spread, smoothness
-# 2 WS    + weight_shift                             (same penalties, reduced)
-# 3 MARCH + march                                    (same penalties, reduced)
-# 4 APPR  + approach, gait                           (same penalties, reduced)
-# 5 FULL  + kick, target                             (same penalties, reduced)
+# Gate cascade (smoothed over last _GATE_SMOOTHING steps):
+#   gate_stand    ← mean(feet_gated_history)       [feet_reward]
+#   gate_ws       ← mean(stand_gated_history)       [stand * gate_stand]
+#   gate_march    ← mean(ws_gated_history)          [ws * gate_ws]
+#   gate_approach ← mean(march_gated_history)       [march * gate_march]
+#   gate_full     ← mean(approach_gated_history)    [approach * gate_approach]
 #
-# When a new phase adds positive components, existing positive weights
-# are scaled down to keep the sum at 1.0.  Penalty weights are also
-# gradually reduced so earlier skills remain important but don't
-# dominate the newer task.
+# Stand-specific penalties fade via (1 - gate_march) so they don't
+# interfere with walking or kicking.
 # ---------------------------------------------------------------------------
 
-# Phase 0 (FEET) – pos sum = 1.0, neg on top
-_W_FEET_0 = 0.75
-_W_STAND_0 = 0.25  # light standing nudge so the agent doesn't stay curled up
-_W_EFFORT_0 = 0.15  # penalty
-_W_FEET_UNDER_0 = 0.3  # penalty: feet should be under COM, not just under body
+# Positive weights (sum = 1.0)
+_W_FEET = 0.15
+_W_STAND = 0.20
+_W_SYMMETRY = 0.10
+_W_WEIGHT_SHIFT = 0.15
+_W_MARCH = 0.10
+_W_APPROACH = 0.10
+_W_GAIT = 0.10
+_W_KICK = 0.05
+_W_TARGET = 0.05
 
-# Phase 1 (STAND) – pos sum = 1.0
-_W_FEET_1 = 0.25
-_W_STAND_1 = 0.40
-_W_SYMMETRY_1 = 0.20
-_W_FEET_UNDER_1 = 0.15
-# penalties (on top):
-_W_EFFORT_1 = 0.10
-_W_HIP_ALIGN_1 = 0.08
-_W_LEG_SPREAD_1 = 0.05
-_W_SMOOTHNESS_1 = 0.04
+# Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
+_W_EFFORT = 0.03
+_W_FEET_UNDER = 0.03      # fades via (1 - gate_march)
+_W_HIP_ALIGN = 0.03       # fades via (1 - gate_march)
+_W_LEG_SPREAD = 0.02      # fades via (1 - gate_march)
+_W_SMOOTHNESS = 0.02      # always active
 
-# Phase 2 (WEIGHT_SHIFT) – pos sum = 1.0
-_W_FEET_2 = 0.15
-_W_STAND_2 = 0.25
-_W_SYMMETRY_2 = 0.12
-_W_FEET_UNDER_2 = 0.08
-_W_WEIGHT_SHIFT_2 = 0.40
-# penalties (on top):
-_W_EFFORT_2 = 0.08
-_W_HIP_ALIGN_2 = 0.06
-_W_LEG_SPREAD_2 = 0.04
-_W_SMOOTHNESS_2 = 0.03
-
-# Phase 3 (MARCH) – pos sum = 1.0
-_W_FEET_3 = 0.12
-_W_STAND_3 = 0.20
-_W_SYMMETRY_3 = 0.10
-_W_FEET_UNDER_3 = 0.05
-_W_WEIGHT_SHIFT_3 = 0.25
-_W_MARCH_3 = 0.28
-# penalties (on top):
-_W_EFFORT_3 = 0.06
-_W_HIP_ALIGN_3 = 0.05
-_W_LEG_SPREAD_3 = 0.03
-_W_SMOOTHNESS_3 = 0.02
-
-# Phase 4 (APPROACH) – pos sum = 1.0
-_W_FEET_4 = 0.08
-_W_STAND_4 = 0.15
-_W_SYMMETRY_4 = 0.07
-_W_FEET_UNDER_4 = 0.05
-_W_WEIGHT_SHIFT_4 = 0.10
-_W_MARCH_4 = 0.10
-_W_APPROACH_4 = 0.25
-_W_GAIT_4 = 0.20
-# penalties (on top):
-_W_EFFORT_4 = 0.05
-_W_HIP_ALIGN_4 = 0.03
-_W_LEG_SPREAD_4 = 0.02
-_W_SMOOTHNESS_4 = 0.02
-
-# Phase 5 (FULL) – pos sum = 1.0
-_W_FEET_5 = 0.05
-_W_STAND_5 = 0.10
-_W_SYMMETRY_5 = 0.05
-_W_FEET_UNDER_5 = 0.02
-_W_WEIGHT_SHIFT_5 = 0.08
-_W_MARCH_5 = 0.08
-_W_APPROACH_5 = 0.15
-_W_GAIT_5 = 0.12
-_W_KICK_5 = 0.20
-_W_TARGET_5 = 0.15
-# penalties (on top):
-_W_EFFORT_5 = 0.04
-_W_HIP_ALIGN_5 = 0.03
-_W_LEG_SPREAD_5 = 0.02
-_W_SMOOTHNESS_5 = 0.01
+# Gate smoothing window (steps)
+_GATE_SMOOTHING = 10
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -215,15 +165,6 @@ _FOOT_TOUCHES = (
     "left_foot_touch",
 )
 _ALL_TOUCHES = _NON_FOOT_TOUCHES + _FOOT_TOUCHES
-
-# Curriculum phases
-PHASE_FEET = 0
-PHASE_STAND = 1
-PHASE_WEIGHT_SHIFT = 2
-PHASE_MARCH = 3
-PHASE_APPROACH = 4
-PHASE_FULL = 5
-_NUM_PHASES = 6
 
 SUITE = containers.TaggedTasks()
 FILE = "walker_3D_ball.xml"
@@ -512,42 +453,45 @@ class Physics(mujoco.Physics):
 
 
 class Walker3DBall(base.Task):
-    """3D walker with a multi-stage ball-kick reward and target curriculum.
+    """3D walker with cascading-gate reward and target curriculum.
 
-    The reward progresses through stages (additive curriculum):
-      0. *Feet* - reward foot-ground contact, penalise non-foot contact.
-      1. *Stand* - torso height, upright orientation, hip alignment, symmetry,
-         smoothness (added on top).
-      2. *Weight shift* - shift COM over one foot then the other, stay still.
-      3. *March* - alternating knee lifts in place, single support.
-      4. *Approach* - walk toward the ball while upright, with gait quality.
-      5. *Kick* - ball velocity in the direction of the target.
-      6. *Target hit* - large bonus when the ball enters the target zone; ball
-         and target are then randomly re-placed so the episode continues.
+    All reward components are always active, but each is gated by a
+    smoothed rolling mean of the previous component's gated value.  This
+    lets the agent naturally progress from standing to walking to kicking
+    without hard phase switches, and prevents it from skipping or
+    forgetting earlier skills.
 
-    Curriculum: ``register_success`` increments a counter.  After
-    ``_SUCCESS_THRESHOLD`` consecutive successes the target zone shrinks by
-    ``_TARGET_SHRINK`` (down to ``_TARGET_SIZE_MIN``).  A failure resets the
-    consecutive-success counter.
+    Gate cascade (each = clamp(mean(prev_gated, last 10 steps), 0, 1)):
+      gate_stand    ← feet_reward
+      gate_ws       ← stand_reward * gate_stand
+      gate_march    ← weight_shift_reward * gate_ws
+      gate_approach ← march_reward * gate_march
+      gate_full     ← approach_reward * gate_approach
+
+    Stand-specific penalties (hip_align, leg_spread, feet_under,
+    symmetry) fade out via ``(1 - gate_march)`` so they don't block
+    walking or kicking.
+
+    Target curriculum: ``register_success`` increments a counter.  After
+    ``_SUCCESS_THRESHOLD`` consecutive successes the target zone shrinks
+    by ``_TARGET_SHRINK`` (down to ``_TARGET_SIZE_MIN``).  A failure
+    resets the consecutive-success counter.
     """
 
-    def __init__(self, move_speed, random=None, phase=PHASE_FEET):
+    def __init__(self, move_speed, random=None):
         """Initializes an instance of `Walker3DBall`.
 
         Args:
           move_speed: A float. If zero, the stand reward dominates. Otherwise this
-            specifies a target horizontal velocity for the approach phase.
+            specifies a target horizontal velocity for the approach reward.
           random: Optional, either a `numpy.random.RandomState` instance, an
             integer seed for creating a new `RandomState`, or None to select a
             seed automatically (default).
-          phase: Curriculum phase (0=feet, 1=stand, 2=weight_shift, 3=march,
-            4=approach, 5=full). Controls which reward components are active.
         """
         self._move_speed = move_speed
         self._target_size = _TARGET_SIZE_MAX
         self._consecutive_successes = 0
         self._target_pos = None
-        self._phase = phase
         self._reward_components: dict[str, float] = {}
         self._prev_action: np.ndarray | None = None  # for action smoothness penalty
         self._last_swing_leg: str | None = (
@@ -558,6 +502,16 @@ class Walker3DBall(base.Task):
             None  # 'right' or 'left' (for weight-shift alternation)
         )
         self._same_shift_count: int = 0  # consecutive steps with same shift side
+        # Gate history: rolling window of gated values for smoothing.
+        # Each entry is the *gated* (i.e. gate × raw) value of the
+        # corresponding component at that step.
+        self._gate_history: dict[str, collections.deque] = {
+            "feet": collections.deque(maxlen=_GATE_SMOOTHING),
+            "stand": collections.deque(maxlen=_GATE_SMOOTHING),
+            "weight_shift": collections.deque(maxlen=_GATE_SMOOTHING),
+            "march": collections.deque(maxlen=_GATE_SMOOTHING),
+            "approach": collections.deque(maxlen=_GATE_SMOOTHING),
+        }
         super().__init__(random=random)
 
     def register_success(self):
@@ -579,21 +533,6 @@ class Walker3DBall(base.Task):
     def register_failure(self):
         """Reset the consecutive-success counter."""
         self._consecutive_successes = 0
-
-    def set_phase(self, phase: int):
-        """Set the curriculum phase (0=feet, 1=stand, 2=weight_shift, 3=march,
-        4=approach, 5=full).
-
-        Called externally from the training loop after evaluation thresholds
-        are met.  Controls which reward components are active.
-        """
-        if phase < 0 or phase >= _NUM_PHASES:
-            raise ValueError(f"Invalid phase {phase}; must be 0-{_NUM_PHASES - 1}.")
-        self._phase = phase
-
-    @property
-    def phase(self) -> int:
-        return self._phase
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode.
@@ -621,6 +560,9 @@ class Walker3DBall(base.Task):
         self._same_swing_count = 0
         self._last_shift_side = None
         self._same_shift_count = 0
+        # Reset gate history at the start of each episode
+        for key in self._gate_history:
+            self._gate_history[key].clear()
 
         super().initialize_episode(physics)
 
@@ -650,27 +592,31 @@ class Walker3DBall(base.Task):
         obs["joint_positions"] = physics.joint_positions()
         return obs
 
+    def _gate_mean(self, key: str) -> float:
+        """Return the smoothed (rolling mean) gated value for a gate key.
+
+        Returns 0.0 if the history is empty (start of episode).
+        """
+        hist = self._gate_history[key]
+        if not hist:
+            return 0.0
+        return float(sum(hist) / len(hist))
+
     def get_reward(self, physics):
-        """Multi-stage reward, additive across curriculum phases.
+        """Cascading-gate reward: all components active, each gated by the
+        smoothed rolling mean of the previous component's gated value.
 
         Positive weights sum to 1.0 → perfect step = 1.0.
         Penalty weights are on top → realistic optimum < 1.0.
 
         ``_reward_components`` stores **raw (unweighted)** values so logged
-        components directly show each sub-reward's quality in [0, 1] or [-1, 0].
-
-        Phase 0 (feet):          feet + stand + effort + feet_under penalty
-        Phase 1 (stand):         + stand + symmetry + hip_align
-                                 + leg_spread + smoothness + feet_under
-        Phase 2 (weight_shift):  + weight_shift (shift COM left/right, stay still)
-        Phase 3 (march):         + march (alternating knee lifts, single support)
-        Phase 4 (approach):      + approach + gait (walk to ball with gait quality)
-        Phase 5 (full):          + kick + target bonus
+        components directly show each sub-reward's quality in [0, 1] or
+        [-1, 0] (kick in [-1, 1]).
         """
         ctrl = physics.control()
 
         # ======================================================================
-        # Shared quantities (computed once, used across phases)
+        # Shared quantities (computed once)
         # ======================================================================
         feet_touch_raw = physics.feet_touch()
         non_foot_touch_raw = physics.non_foot_touch()
@@ -743,75 +689,25 @@ class Walker3DBall(base.Task):
             np.clip(feet_offset / _FEET_UNDER_MAX_OFFSET, 0.0, 1.0)
         )
 
-        # Gate that activates standing-dependent rewards only when no non-foot
-        # body part is touching the ground.  We deliberately do NOT multiply by
-        # ``standing`` here because ``stand_reward`` already contains the height
-        # term (weight 3/4); gating with ``standing`` again would double-weight
-        # the height.
-        stand_gate = feet_only
+        # ======================================================================
+        # Cascading gates (smoothed over last _GATE_SMOOTHING steps)
+        # ======================================================================
+        # gate_stand: activated by feet reward
+        gate_stand = self._gate_mean("feet")
+        # gate_ws: activated by stand * gate_stand
+        gate_ws = self._gate_mean("stand")
+        # gate_march: activated by weight_shift * gate_ws
+        gate_march = self._gate_mean("weight_shift")
+        # gate_approach: activated by march * gate_march
+        gate_approach = self._gate_mean("march")
+        # gate_full: activated by approach * gate_approach
+        gate_full = self._gate_mean("approach")
+
+        # Stand-specific penalties fade out when the agent starts marching.
+        stand_penalty_fade = 1.0 - gate_march
 
         # ======================================================================
-        # Phase 0: FEET
-        # ======================================================================
-        if self._phase == PHASE_FEET:
-            # Small penalty when feet are not under the COM. This prevents the
-            # agent from simply lying down and pulling the feet together under
-            # the torso body origin; instead the feet must be under the actual
-            # centre of mass.  Penalty ∈ [-1, 0], 0 when feet are under COM.
-            feet_under_penalty = feet_under - 1.0
-            # Light standing nudge: rewards upright height/orientation, but only
-            # when no non-foot body part is touching the ground (stand_gate).
-            # This steers the agent out of the curled "foetus" pose toward an
-            # upright stance already in phase 0, without making standing the
-            # dominant objective.
-            stand_reward_0 = stand_reward * stand_gate
-            reward = (
-                _W_FEET_0 * feet_reward
-                + _W_STAND_0 * stand_reward_0
-                + _W_EFFORT_0 * effort_penalty
-                + _W_FEET_UNDER_0 * feet_under_penalty
-            )
-            self._reward_components = {
-                "feet": feet_reward,
-                "stand": stand_reward_0,
-                "effort": effort_penalty,
-                "feet_under": feet_under_penalty,
-            }
-            self._prev_action = ctrl.copy()
-            return float(reward)
-
-        # ======================================================================
-        # Phase 1+: STAND
-        # ======================================================================
-        reward = (
-            _W_FEET_1 * feet_reward
-            + _W_STAND_1 * stand_reward * stand_gate
-            + _W_SYMMETRY_1 * symmetry_reward * stand_gate
-            + _W_FEET_UNDER_1 * feet_under * stand_gate
-            # penalties (on top):
-            + _W_EFFORT_1 * effort_penalty
-            + _W_HIP_ALIGN_1 * hip_align_penalty * stand_gate
-            + _W_LEG_SPREAD_1 * leg_spread * stand_gate
-            + _W_SMOOTHNESS_1 * smoothness_penalty * stand_gate
-        )
-        raw = {
-            "feet": feet_reward,
-            "effort": effort_penalty,
-            "stand": stand_reward * stand_gate,
-            "symmetry": symmetry_reward * stand_gate,
-            "hip_align": hip_align_penalty * stand_gate,
-            "leg_spread": leg_spread * stand_gate,
-            "smoothness": smoothness_penalty * stand_gate,
-            "feet_under": feet_under * stand_gate,
-        }
-
-        if self._phase == PHASE_STAND:
-            self._reward_components = raw
-            self._prev_action = ctrl.copy()
-            return float(reward)
-
-        # ======================================================================
-        # Phase 2+: WEIGHT_SHIFT
+        # Weight shift reward
         # ======================================================================
         com_to_feet = physics.com_lateral_to_foot()
         # Normalise by the *lateral* (y) foot separation, not the full xy
@@ -853,27 +749,8 @@ class Walker3DBall(base.Task):
             np.clip(physics.horizontal_velocity() / _GAIT_MIN_VELOCITY, 0.0, 1.0)
         )
 
-        reward = (
-            _W_FEET_2 * feet_reward
-            + _W_STAND_2 * stand_reward * stand_gate
-            + _W_SYMMETRY_2 * symmetry_reward * stand_gate
-            + _W_FEET_UNDER_2 * feet_under * stand_gate
-            + _W_WEIGHT_SHIFT_2 * weight_shift_reward * stand_gate * stillness
-            # penalties (on top):
-            + _W_EFFORT_2 * effort_penalty
-            + _W_HIP_ALIGN_2 * hip_align_penalty * stand_gate
-            + _W_LEG_SPREAD_2 * leg_spread * stand_gate
-            + _W_SMOOTHNESS_2 * smoothness_penalty * stand_gate
-        )
-        raw["weight_shift"] = weight_shift_reward * stand_gate * stillness
-
-        if self._phase == PHASE_WEIGHT_SHIFT:
-            self._reward_components = raw
-            self._prev_action = ctrl.copy()
-            return float(reward)
-
         # ======================================================================
-        # Phase 3+: MARCH
+        # March reward
         # ======================================================================
         knee = physics.knee_angles()
         hip_pitch = physics.hip_pitch_angles()
@@ -948,28 +825,8 @@ class Walker3DBall(base.Task):
             )
         )
 
-        reward = (
-            _W_FEET_3 * feet_reward
-            + _W_STAND_3 * stand_reward * stand_gate
-            + _W_SYMMETRY_3 * symmetry_reward * stand_gate
-            + _W_FEET_UNDER_3 * feet_under * stand_gate
-            + _W_WEIGHT_SHIFT_3 * weight_shift_reward * stand_gate * stillness
-            + _W_MARCH_3 * march_reward * stand_gate
-            # penalties (on top):
-            + _W_EFFORT_3 * effort_penalty
-            + _W_HIP_ALIGN_3 * hip_align_penalty * stand_gate
-            + _W_LEG_SPREAD_3 * leg_spread * stand_gate
-            + _W_SMOOTHNESS_3 * smoothness_penalty * stand_gate
-        )
-        raw["march"] = march_reward * stand_gate
-
-        if self._phase == PHASE_MARCH:
-            self._reward_components = raw
-            self._prev_action = ctrl.copy()
-            return float(reward)
-
         # ======================================================================
-        # Phase 4+: APPROACH
+        # Approach + gait reward
         # ======================================================================
         torso_xy = physics.torso_xy()
         ball_xy = physics.ball_xy()
@@ -1014,36 +871,11 @@ class Walker3DBall(base.Task):
                 sigmoid="linear",
             )
         )
-        # Reuse the single_support signal computed in phase 3 instead of
-        # recomputing the identical tolerance.
-        single_support_gait = single_support
-        gait_reward = gait_gate * (foot_clearance + single_support_gait) / 2.0
-
-        reward = (
-            _W_FEET_4 * feet_reward
-            + _W_STAND_4 * stand_reward * stand_gate
-            + _W_SYMMETRY_4 * symmetry_reward * stand_gate
-            + _W_FEET_UNDER_4 * feet_under * stand_gate
-            + _W_WEIGHT_SHIFT_4 * weight_shift_reward * stand_gate * stillness
-            + _W_MARCH_4 * march_reward * stand_gate
-            + _W_APPROACH_4 * approach_reward
-            + _W_GAIT_4 * gait_reward
-            # penalties (on top):
-            + _W_EFFORT_4 * effort_penalty
-            + _W_HIP_ALIGN_4 * hip_align_penalty * stand_gate
-            + _W_LEG_SPREAD_4 * leg_spread * stand_gate
-            + _W_SMOOTHNESS_4 * smoothness_penalty * stand_gate
-        )
-        raw["approach"] = approach_reward
-        raw["gait"] = gait_reward
-
-        if self._phase == PHASE_APPROACH:
-            self._reward_components = raw
-            self._prev_action = ctrl.copy()
-            return float(reward)
+        # Reuse the single_support signal computed for march.
+        gait_reward = gait_gate * (foot_clearance + single_support) / 2.0
 
         # ======================================================================
-        # Phase 5: FULL (kick + target)
+        # Kick + target reward
         # ======================================================================
         target_xy = physics.target_xy()
         ball_vel_xy = physics.ball_linear_velocity_xy()
@@ -1064,26 +896,65 @@ class Walker3DBall(base.Task):
         if target_hit:
             self._reset_ball_and_target(physics)
 
-        reward = (
-            _W_FEET_5 * feet_reward
-            + _W_STAND_5 * stand_reward * stand_gate
-            + _W_SYMMETRY_5 * symmetry_reward * stand_gate
-            + _W_FEET_UNDER_5 * feet_under * stand_gate
-            + _W_WEIGHT_SHIFT_5 * weight_shift_reward * stand_gate * stillness
-            + _W_MARCH_5 * march_reward * stand_gate
-            + _W_APPROACH_5 * approach_reward
-            + _W_GAIT_5 * gait_reward
-            + _W_KICK_5 * kick_reward
-            + _W_TARGET_5 * target_reward
-            # penalties (on top):
-            + _W_EFFORT_5 * effort_penalty
-            + _W_HIP_ALIGN_5 * hip_align_penalty * stand_gate
-            + _W_LEG_SPREAD_5 * leg_spread * stand_gate
-            + _W_SMOOTHNESS_5 * smoothness_penalty * stand_gate
-        )
-        raw["kick"] = kick_reward
-        raw["target"] = target_reward
+        # ======================================================================
+        # Compute gated values for this step (to be stored in gate history)
+        # ======================================================================
+        feet_gated = feet_reward
+        stand_gated = stand_reward * gate_stand
+        ws_gated = weight_shift_reward * gate_ws * stillness
+        march_gated = march_reward * gate_march
+        approach_gated = approach_reward * gate_approach
 
-        self._reward_components = raw
+        # Update gate history for the next step
+        self._gate_history["feet"].append(feet_gated)
+        self._gate_history["stand"].append(stand_gated)
+        self._gate_history["weight_shift"].append(ws_gated)
+        self._gate_history["march"].append(march_gated)
+        self._gate_history["approach"].append(approach_gated)
+
+        # ======================================================================
+        # Final reward: all components, gated, single set of weights
+        # ======================================================================
+        reward = (
+            # Positive rewards (sum of weights = 1.0)
+            _W_FEET * feet_reward
+            + _W_STAND * stand_gated
+            + _W_SYMMETRY * symmetry_reward * gate_stand
+            + _W_WEIGHT_SHIFT * ws_gated
+            + _W_MARCH * march_gated
+            + _W_APPROACH * approach_gated
+            + _W_GAIT * gait_reward * gate_approach
+            + _W_KICK * kick_reward * gate_full
+            + _W_TARGET * target_reward * gate_full
+            # Penalties (on top, small weights)
+            + _W_EFFORT * effort_penalty
+            + _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade
+            + _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade
+            + _W_LEG_SPREAD * leg_spread * stand_penalty_fade
+            + _W_SMOOTHNESS * smoothness_penalty
+        )
+
+        # Log raw (unweighted) values for inspection
+        self._reward_components = {
+            "feet": feet_reward,
+            "stand": stand_gated,
+            "symmetry": symmetry_reward * gate_stand,
+            "weight_shift": ws_gated,
+            "march": march_gated,
+            "approach": approach_gated,
+            "gait": gait_reward * gate_approach,
+            "kick": kick_reward * gate_full,
+            "target": target_reward * gate_full,
+            "effort": effort_penalty,
+            "feet_under": (feet_under - 1.0) * stand_penalty_fade,
+            "hip_align": hip_align_penalty * stand_penalty_fade,
+            "leg_spread": leg_spread * stand_penalty_fade,
+            "smoothness": smoothness_penalty,
+            "gate_stand": gate_stand,
+            "gate_ws": gate_ws,
+            "gate_march": gate_march,
+            "gate_approach": gate_approach,
+            "gate_full": gate_full,
+        }
         self._prev_action = ctrl.copy()
         return float(reward)

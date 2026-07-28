@@ -179,8 +179,6 @@ Evaluation Configuration:
             "sample_k", "n_step", "sgd_steps_per_learner_step",
             "target_update_period", "grad_norm_clip", "update_every",
             "num_envs", "eval_frequency", "num_eval_episodes",
-            "curriculum", "phase1_threshold", "phase2_threshold",
-            "phase3_threshold", "phase4_threshold", "phase5_threshold",
         ]
         hparams = {}
         for k in hparam_keys:
@@ -240,7 +238,7 @@ Evaluation Configuration:
         return improved
 
     def save_train_state(self, episode: int, learner_state, buffer, collector,
-                         current_phase: int = 0, agent_step_count: int = 0):
+                         agent_step_count: int = 0):
         """Save a full training checkpoint to disk (atomic write).
 
         Only serializable collector fields (``stats`` dict and
@@ -248,7 +246,6 @@ Evaluation Configuration:
         logger objects are *not* picklable because they contain
         ``multiprocessing.Queue`` instances.
 
-        ``current_phase`` is stored so curriculum progress survives resume.
         ``agent_step_count`` is stored so the warmup/update_every timing
         is preserved across restarts.
         """
@@ -262,7 +259,6 @@ Evaluation Configuration:
                 "stats": collector.stats,
                 "best_eval_reward": collector.best_eval_reward,
             },
-            "current_phase": current_phase,
             "agent_step_count": agent_step_count,
         }
         with open(tmp_path, "wb") as f:
@@ -277,7 +273,6 @@ Evaluation Configuration:
         meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
         meta = {
             "episode": episode,
-            "phase": current_phase,
             "best_eval_reward": collector.best_eval_reward,
             "agent_step_count": agent_step_count,
         }
@@ -289,8 +284,7 @@ Evaluation Configuration:
         with open(filepath, "rb") as f:
             state = cloudpickle.load(f)
         return (state["episode"], state["learner_state"], state["buffer"],
-                state["collector"], state.get("current_phase", 0),
-                state.get("agent_step_count", 0))
+                state["collector"], state.get("agent_step_count", 0))
 
     def close(self):
         self.writer.close()

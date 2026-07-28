@@ -108,12 +108,6 @@ uv run python main.py \
   --num_eval_episodes "$CPUS" \
   --capacity 1000000 \
   --duration 25 \
-  --curriculum \
-  --phase1_threshold 637.0 \
-  --phase2_threshold 650.0 \
-  --phase3_threshold 661.0 \
-  --phase4_threshold 670.0 \
-  --phase5_threshold 678.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?

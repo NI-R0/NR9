@@ -151,47 +151,6 @@ def parse_args() -> dict:
         help="Number of episodes to run evaluation for.",
     )
     parser.add_argument(
-        "--curriculum",
-        default=False,
-        action="store_true",
-        help="Enable curriculum learning with phased reward components (walker_3D_ball).",
-    )
-    parser.add_argument(
-        "--phase1_threshold",
-        type=float,
-        default=637.0,
-        help="Mean eval reward to advance from phase 0 (feet) to phase 1 (stand). "
-        "~70% of phase-0 realistic optimum (~910/ep).",
-    )
-    parser.add_argument(
-        "--phase2_threshold",
-        type=float,
-        default=650.0,
-        help="Mean eval reward to advance from phase 1 (stand) to phase 2 (weight_shift). "
-        "~70% of phase-1 realistic optimum (~928/ep).",
-    )
-    parser.add_argument(
-        "--phase3_threshold",
-        type=float,
-        default=661.0,
-        help="Mean eval reward to advance from phase 2 (weight_shift) to phase 3 (march). "
-        "~70% of phase-2 realistic optimum (~944/ep).",
-    )
-    parser.add_argument(
-        "--phase4_threshold",
-        type=float,
-        default=670.0,
-        help="Mean eval reward to advance from phase 3 (march) to phase 4 (approach). "
-        "~70% of phase-3 realistic optimum (~957/ep). Set to 0.0 to disable.",
-    )
-    parser.add_argument(
-        "--phase5_threshold",
-        type=float,
-        default=678.0,
-        help="Mean eval reward to advance from phase 4 (approach) to phase 5 (full). "
-        "~70% of phase-4 realistic optimum (~968/ep). Set to 0.0 to disable.",
-    )
-    parser.add_argument(
         "--load_dir",
         type=str,
         default=None,

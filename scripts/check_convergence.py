@@ -3,12 +3,11 @@
 
 Three possible outcomes:
 
-* **Converged (exit 0)** - The agent reached the final curriculum phase,
-  achieved at least ``--min_reward``, and the smoothed improvement over
-  the last ``--convergence_episodes`` episodes is below ``--threshold``.
-  The smoothing is done by taking the mean of all eval rewards in the
-  first half of the episode range versus the mean of the second half.
-  Stop training - success.
+* **Converged (exit 0)** - The agent achieved at least ``--min_reward``,
+  and the smoothed improvement over the last ``--convergence_episodes``
+  episodes is below ``--threshold``.  The smoothing is done by taking the
+  mean of all eval rewards in the first half of the episode range versus
+  the mean of the second half.  Stop training - success.
 
 * **Stagnant (exit 2)** - The agent has been training for a long time
   (``--stagnation_window`` evals) without meaningful improvement
@@ -29,14 +28,6 @@ import json
 import os
 import sys
 from loguru import logger
-
-# Curriculum phases (must match src/train.py and walker_3D_ball.py)
-_PHASE_FEET = 0
-_PHASE_STAND = 1
-_PHASE_WEIGHT_SHIFT = 2
-_PHASE_MARCH = 3
-_PHASE_APPROACH = 4
-_PHASE_FULL = 5
 
 
 def load_eval_rewards(run_dir: str) -> list[tuple[int, float]]:
@@ -75,7 +66,6 @@ def check_convergence(
     convergence_episodes: int,
     threshold: float,
     min_reward: float,
-    require_final_phase: bool,
     stagnation_window: int,
     stagnation_threshold: float,
 ) -> int:
@@ -91,13 +81,10 @@ def check_convergence(
     """
     eval_rewards = load_eval_rewards(run_dir)
     meta = load_training_meta(run_dir)
-    current_phase = meta.get("phase", _PHASE_FEET)
 
     logger.info(
         f"Convergence check:\n"
         f"  Total evals: {len(eval_rewards)}\n"
-        f"  Current phase: {current_phase} "
-        f"(0=FEET, 1=STAND, 2=WEIGHT_SHIFT, 3=MARCH, 4=APPROACH, 5=FULL)\n"
         f"  Best eval reward so far: {meta.get('best_eval_reward', '?')}"
     )
 
@@ -145,39 +132,31 @@ def check_convergence(
 
     # ------------------------------------------------------------------
     # 1) Convergence check - are we done?
-    #    Requires: final curriculum phase, reward >= min_reward, and
-    #    smoothed improvement below threshold.
+    #    Requires: reward >= min_reward, and smoothed improvement below
+    #    threshold.
     # ------------------------------------------------------------------
-    meets_phase = not require_final_phase or current_phase >= _PHASE_FULL
     meets_reward = best_recent >= min_reward
     meets_improvement = improvement < threshold
 
-    if meets_phase and meets_reward and meets_improvement:
+    if meets_reward and meets_improvement:
         logger.success(
             f"CONVERGED! Smoothed improvement {improvement:.2f} < threshold {threshold}, "
-            f"best recent reward {best_recent:.2f} >= min_reward {min_reward:.2f}, "
-            f"phase {current_phase}. Stopping - training successful."
+            f"best recent reward {best_recent:.2f} >= min_reward {min_reward:.2f}. "
+            "Stopping - training successful."
         )
         return 0
 
     # ------------------------------------------------------------------
     # 2) Stagnation check - DISABLED.
-    #    Stagnation detection was too aggressive during curriculum
-    #    learning (reward plateaus are expected between phase advances).
+    #    Stagnation detection was too aggressive during training.
     #    The check is left here for documentation but always continues.
     # ------------------------------------------------------------------
-    logger.info("  Stagnation check disabled (curriculum plateaus are expected).")
+    logger.info("  Stagnation check disabled.")
 
     # ------------------------------------------------------------------
     # 3) Not converged, not stagnant - continue training.
     # ------------------------------------------------------------------
-    if not meets_phase:
-        logger.info(
-            f"Not converged - still in curriculum phase {current_phase} "
-            f"(need phase {_PHASE_FULL}=FULL). Continue training."
-        )
-        return 1
-    elif not meets_reward:
+    if not meets_reward:
         logger.info(
             f"Not converged - best recent reward {best_recent:.2f} "
             f"< min_reward {min_reward:.2f}. Continue training."
@@ -219,18 +198,6 @@ def main():
         help="Minimum best recent reward to allow convergence "
         "(default: 600.0). Below this, always continue.",
     )
-    parser.add_argument(
-        "--require_final_phase",
-        action="store_true",
-        default=True,
-        help="Only converge in the final curriculum phase (default: True).",
-    )
-    parser.add_argument(
-        "--no_require_final_phase",
-        dest="require_final_phase",
-        action="store_false",
-        help="Allow convergence in any curriculum phase.",
-    )
 
     parser.add_argument(
         "--stagnation_window",
@@ -253,7 +220,6 @@ def main():
         convergence_episodes=args.convergence_episodes,
         threshold=args.threshold,
         min_reward=args.min_reward,
-        require_final_phase=args.require_final_phase,
         stagnation_window=args.stagnation_window,
         stagnation_threshold=args.stagnation_threshold,
     )

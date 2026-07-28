@@ -1,6 +1,5 @@
 import os
 import signal
-import shutil
 import time
 import numpy as np
 from loguru import logger
@@ -10,52 +9,6 @@ from src.environment import Environment
 from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
 from src.vector_env import ParallelVectorEnv
-
-# Curriculum phases (must match src/environments/walker_3D_ball.py)
-_PHASE_FEET = 0
-_PHASE_STAND = 1
-_PHASE_WEIGHT_SHIFT = 2
-_PHASE_MARCH = 3
-_PHASE_APPROACH = 4
-_PHASE_FULL = 5
-
-
-def _check_phase_advancement(current_phase: int, mean_eval_reward: float,
-                             phase1_threshold: float, phase2_threshold: float,
-                             phase3_threshold: float,
-                             phase4_threshold: float = 0.0,
-                             phase5_threshold: float = 0.0) -> int:
-    """Check if the curriculum phase should advance based on eval reward.
-
-    Returns the new phase (same as current if no advancement).
-    """
-    thresholds = {
-        _PHASE_FEET: (phase1_threshold, _PHASE_STAND, "FEET", "STAND"),
-        _PHASE_STAND: (phase2_threshold, _PHASE_WEIGHT_SHIFT, "STAND", "WEIGHT_SHIFT"),
-        _PHASE_WEIGHT_SHIFT: (phase3_threshold, _PHASE_MARCH, "WEIGHT_SHIFT", "MARCH"),
-        _PHASE_MARCH: (phase4_threshold, _PHASE_APPROACH, "MARCH", "APPROACH"),
-        _PHASE_APPROACH: (phase5_threshold, _PHASE_FULL, "APPROACH", "FULL"),
-    }
-    if current_phase in thresholds:
-        threshold, next_phase, cur_name, next_name = thresholds[current_phase]
-        # A threshold of 0.0 means the phase is disabled (no advancement).
-        if threshold > 0.0 and mean_eval_reward >= threshold:
-            logger.info(
-                f"Curriculum: advancing from {cur_name} to {next_name} "
-                f"(eval reward {mean_eval_reward:.2f} >= threshold {threshold:.2f})"
-            )
-            return next_phase
-    return current_phase
-
-
-def _propagate_phase(phase: int, use_vectorized: bool, venv, env, eval_env):
-    """Send phase update to all environments (train + eval)."""
-    if use_vectorized:
-        venv.set_phase(phase)
-    else:
-        env.set_phase(phase)
-    eval_env.set_phase(phase)
-    logger.info(f"Curriculum phase set to {phase} for all environments.")
 
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False, profile: bool = False):
@@ -264,16 +217,14 @@ def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
 
 
 def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
-                 current_phase, use_vectorized, venv, env,
-                 use_curriculum, phase1_threshold, phase2_threshold,
-                 phase3_threshold, phase4_threshold, phase5_threshold):
-    """Run evaluation, log results, save state, and check curriculum advancement.
+                 agent_step_count):
+    """Run evaluation, log results, and save state/checkpoints.
 
-    Returns the (possibly updated) ``current_phase``.
+    Returns the current agent step count.
     """
     logger.info(f"Starting evaluation at episode {episode}.")
     visualize = args["visualize"]
-    if use_vectorized:
+    if args.get("num_envs", 1) > 1:
         visualize = False  # vis not supported with vectorized eval
 
     mean_eval_reward, std_eval_reward = _run_evaluation(
@@ -290,33 +241,13 @@ def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
     )
 
     stats.save_train_state(episode, agent.learner.state, buffer, stats,
-                           current_phase=current_phase, agent_step_count=agent._step_count)
+                           agent_step_count=agent_step_count)
     stats.flush_stats_to_disk()
     stats.save_checkpoint(agent.learner.state, "latest")
     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
         logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
 
-    if use_curriculum:
-        new_phase = _check_phase_advancement(
-            current_phase, mean_eval_reward,
-            phase1_threshold, phase2_threshold, phase3_threshold,
-            phase4_threshold, phase5_threshold)
-        if new_phase != current_phase:
-            # Save a snapshot of the best model at the end of the old phase
-            # so we can inspect what the agent learned at each stage.
-            best_ckpt_path = os.path.join(stats.checkpoint_dir, "best_ckpt.pkl")
-            phase_ckpt_path = os.path.join(stats.checkpoint_dir, f"best_phase_{current_phase}.pkl")
-            if os.path.exists(best_ckpt_path):
-                shutil.copy2(best_ckpt_path, phase_ckpt_path)
-                logger.info(f"Saved phase-{current_phase} snapshot to {phase_ckpt_path}")
-
-            current_phase = new_phase
-            _propagate_phase(current_phase, use_vectorized,
-                             venv if use_vectorized else None,
-                             env if not use_vectorized else None,
-                             eval_env)
-
-    return current_phase
+    return agent_step_count
 
 
 def train(args: dict, stats: StatsCollector):
@@ -355,12 +286,11 @@ def train(args: dict, stats: StatsCollector):
 
     learner_state = None
     episode = 0
-    loaded_phase = None
     loaded_step_count = 0
 
     if args["resume"] and os.path.exists(args["resume"]):
         logger.info(f"Found existing state at {args['resume']}. Resuming...")
-        (episode, learner_state, buffer, loaded_stats, loaded_phase,
+        (episode, learner_state, buffer, loaded_stats,
          loaded_step_count) = stats.load_train_state(args["resume"])
 
         # Restore serializable collector fields (loaded_stats is a dict:
@@ -376,7 +306,7 @@ def train(args: dict, stats: StatsCollector):
             buffer.set_num_envs(num_envs)
 
         logger.success(f"Successfully resumed from episode {episode} "
-                       f"(phase={loaded_phase}, step_count={loaded_step_count})")
+                       f"(step_count={loaded_step_count})")
 
     agent = SoccerAgent(
         observation_shape=state_dim,
@@ -397,30 +327,6 @@ def train(args: dict, stats: StatsCollector):
 
     # Log hyperparameters to TensorBoard HParams tab (once, before training).
     stats.log_hparams(args)
-
-    # Curriculum phase initialization
-    use_curriculum = args.get("curriculum", False)
-    if use_curriculum:
-        current_phase = loaded_phase if loaded_phase is not None else _PHASE_FEET
-        phase1_threshold = args.get("phase1_threshold", 120.0)
-        phase2_threshold = args.get("phase2_threshold", 270.0)
-        phase3_threshold = args.get("phase3_threshold", 350.0)
-        phase4_threshold = args.get("phase4_threshold", 500.0)
-        phase5_threshold = args.get("phase5_threshold", 700.0)
-        logger.info(f"Curriculum enabled: starting at phase {current_phase} "
-                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold}, "
-                     f"phase3={phase3_threshold}, phase4={phase4_threshold}, phase5={phase5_threshold})")
-        _propagate_phase(current_phase, use_vectorized,
-                         venv if use_vectorized else None,
-                         env if not use_vectorized else None,
-                         eval_env)
-    else:
-        current_phase = _PHASE_FULL
-        phase1_threshold = 0.0
-        phase2_threshold = 0.0
-        phase3_threshold = 0.0
-        phase4_threshold = 0.0
-        phase5_threshold = 0.0
 
     duration_min = args.get("duration")
     use_duration = duration_min is not None
@@ -472,7 +378,6 @@ def train(args: dict, stats: StatsCollector):
                     "Episode_Length": length_mean,
                     "Episode_Length_Std": length_std,
                     "Buffer_Size": len(buffer),
-                    "Curriculum_Phase": current_phase,
                     **metrics,
                 }
             else:
@@ -481,7 +386,6 @@ def train(args: dict, stats: StatsCollector):
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
                     "Buffer_Size": len(buffer),
-                    "Curriculum_Phase": current_phase,
                     **metrics,
                 }
 
@@ -494,13 +398,9 @@ def train(args: dict, stats: StatsCollector):
             stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
             if episode % args["eval_frequency"] == 0:
-                current_phase = _handle_eval(
+                _handle_eval(
                     episode, eval_env, agent, args, stats, buffer,
-                    current_phase, use_vectorized,
-                    venv if use_vectorized else None,
-                    env if not use_vectorized else None,
-                    use_curriculum, phase1_threshold, phase2_threshold,
-                    phase3_threshold, phase4_threshold, phase5_threshold)
+                    agent._step_count)
 
             if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
                 logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
@@ -515,7 +415,6 @@ def train(args: dict, stats: StatsCollector):
             venv.close()
 
     stats.save_train_state(episode, agent.learner.state, buffer, stats,
-                           current_phase=current_phase if use_curriculum else 0,
                            agent_step_count=agent._step_count)
     stats.flush_stats_to_disk()
     stats.save_checkpoint(agent.learner.state, "final")
