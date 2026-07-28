@@ -226,33 +226,125 @@ def run(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
 
 
 class Physics(mujoco.Physics):
-    """Physics simulation with additional features for the Walker_3D_Ball domain."""
+    """Physics simulation with additional features for the Walker_3D_Ball domain.
+
+    All name→index lookups are precomputed once in ``_ensure_indices`` and
+    subsequent access uses direct NumPy array indexing for speed.  The
+    return values of every method are identical to the original named-access
+    version.
+    """
+
+    # ------------------------------------------------------------------
+    # Index precomputation (called once, lazily)
+    # ------------------------------------------------------------------
+
+    def _ensure_indices(self):
+        """Precompute MuJoCo name→id indices for fast array access.
+
+        Idempotent: computes only on the first call, then sets
+        ``self._indices_ready``.
+        """
+        if getattr(self, "_indices_ready", False):
+            return
+        model = self.model.ptr
+        mjt = mujoco.mjtObj
+
+        # Body IDs
+        self._bid_torso = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "torso")
+        self._bid_right_foot = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "right_foot")
+        self._bid_left_foot = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "left_foot")
+        self._bid_target = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "target")
+
+        # Joint qpos / qvel addresses
+        joint_names = [
+            "right_hip_yaw", "right_hip_roll", "right_hip_pitch",
+            "right_knee", "right_ankle",
+            "left_hip_yaw", "left_hip_roll", "left_hip_pitch",
+            "left_knee", "left_ankle",
+        ]
+        self._qpos_joints = np.array([
+            model.jnt_qposadr[mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, n)]
+            for n in joint_names
+        ], dtype=np.int64)
+        self._qpos_root = 0  # root qpos starts at 0
+        self._qpos_ball = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "ball_joint")
+        ]
+        self._qvel_ball = model.jnt_dofadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "ball_joint")
+        ]
+
+        # Specific joint qpos addresses for hip_yaw, hip_roll, knee, hip_pitch
+        self._qpos_r_hip_yaw = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_hip_yaw")]
+        self._qpos_l_hip_yaw = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_hip_yaw")]
+        self._qpos_r_hip_roll = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_hip_roll")]
+        self._qpos_l_hip_roll = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_hip_roll")]
+        self._qpos_r_knee = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_knee")]
+        self._qpos_l_knee = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_knee")]
+        self._qpos_r_hip_pitch = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_hip_pitch")]
+        self._qpos_l_hip_pitch = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_hip_pitch")]
+
+        # Sensor addresses
+        self._sensor_linvel = model.sensor_adr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, "torso_subtreelinvel")]
+        self._sensor_r_foot = model.sensor_adr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, "right_foot_touch")]
+        self._sensor_l_foot = model.sensor_adr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, "left_foot_touch")]
+        # Non-foot touch sensors (torso, right_thigh, left_thigh, right_leg, left_leg)
+        self._sensor_non_foot = np.array([
+            model.sensor_adr[
+                mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, name)]
+            for name in _NON_FOOT_TOUCHES
+        ], dtype=np.int64)
+        # All touch sensors in _ALL_TOUCHES order
+        self._sensor_all_touch = np.array([
+            model.sensor_adr[
+                mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, name)]
+            for name in _ALL_TOUCHES
+        ], dtype=np.int64)
+
+        # Mocap ID for target body
+        self._mocap_target = model.body_mocapid[self._bid_target]
+
+        # Geom ID for target_zone
+        self._geom_target_zone = mujoco.mj_name2id(
+            model, mjt.mjOBJ_GEOM, "target_zone")
+
+        self._indices_ready = True
+
+    # ------------------------------------------------------------------
+    # Optimized accessor methods (same return values as named-access versions)
+    # ------------------------------------------------------------------
 
     def torso_upright(self):
         """Returns projection from z-axes of torso to the z-axes of world."""
-        return self.named.data.xmat["torso", "zz"]
+        self._ensure_indices()
+        return self.data.xmat[self._bid_torso, 8]  # zz component
 
     def torso_height(self):
-        """Returns the world-z height of the top end of the torso capsule.
-
-        The torso geom is a capsule with half-length 0.3 along the body's
-        local z-axis.  The actual top position in world coordinates depends
-        on the body orientation, so we project the half-length onto the
-        world z-axis via ``xmat['torso', 'zz']`` (the z-component of the
-        local z-axis in world frame).
-        """
-        center_z = self.named.data.xpos["torso", "z"]
-        local_z_in_world = self.named.data.xmat["torso", "zz"]
-        return center_z + 0.3 * local_z_in_world
+        """Returns the world-z height of the top end of the torso capsule."""
+        self._ensure_indices()
+        return self.data.xpos[self._bid_torso, 2] + 0.3 * self.data.xmat[self._bid_torso, 8]
 
     def torso_xy(self):
         """Returns the [x, y] position of the torso."""
-        return np.array(self.named.data.xpos["torso"][:2])
+        self._ensure_indices()
+        return self.data.xpos[self._bid_torso, :2].copy()
 
     def horizontal_velocity(self):
         """Returns the horizontal speed of the center-of-mass (xy-plane)."""
-        linvel = self.named.data.sensordata["torso_subtreelinvel"]
-        return np.linalg.norm(linvel[:2])
+        self._ensure_indices()
+        linvel = self.data.sensordata[self._sensor_linvel:self._sensor_linvel + 3]
+        return float(np.linalg.norm(linvel[:2]))
 
     def orientations(self):
         """Returns planar orientations of all bodies.
@@ -261,7 +353,8 @@ class Physics(mujoco.Physics):
         to keep the observation dimension manageable we return the same projection
         components (xx, xz) used by the planar walker for every non-torso body.
         """
-        return self.named.data.xmat[1:, ["xx", "xz"]].ravel()
+        self._ensure_indices()
+        return self.data.xmat[1:, [0, 2]].ravel()
 
     def touch_forces(self):
         """Returns touch forces of all body parts (including feet) as a 1-D array.
@@ -270,64 +363,63 @@ class Physics(mujoco.Physics):
         produce ~0 while firm contacts saturate to ~1.  Consistent with
         ``feet_touch`` and ``non_foot_touch`` (no ``-3`` offset).
         """
-        return np.array(
-            [np.tanh(self.named.data.sensordata[name].item()) for name in _ALL_TOUCHES]
-        )
+        self._ensure_indices()
+        return np.tanh(self.data.sensordata[self._sensor_all_touch])
 
     def feet_touch(self):
         """Returns summed tanh-saturated touch force for feet only."""
-        return sum(
-            np.tanh(self.named.data.sensordata[name].item()) for name in _FOOT_TOUCHES
-        )
+        self._ensure_indices()
+        s = self.data.sensordata
+        return float(np.tanh(s[self._sensor_r_foot]) +
+                      np.tanh(s[self._sensor_l_foot]))
 
     def non_foot_touch(self):
         """Returns summed tanh-saturated touch force for non-foot body parts."""
-        return sum(
-            np.tanh(self.named.data.sensordata[name].item())
-            for name in _NON_FOOT_TOUCHES
-        )
+        self._ensure_indices()
+        return float(np.sum(np.tanh(self.data.sensordata[self._sensor_non_foot])))
 
     def feet_horizontal_distance(self):
         """Returns the xy-distance between the two feet."""
-        right_foot = self.named.data.xpos["right_foot"][:2]
-        left_foot = self.named.data.xpos["left_foot"][:2]
+        self._ensure_indices()
+        right_foot = self.data.xpos[self._bid_right_foot, :2]
+        left_foot = self.data.xpos[self._bid_left_foot, :2]
         return float(np.linalg.norm(right_foot - left_foot))
 
     def feet_lateral_distance(self):
-        """Returns the absolute y-distance between the two feet.
-
-        Used to normalise the weight-shift reward, which measures how far
-        the COM is shifted *laterally* (in y) over one foot.  Using the
-        pure y-distance (rather than the full xy-distance) prevents the
-        reward from being trivialised by spreading the feet in x.
-        """
-        right_foot_y = self.named.data.xpos["right_foot"][1]
-        left_foot_y = self.named.data.xpos["left_foot"][1]
-        return float(abs(right_foot_y - left_foot_y))
+        """Returns the absolute y-distance between the two feet."""
+        self._ensure_indices()
+        return float(abs(self.data.xpos[self._bid_right_foot, 1] -
+                          self.data.xpos[self._bid_left_foot, 1]))
 
     def ball_position(self):
         """Returns the [x, y, z] position of the ball."""
-        return np.array(self.named.data.qpos["ball_joint"][:3])
+        self._ensure_indices()
+        return self.data.qpos[self._qpos_ball:self._qpos_ball + 3].copy()
 
     def ball_velocity(self):
         """Returns the [vx, vy, vz, wx, wy, wz] velocity of the ball."""
-        return np.array(self.named.data.qvel["ball_joint"])
+        self._ensure_indices()
+        return self.data.qvel[self._qvel_ball:self._qvel_ball + 6].copy()
 
     def ball_xy(self):
         """Returns the [x, y] position of the ball."""
-        return np.array(self.named.data.qpos["ball_joint"][:2])
+        self._ensure_indices()
+        return self.data.qpos[self._qpos_ball:self._qpos_ball + 2].copy()
 
     def ball_linear_velocity_xy(self):
         """Returns the [vx, vy] linear velocity of the ball."""
-        return np.array(self.named.data.qvel["ball_joint"][:2])
+        self._ensure_indices()
+        return self.data.qvel[self._qvel_ball:self._qvel_ball + 2].copy()
 
     def target_position(self):
         """Returns the [x, y, z] world position of the target mocap body."""
-        return np.array(self.named.data.xpos["target"])
+        self._ensure_indices()
+        return self.data.xpos[self._bid_target].copy()
 
     def target_xy(self):
         """Returns the [x, y] world position of the target."""
-        return np.array(self.named.data.xpos["target"][:2])
+        self._ensure_indices()
+        return self.data.xpos[self._bid_target, :2].copy()
 
     def set_target_position(self, xy):
         """Moves the mocap target body to ``(x, y, 0.1)`` and recomputes kinematics.
@@ -336,44 +428,43 @@ class Physics(mujoco.Physics):
         only updated during kinematics, which runs inside ``physics.step()`` - not
         when ``mocap_pos`` is set directly.
         """
-        pos = np.array([xy[0], xy[1], 0.1], dtype=np.float64)
-        self.named.data.mocap_pos["target"] = pos
+        self._ensure_indices()
+        self.data.mocap_pos[self._mocap_target] = [xy[0], xy[1], 0.1]
         self.forward()
 
     def set_target_size(self, half_size):
         """Sets the target zone geom half-size in xy (box)."""
-        self.named.model.geom_size["target_zone"] = [half_size, half_size, 0.05]
+        self._ensure_indices()
+        self.model.ptr.geom_size[self._geom_target_zone] = [half_size, half_size, 0.05]
 
     def get_target_size(self):
         """Returns the current target zone half-size (xy)."""
-        return float(self.named.model.geom_size["target_zone", 0])
+        self._ensure_indices()
+        return float(self.model.ptr.geom_size[self._geom_target_zone, 0])
 
     def hip_yaw_angles(self):
         """Returns [right_hip_yaw, left_hip_yaw] joint angles in radians."""
-        return np.array(
-            [
-                self.named.data.qpos["right_hip_yaw"],
-                self.named.data.qpos["left_hip_yaw"],
-            ]
-        ).ravel()
+        self._ensure_indices()
+        return np.array([
+            self.data.qpos[self._qpos_r_hip_yaw],
+            self.data.qpos[self._qpos_l_hip_yaw],
+        ]).ravel()
 
     def hip_roll_angles(self):
         """Returns [right_hip_roll, left_hip_roll] joint angles in radians."""
-        return np.array(
-            [
-                self.named.data.qpos["right_hip_roll"],
-                self.named.data.qpos["left_hip_roll"],
-            ]
-        ).ravel()
+        self._ensure_indices()
+        return np.array([
+            self.data.qpos[self._qpos_r_hip_roll],
+            self.data.qpos[self._qpos_l_hip_roll],
+        ]).ravel()
 
     def foot_heights(self):
         """Returns [right_foot_z, left_foot_z] world-z heights of the feet."""
-        return np.array(
-            [
-                self.named.data.xpos["right_foot"][2],
-                self.named.data.xpos["left_foot"][2],
-            ]
-        )
+        self._ensure_indices()
+        return np.array([
+            self.data.xpos[self._bid_right_foot, 2],
+            self.data.xpos[self._bid_left_foot, 2],
+        ])
 
     def joint_positions(self):
         """Returns all non-root joint angles as a 1-D array (10 joints).
@@ -382,37 +473,24 @@ class Physics(mujoco.Physics):
         right_ankle, left_hip_yaw, left_hip_roll, left_hip_pitch,
         left_knee, left_ankle.
         """
-        joint_names = [
-            "right_hip_yaw",
-            "right_hip_roll",
-            "right_hip_pitch",
-            "right_knee",
-            "right_ankle",
-            "left_hip_yaw",
-            "left_hip_roll",
-            "left_hip_pitch",
-            "left_knee",
-            "left_ankle",
-        ]
-        return np.array([self.named.data.qpos[name] for name in joint_names]).ravel()
+        self._ensure_indices()
+        return self.data.qpos[self._qpos_joints].copy()
 
     def knee_angles(self):
         """Returns [right_knee, left_knee] joint angles in radians."""
-        return np.array(
-            [
-                self.named.data.qpos["right_knee"],
-                self.named.data.qpos["left_knee"],
-            ]
-        ).ravel()
+        self._ensure_indices()
+        return np.array([
+            self.data.qpos[self._qpos_r_knee],
+            self.data.qpos[self._qpos_l_knee],
+        ]).ravel()
 
     def hip_pitch_angles(self):
         """Returns [right_hip_pitch, left_hip_pitch] joint angles in radians."""
-        return np.array(
-            [
-                self.named.data.qpos["right_hip_pitch"],
-                self.named.data.qpos["left_hip_pitch"],
-            ]
-        ).ravel()
+        self._ensure_indices()
+        return np.array([
+            self.data.qpos[self._qpos_r_hip_pitch],
+            self.data.qpos[self._qpos_l_hip_pitch],
+        ]).ravel()
 
     def com_lateral_offset(self):
         """Returns the lateral (y) distance from COM to the midpoint of the feet.
@@ -421,9 +499,10 @@ class Physics(mujoco.Physics):
         Used for the weight-shift reward: the agent should shift its COM over
         one foot, then the other.
         """
-        com_y = self.named.data.subtree_com["torso"][1]
-        right_foot_y = self.named.data.xpos["right_foot"][1]
-        left_foot_y = self.named.data.xpos["left_foot"][1]
+        self._ensure_indices()
+        com_y = self.data.subtree_com[self._bid_torso, 1]
+        right_foot_y = self.data.xpos[self._bid_right_foot, 1]
+        left_foot_y = self.data.xpos[self._bid_left_foot, 1]
         feet_mid_y = (right_foot_y + left_foot_y) / 2.0
         return float(com_y - feet_mid_y)
 
@@ -432,9 +511,10 @@ class Physics(mujoco.Physics):
 
         A small absolute value means the COM is directly above that foot.
         """
-        com_y = self.named.data.subtree_com["torso"][1]
-        right_foot_y = self.named.data.xpos["right_foot"][1]
-        left_foot_y = self.named.data.xpos["left_foot"][1]
+        self._ensure_indices()
+        com_y = self.data.subtree_com[self._bid_torso, 1]
+        right_foot_y = self.data.xpos[self._bid_right_foot, 1]
+        left_foot_y = self.data.xpos[self._bid_left_foot, 1]
         return np.array([com_y - right_foot_y, com_y - left_foot_y])
 
     def feet_xy_offset(self):
@@ -446,9 +526,10 @@ class Physics(mujoco.Physics):
         feet must be under the **centre of mass**, not merely under the
         torso body origin.  Used by the ``feet_under`` reward component.
         """
-        com_xy = self.named.data.subtree_com["torso"][:2]
-        right_foot_xy = self.named.data.xpos["right_foot"][:2]
-        left_foot_xy = self.named.data.xpos["left_foot"][:2]
+        self._ensure_indices()
+        com_xy = self.data.subtree_com[self._bid_torso, :2]
+        right_foot_xy = self.data.xpos[self._bid_right_foot, :2]
+        left_foot_xy = self.data.xpos[self._bid_left_foot, :2]
         right_foot_com = float(np.linalg.norm(com_xy - right_foot_xy))
         left_foot_com = float(np.linalg.norm(com_xy - left_foot_xy))
         return float((right_foot_com + left_foot_com) / 2)
@@ -778,12 +859,8 @@ class Walker3DBall(base.Task):
         right_lift = (right_knee_lift + right_hip_lift) / 2.0
         left_lift = (left_knee_lift + left_hip_lift) / 2.0
 
-        touch_r = float(
-            np.tanh(physics.named.data.sensordata["right_foot_touch"].item())
-        )
-        touch_l = float(
-            np.tanh(physics.named.data.sensordata["left_foot_touch"].item())
-        )
+        touch_r = float(np.tanh(physics.data.sensordata[physics._sensor_r_foot]))
+        touch_l = float(np.tanh(physics.data.sensordata[physics._sensor_l_foot]))
         touch_sum = touch_r + touch_l
         single_support = float(
             rewards.tolerance(

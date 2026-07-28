@@ -199,11 +199,57 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     return reward_mean, reward_std, length_mean, length_std, avg_metrics, reward_components_sum
 
 
+def _run_vectorized_evaluation(eval_venv: ParallelVectorEnv, agent: SoccerAgent,
+                               args: dict):
+    """Run evaluation episodes in parallel and return ``(mean, std)`` reward.
+
+    Uses a single :class:`ParallelVectorEnv` with ``num_eval_episodes``
+    environments.  Each env runs one full episode; if some envs finish
+    earlier they auto-reset but we only keep the first completed episode
+    per env.
+    """
+    num_eval = args["num_eval_episodes"]
+    assert eval_venv.num_envs == num_eval, (
+        f"eval_venv has {eval_venv.num_envs} envs, expected {num_eval}"
+    )
+
+    states = eval_venv.reset()
+    ep_rewards = np.zeros(num_eval, dtype=np.float32)
+    finished = [False] * num_eval
+    finished_rewards = [None] * num_eval
+    max_steps = args["steps"]
+
+    for step in range(max_steps):
+        actions = agent.select_actions(states, explore=False)
+        actions_np = np.asarray(actions, dtype=np.float32)
+        next_states, rewards, dones, _ = eval_venv.step(actions_np)
+
+        for i in range(num_eval):
+            if finished[i]:
+                continue
+            ep_rewards[i] += rewards[i]
+            if dones[i]:
+                finished[i] = True
+                finished_rewards[i] = float(ep_rewards[i])
+
+        states = next_states
+        if all(finished):
+            break
+
+    for i in range(num_eval):
+        if finished_rewards[i] is None:
+            finished_rewards[i] = float(ep_rewards[i])
+
+    rewards_arr = np.array(finished_rewards, dtype=np.float32)
+    return float(np.mean(rewards_arr)), float(np.std(rewards_arr))
+
+
 def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
                     visualize: bool = False):
-    """Run ``num_eval_episodes`` evaluation episodes and return stats.
+    """Run ``num_eval_episodes`` evaluation episodes sequentially.
 
-    Returns ``(mean_reward, std_reward)``.
+    Returns ``(mean_reward, std_reward)``.  Used when ``num_envs <= 1``
+    or when visualization is requested.
     """
     eval_rewards = []
     for eval_episode in range(1, args["num_eval_episodes"] + 1):
@@ -216,20 +262,27 @@ def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
     return float(np.mean(eval_rewards_arr)), float(np.std(eval_rewards_arr))
 
 
-def _handle_eval(episode: int, eval_env, agent, args, stats, buffer,
+def _handle_eval(episode: int, eval_env, eval_venv, agent, args, stats, buffer,
                  agent_step_count):
     """Run evaluation, log results, and save state/checkpoints.
+
+    ``eval_venv`` is a :class:`ParallelVectorEnv` for vectorized
+    evaluation, or ``None`` to use the sequential ``eval_env``.
 
     Returns the current agent step count.
     """
     logger.info(f"Starting evaluation at episode {episode}.")
     visualize = args["visualize"]
-    if args.get("num_envs", 1) > 1:
-        visualize = False  # vis not supported with vectorized eval
+    use_vectorized_eval = eval_venv is not None
 
-    mean_eval_reward, std_eval_reward = _run_evaluation(
-        eval_env, agent, args, visualize=visualize
-    )
+    if use_vectorized_eval:
+        mean_eval_reward, std_eval_reward = _run_vectorized_evaluation(
+            eval_venv, agent, args
+        )
+    else:
+        mean_eval_reward, std_eval_reward = _run_evaluation(
+            eval_env, agent, args, visualize=visualize
+        )
 
     stats.log_stats_to_tb(episode, {
         "Mean_Eval_Reward": mean_eval_reward,
@@ -269,7 +322,20 @@ def train(args: dict, stats: StatsCollector):
         state_dim = env.state_dim
         action_dim = env.action_dim
 
-    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
+    eval_env = None
+    eval_venv = None
+    num_eval = args["num_eval_episodes"]
+
+    if use_vectorized and num_eval > 1:
+        eval_venv = ParallelVectorEnv(
+            domain_name=args["env_domain"],
+            task_name=args["env_task"],
+            max_steps=args["steps"],
+            num_envs=num_eval,
+            seed=args.get("seed", 42) + 10000,
+        )
+    else:
+        eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
     actor_net = ActorNetwork(action_dim)
     critic_net = CriticNetwork()
@@ -399,7 +465,7 @@ def train(args: dict, stats: StatsCollector):
 
             if episode % args["eval_frequency"] == 0:
                 _handle_eval(
-                    episode, eval_env, agent, args, stats, buffer,
+                    episode, eval_env, eval_venv, agent, args, stats, buffer,
                     agent._step_count)
 
             if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
@@ -413,6 +479,8 @@ def train(args: dict, stats: StatsCollector):
 
         if use_vectorized:
             venv.close()
+        if eval_venv is not None:
+            eval_venv.close()
 
     stats.save_train_state(episode, agent.learner.state, buffer, stats,
                            agent_step_count=agent._step_count)
