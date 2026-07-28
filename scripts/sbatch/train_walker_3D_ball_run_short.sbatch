@@ -106,7 +106,7 @@ uv run python main.py \
   --num_envs "$NUM_ENVS" \
   --eval_frequency 5 \
   --num_eval_episodes "$CPUS" \
-  --capacity 1000000 \
+  --capacity 5000000 \
   --duration 25 \
   $RESUME_ARGS
 

@@ -143,6 +143,7 @@ _MARCH_HIP_PITCH_TARGET = np.radians(45)  # Target hip pitch for knee lift
 _FEET_UNDER_MAX_OFFSET = (
     0.5  # Max xy-distance (m) from feet-midpoint to torso for feet_under reward
 )
+_ANKLE_FLAT_MAX = np.radians(30)  # Ankle angle at which flat-foot bonus reaches 0
 
 # Alternation parameters (march + weight_shift)
 _MARCH_SWITCH_BONUS = 0.1  # Bonus for switching swing leg (small, just a nudge)
@@ -628,8 +629,20 @@ class Walker3DBall(base.Task):
         # feet_only: 1 when no non-foot contact, 0 when any. ∈ [0, 1].
         feet_only = 1.0 - non_foot_contact
 
-        # --- Feet reward [0, 1]: foot contact scaled by absence of non-foot contact ---
-        feet_reward = feet_contact * feet_only
+        # --- Flat-foot bonus [0, 1]: rewards ankles near neutral (0 rad).
+        # In a toe-stand the ankles are strongly plantarflexed (large |angle|),
+        # while flat standing keeps them near 0.  Indices 4 and 9 in
+        # joint_positions() are right_ankle and left_ankle respectively.
+        joints = physics.joint_positions()
+        ankle_angles = np.array([joints[4], joints[9]])
+        ankle_flat = 1.0 - float(
+            np.clip(np.mean(np.abs(ankle_angles)) / _ANKLE_FLAT_MAX, 0.0, 1.0)
+        )
+
+        # --- Feet reward [0, 1]: contact × no-non-foot × flat-foot bonus.
+        # ankle_flat is blended at 50 % so toe-stand still gets partial credit
+        # (better than kneeling), but flat feet are clearly preferred.
+        feet_reward = feet_contact * feet_only * (0.5 + 0.5 * ankle_flat)
 
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
         effort_penalty = -float(np.mean(ctrl**2))
@@ -667,7 +680,7 @@ class Walker3DBall(base.Task):
         # symmetric stance means right_hip_roll == -left_hip_roll.  We flip the
         # sign of those joints before comparing so the reward matches the true
         # symmetric pose.
-        joints = physics.joint_positions()
+        # joints already computed above for ankle_flat
         right_joints = joints[:5].copy()
         left_joints = joints[5:]
         right_joints[list(_SYMMETRY_MIRROR_INDICES)] *= -1.0
@@ -937,6 +950,7 @@ class Walker3DBall(base.Task):
         # Log raw (unweighted) values for inspection
         self._reward_components = {
             "feet": feet_reward,
+            "ankle_flat": ankle_flat,
             "stand": stand_gated,
             "symmetry": symmetry_reward * gate_stand,
             "weight_shift": ws_gated,
