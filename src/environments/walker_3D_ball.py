@@ -456,6 +456,45 @@ class Physics(mujoco.Physics):
         self._ensure_indices()
         return self.data.subtree_com[self._bid_torso, :2].copy()
 
+    @staticmethod
+    def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
+        """Returns the convex hull of a set of 2D points (gift wrapping / Jarvis march).
+
+        Args:
+            points: (N, 2) array of 2D points.
+
+        Returns:
+            (M, 2) array of hull vertices in counter-clockwise order,
+            where M ≤ N.  For N ≤ 2 the input is returned as-is.
+        """
+        pts = np.asarray(points)
+        n = len(pts)
+        if n <= 2:
+            return pts.copy()
+
+        # Find the leftmost point (guaranteed to be on the hull).
+        start = int(np.argmin(pts[:, 0]))
+        hull_indices = []
+        p = start
+        while True:
+            hull_indices.append(p)
+            q = (p + 1) % n
+            for i in range(n):
+                if i == p:
+                    continue
+                # Cross product: positive ⇒ i is more counter-clockwise than q
+                # relative to p.  We want the most counter-clockwise point.
+                cross = (
+                    (pts[i, 0] - pts[p, 0]) * (pts[q, 1] - pts[p, 1])
+                    - (pts[i, 1] - pts[p, 1]) * (pts[q, 0] - pts[p, 0])
+                )
+                if cross < 0:
+                    q = i
+            p = q
+            if p == start:
+                break
+        return pts[hull_indices]
+
     def com_to_support_distance(self):
         """Returns the distance from the COM ground projection to the support polygon.
 
@@ -464,8 +503,6 @@ class Physics(mujoco.Physics):
         positive distance to the nearest polygon edge if outside (unstable).
         Returns a large value (1e6) if no foot contacts exist (airborne).
         """
-        from scipy.spatial import ConvexHull
-
         contact_pts = self.foot_contact_points()
         if len(contact_pts) < 1:
             return 1e6
@@ -487,14 +524,18 @@ class Physics(mujoco.Physics):
             proj = p1 + t * seg
             return float(np.linalg.norm(com_xy - proj))
 
-        # 3+ points: use convex hull
-        hull = ConvexHull(contact_pts)
-        hull_pts = contact_pts[hull.vertices]
+        # 3+ points: use convex hull (pure NumPy, no scipy needed)
+        hull_pts = self._convex_hull_2d(contact_pts)
 
-        # If COM is inside the hull, distance is 0
-        # Check using halfspace distances
-        min_dist = float("inf")
+        # If COM is inside the hull, all signed distances (with outward
+        # normals) are ≤ 0, so max(0, max_signed) = 0.  If the COM is
+        # outside at least one edge, that edge's signed distance is > 0
+        # and the maximum gives the perpendicular distance to the nearest
+        # violated edge — a lower bound on the true Euclidean distance,
+        # sufficient for reward shaping.
+        max_dist = float("-inf")
         n = len(hull_pts)
+        centroid = np.mean(hull_pts, axis=0)
         for i in range(n):
             p1 = hull_pts[i]
             p2 = hull_pts[(i + 1) % n]
@@ -503,16 +544,14 @@ class Physics(mujoco.Physics):
             if edge_len < 1e-12:
                 continue
             normal = np.array([edge[1], -edge[0]]) / edge_len
-            # Ensure normal points outward
-            centroid = np.mean(hull_pts, axis=0)
+            # Ensure normal points outward (away from centroid)
             if np.dot(normal, centroid - p1) > 0:
                 normal = -normal
             dist = float(np.dot(com_xy - p1, normal))
-            if dist < min_dist:
-                min_dist = dist
+            if dist > max_dist:
+                max_dist = dist
 
-        # Negative distance = inside, positive = outside
-        return max(0.0, min_dist)
+        return max(0.0, max_dist)
 
     def non_foot_touch(self):
         """Returns summed tanh-saturated touch force for non-foot body parts."""
