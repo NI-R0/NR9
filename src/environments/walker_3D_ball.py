@@ -23,7 +23,7 @@ Single-phase reward with cascading smoothed gates:
   or forgetting earlier skills.
 
   Gate cascade (each = clamp(mean(prev_gated, last 10 steps), 0, 1)):
-    gate_stand    ← feet_reward
+    gate_stand    ← feet_reward * flat_foot_reward   (flat feet gatekeep standing)
     gate_ws       ← stand_reward * gate_stand
     gate_march    ← weight_shift_reward * gate_ws
     gate_approach ← march_reward * gate_march
@@ -31,8 +31,9 @@ Single-phase reward with cascading smoothed gates:
 
   Flat-foot and stability rewards are gated by gate_stand (they require
   the agent to already have foot contact).  Stand-specific penalties
-  (hip_align, leg_spread, feet_under) fade out via ``(1 - gate_march)``
-  so they don't block walking or kicking.
+  (hip_align, leg_spread, feet_under) activate via ``gate_stand * (1 -
+  gate_march)``: they are off while the agent can't stand yet, on once
+  it stands, and fade out again when it starts marching.
 
 Foot design:
   Each foot is a flat box geom with separate heel and toe touch sensors.
@@ -79,7 +80,7 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = 0.025
-_STAND_HEIGHT = 1.6  # top of torso capsule; requires fully upright stance
+_STAND_HEIGHT = 1.4  # slightly below fully-upright to discourage tiptoe stretching
 _WALK_SPEED = 1
 _RUN_SPEED = 8
 _BALL_RADIUS = 0.2
@@ -119,14 +120,14 @@ _TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
 # while the theoretical maximum is 1.0.
 #
 # Gate cascade (smoothed over last _GATE_SMOOTHING steps):
-#   gate_stand    ← mean(feet_gated_history)       [feet_reward]
+#   gate_stand    ← mean(feet_gated_history)       [feet_reward * flat_foot_reward]
 #   gate_ws       ← mean(stand_gated_history)       [stand * gate_stand]
 #   gate_march    ← mean(ws_gated_history)          [ws * gate_ws]
 #   gate_approach ← mean(march_gated_history)       [march * gate_march]
 #   gate_full     ← mean(approach_gated_history)    [approach * gate_approach]
 #
-# Stand-specific penalties fade via (1 - gate_march) so they don't
-# interfere with walking or kicking.
+# Stand-specific penalties activate via gate_stand * (1 - gate_march):
+# off until the agent stands, on while standing, fade out when marching.
 # ---------------------------------------------------------------------------
 
 # Positive weights (sum = 1.0)
@@ -725,15 +726,16 @@ class Walker3DBall(base.Task):
     forgetting earlier skills.
 
     Gate cascade (each = clamp(mean(prev_gated, last 10 steps), 0, 1)):
-      gate_stand    ← feet_reward
+      gate_stand    ← feet_reward * flat_foot_reward   (flat feet gatekeep standing)
       gate_ws       ← stand_reward * gate_stand
       gate_march    ← weight_shift_reward * gate_ws
       gate_approach ← march_reward * gate_march
       gate_full     ← approach_reward * gate_approach
 
     Flat-foot and stability rewards are gated by gate_stand.  Stand-
-    specific penalties (hip_align, leg_spread, feet_under) fade out
-    via ``(1 - gate_march)`` so they don't block walking or kicking.
+    specific penalties (hip_align, leg_spread, feet_under) activate via
+    ``gate_stand * (1 - gate_march)``: they are off while the agent
+    can't stand yet, on once it stands, and fade out when it marches.
 
     Target curriculum: ``register_success`` increments a counter.  After
     ``_SUCCESS_THRESHOLD`` consecutive successes the target zone shrinks
@@ -1004,8 +1006,11 @@ class Walker3DBall(base.Task):
         # gate_full: activated by approach * gate_approach
         gate_full = self._gate_mean("approach")
 
-        # Stand-specific penalties fade out when the agent starts marching.
-        stand_penalty_fade = 1.0 - gate_march
+        # Stand-specific penalties only activate once the agent is standing
+        # (gate_stand > 0) and fade out again when it starts marching
+        # (gate_march → 1).  This prevents punishing hip alignment, leg
+        # spread, or feet placement before the agent can stand at all.
+        stand_penalty_fade = gate_stand * (1.0 - gate_march)
 
         # ======================================================================
         # Weight shift reward
@@ -1198,7 +1203,7 @@ class Walker3DBall(base.Task):
         # ======================================================================
         # Compute gated values for this step (to be stored in gate history)
         # ======================================================================
-        feet_gated = feet_reward
+        feet_gated = feet_reward * flat_foot_reward
         stand_gated = stand_reward * gate_stand
         ws_gated = weight_shift_reward * gate_ws * stillness
         march_gated = march_reward * gate_march
