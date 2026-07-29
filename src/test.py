@@ -2,6 +2,7 @@ import os
 import numpy as np
 import jax
 import imageio
+import dm_env
 from loguru import logger
 from dm_control import viewer
 from src.collector import StatsCollector
@@ -11,6 +12,70 @@ from src.agent import SoccerAgent
 from src.buffer import NStepTransitionBuffer
 from src.networks import ActorNetwork, CriticNetwork
 from src.train import run_episode
+
+
+def run_episode_with_respawn(
+    env: Environment,
+    agent: SoccerAgent,
+    args: dict,
+    visualize: bool = False,
+):
+    """Run a test episode with the same termination/respawn logic as training.
+
+    Unlike ``run_episode``, which stops at the first termination, this
+    function keeps stepping until ``max_steps`` is reached.  When the env
+    terminates (done=True) it is reset and the episode continues —
+    mirroring the auto-reset behaviour of ``run_vectorized_episode``
+    during training.
+
+    All completed sub-episodes are tracked individually so you can see
+    how many terminations/respawns occur and what reward/length each
+    sub-episode achieves.
+
+    Returns ``(all_rewards, all_lengths, frames)``.
+    """
+    max_steps = args["steps"]
+    state = env.reset()
+    ep_reward = 0.0
+    ep_length = 0
+    all_rewards: list[float] = []
+    all_lengths: list[int] = []
+    frames = [] if visualize else None
+
+    for step in range(max_steps):
+        if visualize:
+            frame = env.render()
+            frames.append(frame)
+
+        action = agent.select_action(state, explore=False)
+        next_state, reward, done, info = env.step(action)
+
+        ep_reward += reward
+        ep_length += 1
+
+        if done:
+            all_rewards.append(ep_reward)
+            all_lengths.append(ep_length)
+            logger.info(
+                f"  Sub-episode terminated at step {step + 1}/{max_steps} | "
+                f"Reward: {ep_reward:.2f} | Length: {ep_length} -> respawning"
+            )
+            ep_reward = 0.0
+            ep_length = 0
+            next_state = env.reset()
+
+        state = next_state
+
+    # Collect any in-flight (not-yet-terminated) sub-episode.
+    if ep_length > 0:
+        all_rewards.append(ep_reward)
+        all_lengths.append(ep_length)
+        logger.info(
+            f"  Final sub-episode (no termination) | "
+            f"Reward: {ep_reward:.2f} | Length: {ep_length}"
+        )
+
+    return all_rewards, all_lengths, frames
 
 
 def save_video(frames: list, path: str, fps: int = 30):
@@ -28,21 +93,105 @@ def save_video(frames: list, path: str, fps: int = 30):
             return None
 
 
-def run_live(env: Environment, agent: SoccerAgent):
+class _AutoResetWrapper:
+    """Wraps a raw dm_control Environment for the interactive viewer.
+
+    When ``--respawn`` is active, the wrapper intercepts every
+    ``step()`` call.  If the underlying environment signals termination
+    (either via its own time-limit or via the task's ``should_terminate``
+    method), the wrapper resets the environment immediately and returns
+    a **MID** ``TimeStep`` with the *new* observation and a zero reward.
+
+    This keeps the dm_control viewer running indefinitely — every
+    termination is followed by an invisible respawn instead of the
+    default "EPISODE TERMINATED" freeze.
+
+    When respawn is disabled the wrapper is transparent and delegates
+    every call directly to the underlying environment.
+    """
+
+    def __init__(self, raw_env, respawn: bool):
+        self._env = raw_env
+        self._respawn = respawn
+
+    # --- dm_control viewer interface ---
+
+    @property
+    def physics(self):
+        return self._env.physics
+
+    def action_spec(self):
+        return self._env.action_spec()
+
+    def reset(self):
+        return self._env.reset()
+
+    def step(self, action):
+        timestep = self._env.step(action)
+
+        if not self._respawn:
+            return timestep
+
+        # Determine whether the episode should end.  The raw dm_control
+        # env only signals ``last()`` via its own time-limit.  Custom
+        # early-termination (``should_terminate``, e.g. fall detection)
+        # is NOT checked by the raw env — so we check it ourselves here,
+        # mirroring the logic in ``Environment.step``.
+        done = timestep.last()
+        if not done:
+            task = getattr(self._env, "task", None)
+            if task is not None and hasattr(task, "should_terminate"):
+                if task.should_terminate(self._env.physics):
+                    done = True
+                    logger.debug(
+                        "Respawn: should_terminate=True "
+                        f"(height={self._env.physics.torso_height():.2f}, "
+                        f"non_foot_touch={self._env.physics.non_foot_touch():.2f})"
+                    )
+
+        if not done:
+            return timestep
+
+        # --- Respawn path: reset and return a MID timestep ---
+        logger.info(
+            f"Respawn: sub-episode ended (last={timestep.last()}) -> resetting."
+        )
+        # Preserve the physics simulation time so the viewer's
+        # time-based step loop doesn't "catch up" from 0 after reset
+        # (which would cause a multi-second freeze).
+        sim_time = self._env.physics.data.time
+        new_ts = self._env.reset()
+        self._env.physics.data.time = sim_time
+        # Return a MID timestep so the viewer keeps running.
+        return dm_env.TimeStep(
+            step_type=dm_env.StepType.MID,
+            reward=0.0,
+            discount=1.0,
+            observation=new_ts.observation,
+        )
+
+
+def run_live(env: Environment, agent: SoccerAgent, respawn: bool = False):
     """Launch the interactive dm_control viewer with the trained agent.
 
     The viewer calls the policy function on each timestep. We flatten the
     observation for the agent and convert its JAX output back to numpy.
-    """
-    action_spec = env.action_spec
 
+    When ``respawn`` is ``True``, the environment auto-resets on every
+    termination (fall or time-limit) so the viewer runs continuously.
+    """
     def policy(timestep):
         obs = env._flatten_observation(timestep.observation)
         action = agent.select_action(obs, explore=False)
         return np.asarray(action, dtype=np.float32)
 
-    logger.info("Launching interactive viewer. Close the window to exit.")
-    viewer.launch(environment_loader=env.env, policy=policy)
+    raw_env = _AutoResetWrapper(env.env, respawn=respawn)
+
+    logger.info(
+        "Launching interactive viewer. Close the window to exit."
+        + (" (respawn enabled)" if respawn else "")
+    )
+    viewer.launch(environment_loader=raw_env, policy=policy)
 
 
 def test(args: dict, stats: StatsCollector):
@@ -79,13 +228,16 @@ def test(args: dict, stats: StatsCollector):
     logger.info(f"Loading checkpoint '{args['checkpoint']}' from {checkpoint_path}")
     agent.learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
 
+    use_respawn = args.get("respawn", False)
+
     if args.get("live", False):
-        run_live(env, agent)
+        run_live(env, agent, respawn=use_respawn)
         return
 
     logger.info(
         f"Running {args['num_eval_episodes']} test episode(s) on "
         f"{args['env_domain']}/{args['env_task']}."
+        + (" (respawn mode)" if use_respawn else "")
     )
 
     visualize = args["visualize"]
@@ -93,17 +245,34 @@ def test(args: dict, stats: StatsCollector):
     episode_rewards = []
     frames = [] if visualize else None
     for episode in range(1, args["num_eval_episodes"] + 1):
-        ep_reward, ep_length, _, ep_frames, _ = run_episode(
-            env, agent, args, explore=False, visualize=visualize
-        )
-        episode_rewards.append(ep_reward)
-        logger.info(
-            f"Test episode {episode}/{args['num_eval_episodes']} | "
-            f"Reward: {ep_reward:.2f} | Length: {ep_length}"
-        )
-        stats.log_stats_to_tb(episode, {"Test_Episode_Reward": ep_reward})
+        if use_respawn:
+            sub_rewards, sub_lengths, ep_frames = run_episode_with_respawn(
+                env, agent, args, visualize=visualize
+            )
+            episode_rewards.extend(sub_rewards)
+            logger.info(
+                f"Test episode {episode}/{args['num_eval_episodes']} | "
+                f"{len(sub_rewards)} sub-episode(s), "
+                f"rewards: {[f'{r:.2f}' for r in sub_rewards]}, "
+                f"lengths: {sub_lengths}"
+            )
+            for sub_idx, sub_r in enumerate(sub_rewards):
+                stats.log_stats_to_tb(
+                    episode * 1000 + sub_idx,
+                    {"Test_SubEpisode_Reward": sub_r},
+                )
+        else:
+            ep_reward, ep_length, _, ep_frames, _ = run_episode(
+                env, agent, args, explore=False, visualize=visualize
+            )
+            episode_rewards.append(ep_reward)
+            logger.info(
+                f"Test episode {episode}/{args['num_eval_episodes']} | "
+                f"Reward: {ep_reward:.2f} | Length: {ep_length}"
+            )
+            stats.log_stats_to_tb(episode, {"Test_Episode_Reward": ep_reward})
 
-        if visualize:
+        if visualize and ep_frames:
             frames.extend(ep_frames)
 
     if frames:
@@ -120,6 +289,7 @@ def test(args: dict, stats: StatsCollector):
         "std_reward": std_reward,
         "num_episodes": len(episode_rewards),
         "checkpoint": checkpoint_path,
+        "respawn": use_respawn,
     }
     stats.flush_stats_to_disk()
 

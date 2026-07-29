@@ -10,8 +10,15 @@ from src.agent import SoccerAgent
 from src.networks import ActorNetwork, CriticNetwork
 from src.vector_env import ParallelVectorEnv
 
-def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
-                visualize: bool = False, profile: bool = False):
+
+def run_episode(
+    env: Environment,
+    agent: SoccerAgent,
+    args: dict,
+    explore: bool = True,
+    visualize: bool = False,
+    profile: bool = False,
+):
     state = env.reset()
     episode_reward = 0.0
     done = False
@@ -73,35 +80,42 @@ def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool 
         logger.info(
             f"  Timing (episode, {step} steps, {total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
-            f"({timing['select_action']/step*1000:.1f}ms/step), "
+            f"({timing['select_action'] / step * 1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
-            f"({timing['env_step']/step*1000:.1f}ms/step), "
+            f"({timing['env_step'] / step * 1000:.1f}ms/step), "
             f"update: {timing['update']:.3f}s "
-            f"({timing['update']/step*1000:.1f}ms/step)"
+            f"({timing['update'] / step * 1000:.1f}ms/step)"
         )
 
     return episode_reward, step, avg_metrics, frames, reward_components_sum
 
 
-def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: dict,
-                           profile: bool = False):
+def run_vectorized_episode(
+    venv: ParallelVectorEnv, agent: SoccerAgent, args: dict, profile: bool = False
+):
     """Run one ``meta-episode'' across ``num_envs`` parallel environments.
 
-    All envs step simultaneously until every env has completed at least
-    one episode.  When an env finishes it auto-resets (inside
+    All envs step simultaneously for the full ``max_steps`` (e.g. 1000)
+    steps.  When an env terminates early it auto-resets (inside
     ``ParallelVectorEnv.step``) and the terminal observation is used for
-    the buffer before the new observation is carried forward.
+    the buffer before the new observation is carried forward.  All
+    completed sub-episodes across all envs are aggregated into a single
+    reported meta-episode, so one call = one logged episode regardless
+    of how many early terminations occur.
 
-    Returns ``(reward_mean, reward_std, length_mean, length_std, avg_metrics)``
-    aggregated over all parallel envs.
+    Returns ``(reward_mean, reward_std, length_mean, length_std, avg_metrics,
+    reward_components_sum)`` aggregated over all completed sub-episodes.
     """
     num_envs = venv.num_envs
     states = venv.reset()
 
+    # Per-env accumulators for the *current* sub-episode.
     ep_rewards = np.zeros(num_envs, dtype=np.float32)
     ep_lengths = np.zeros(num_envs, dtype=np.int32)
-    finished = [False] * num_envs
-    finished_stats: list[tuple[float, int]] = [None] * num_envs
+
+    # Collect stats from every completed sub-episode across all envs.
+    all_rewards: list[float] = []
+    all_lengths: list[int] = []
 
     episode_metrics = {}
     updates_count = 0
@@ -148,26 +162,27 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
         for i in range(num_envs):
             if "reward_components" in infos[i]:
                 for k, v in infos[i]["reward_components"].items():
-                    reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v / num_envs
+                    reward_components_sum[k] = (
+                        reward_components_sum.get(k, 0.0) + v / num_envs
+                    )
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
-            if dones[i] and not finished[i]:
-                finished[i] = True
-                finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
+            if dones[i]:
+                all_rewards.append(float(ep_rewards[i]))
+                all_lengths.append(int(ep_lengths[i]))
                 ep_rewards[i] = 0.0
                 ep_lengths[i] = 0
 
         states = next_states
 
-        if all(finished):
-            break
-
+    # Collect any in-flight (not-yet-terminated) sub-episodes.
     for i in range(num_envs):
-        if finished_stats[i] is None:
-            finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
+        if ep_lengths[i] > 0:
+            all_rewards.append(float(ep_rewards[i]))
+            all_lengths.append(int(ep_lengths[i]))
 
-    rewards_arr = np.array([s[0] for s in finished_stats], dtype=np.float32)
-    lengths_arr = np.array([s[1] for s in finished_stats], dtype=np.float32)
+    rewards_arr = np.array(all_rewards, dtype=np.float32)
+    lengths_arr = np.array(all_lengths, dtype=np.int32)
 
     avg_metrics = {}
     if updates_count > 0:
@@ -176,13 +191,13 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     if profile:
         total = timing["select_action"] + timing["env_step"] + timing["update"]
         logger.info(
-            f"  Timing (vec, {num_envs} envs, {step + 1} meta-steps, {total:.1f}s total) - "
+            f"  Timing (vec, {num_envs} envs, {max_steps} meta-steps, {total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
-            f"({timing['select_action']/(step+1)*1000:.1f}ms/step), "
+            f"({timing['select_action'] / max_steps * 1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
-            f"({timing['env_step']/(step+1)*1000:.1f}ms/step), "
+            f"({timing['env_step'] / max_steps * 1000:.1f}ms/step), "
             f"update: {timing['update']:.3f}s "
-            f"({timing['update']/(step+1)*1000:.1f}ms/step)"
+            f"({timing['update'] / max_steps * 1000:.1f}ms/step)"
         )
 
     reward_mean = float(np.mean(rewards_arr))
@@ -191,16 +206,24 @@ def run_vectorized_episode(venv: ParallelVectorEnv, agent: SoccerAgent, args: di
     length_std = float(np.std(lengths_arr))
 
     logger.info(
-        f"  Meta-episode: reward {reward_mean:.2f} ± {reward_std:.2f} "
-        f"(per-env: {rewards_arr.tolist()}), "
+        f"  Meta-episode: {len(all_rewards)} sub-episodes over {num_envs} envs, "
+        f"reward {reward_mean:.2f} ± {reward_std:.2f}, "
         f"length {length_mean:.1f} ± {length_std:.1f}"
     )
 
-    return reward_mean, reward_std, length_mean, length_std, avg_metrics, reward_components_sum
+    return (
+        reward_mean,
+        reward_std,
+        length_mean,
+        length_std,
+        avg_metrics,
+        reward_components_sum,
+    )
 
 
-def _run_vectorized_evaluation(eval_venv: ParallelVectorEnv, agent: SoccerAgent,
-                               args: dict):
+def _run_vectorized_evaluation(
+    eval_venv: ParallelVectorEnv, agent: SoccerAgent, args: dict
+):
     """Run evaluation episodes in parallel and return ``(mean, std)`` reward.
 
     Uses a single :class:`ParallelVectorEnv` with ``num_eval_episodes``
@@ -244,8 +267,9 @@ def _run_vectorized_evaluation(eval_venv: ParallelVectorEnv, agent: SoccerAgent,
     return float(np.mean(rewards_arr)), float(np.std(rewards_arr))
 
 
-def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
-                    visualize: bool = False):
+def _run_evaluation(
+    eval_env: Environment, agent: SoccerAgent, args: dict, visualize: bool = False
+):
     """Run ``num_eval_episodes`` evaluation episodes sequentially.
 
     Returns ``(mean_reward, std_reward)``.  Used when ``num_envs <= 1``
@@ -254,7 +278,10 @@ def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
     eval_rewards = []
     for eval_episode in range(1, args["num_eval_episodes"] + 1):
         eval_reward, _, _, _, _ = run_episode(
-            eval_env, agent, args, explore=False,
+            eval_env,
+            agent,
+            args,
+            explore=False,
             visualize=visualize and (eval_episode == 1),
         )
         eval_rewards.append(eval_reward)
@@ -262,8 +289,9 @@ def _run_evaluation(eval_env: Environment, agent: SoccerAgent, args: dict,
     return float(np.mean(eval_rewards_arr)), float(np.std(eval_rewards_arr))
 
 
-def _handle_eval(episode: int, eval_env, eval_venv, agent, args, stats, buffer,
-                 agent_step_count):
+def _handle_eval(
+    episode: int, eval_env, eval_venv, agent, args, stats, buffer, agent_step_count
+):
     """Run evaluation, log results, and save state/checkpoints.
 
     ``eval_venv`` is a :class:`ParallelVectorEnv` for vectorized
@@ -284,21 +312,26 @@ def _handle_eval(episode: int, eval_env, eval_venv, agent, args, stats, buffer,
             eval_env, agent, args, visualize=visualize
         )
 
-    stats.log_stats_to_tb(episode, {
-        "Mean_Eval_Reward": mean_eval_reward,
-        "Eval_Reward_Std": std_eval_reward,
-    })
+    stats.log_stats_to_tb(
+        episode,
+        {
+            "Mean_Eval_Reward": mean_eval_reward,
+            "Eval_Reward_Std": std_eval_reward,
+        },
+    )
     logger.info(
         f"Mean evaluation reward over {args['num_eval_episodes']} episodes: "
         f"{mean_eval_reward:.2f} ± {std_eval_reward:.2f}"
     )
 
-    stats.save_train_state(episode, agent.learner.state, buffer, stats,
-                           agent_step_count=agent_step_count)
-    stats.flush_stats_to_disk()
+    # Only save lightweight learner-state checkpoints (no replay buffer)
+    # during evaluation.  The full training state (including the buffer)
+    # is saved once at the end of training to minimise I/O load.
     stats.save_checkpoint(agent.learner.state, "latest")
     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
-        logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
+        logger.info(
+            f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved."
+        )
 
     return agent_step_count
 
@@ -318,7 +351,11 @@ def train(args: dict, stats: StatsCollector):
         state_dim = venv.state_dim
         action_dim = venv.action_dim
     else:
-        env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
+        env = Environment(
+            domain_name=args["env_domain"],
+            task_name=args["env_task"],
+            max_steps=args["steps"],
+        )
         state_dim = env.state_dim
         action_dim = env.action_dim
 
@@ -335,7 +372,11 @@ def train(args: dict, stats: StatsCollector):
             seed=args.get("seed", 42) + 10000,
         )
     else:
-        eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
+        eval_env = Environment(
+            domain_name=args["env_domain"],
+            task_name=args["env_task"],
+            max_steps=args["steps"],
+        )
 
     actor_net = ActorNetwork(action_dim)
     critic_net = CriticNetwork()
@@ -356,8 +397,9 @@ def train(args: dict, stats: StatsCollector):
 
     if args["resume"] and os.path.exists(args["resume"]):
         logger.info(f"Found existing state at {args['resume']}. Resuming...")
-        (episode, learner_state, buffer, loaded_stats,
-         loaded_step_count) = stats.load_train_state(args["resume"])
+        (episode, learner_state, buffer, loaded_stats, loaded_step_count) = (
+            stats.load_train_state(args["resume"])
+        )
 
         # Restore serializable collector fields (loaded_stats is a dict:
         # {"stats": ..., "best_eval_reward": ...})
@@ -371,8 +413,10 @@ def train(args: dict, stats: StatsCollector):
         if use_vectorized:
             buffer.set_num_envs(num_envs)
 
-        logger.success(f"Successfully resumed from episode {episode} "
-                       f"(step_count={loaded_step_count})")
+        logger.success(
+            f"Successfully resumed from episode {episode} "
+            f"(step_count={loaded_step_count})"
+        )
 
     agent = SoccerAgent(
         observation_shape=state_dim,
@@ -380,7 +424,7 @@ def train(args: dict, stats: StatsCollector):
         actor_net=actor_net,
         critic_net=critic_net,
         buffer=buffer,
-        **args
+        **args,
     )
 
     if learner_state is not None:
@@ -409,7 +453,9 @@ def train(args: dict, stats: StatsCollector):
             f"Visualization: {args['visualize']}"
         )
     else:
-        logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
+        logger.info(
+            f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}"
+        )
 
     profile = args.get("profile", False)
     train_start = time.perf_counter()
@@ -419,7 +465,9 @@ def train(args: dict, stats: StatsCollector):
 
     def _signal_handler(signum, frame):
         nonlocal shutdown_requested
-        logger.warning(f"Received signal {signum} - requesting graceful shutdown after current episode.")
+        logger.warning(
+            f"Received signal {signum} - requesting graceful shutdown after current episode."
+        )
         shutdown_requested = True
 
     previous_handlers = {}
@@ -432,12 +480,20 @@ def train(args: dict, stats: StatsCollector):
             if episode > max_episodes:
                 break
             if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
+                logger.info(
+                    f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes."
+                )
                 break
 
             if use_vectorized:
-                reward_mean, reward_std, length_mean, length_std, metrics, reward_comp = \
-                    run_vectorized_episode(venv, agent, args, profile=profile)
+                (
+                    reward_mean,
+                    reward_std,
+                    length_mean,
+                    length_std,
+                    metrics,
+                    reward_comp,
+                ) = run_vectorized_episode(venv, agent, args, profile=profile)
                 ep_stats = {
                     "Episode_Reward": reward_mean,
                     "Episode_Reward_Std": reward_std,
@@ -447,7 +503,9 @@ def train(args: dict, stats: StatsCollector):
                     **metrics,
                 }
             else:
-                ep_reward, ep_length, metrics, _, reward_comp = run_episode(env, agent, args, profile=profile)
+                ep_reward, ep_length, metrics, _, reward_comp = run_episode(
+                    env, agent, args, profile=profile
+                )
                 ep_stats = {
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
@@ -460,16 +518,32 @@ def train(args: dict, stats: StatsCollector):
                 ep_stats[f"Reward_{comp_name}"] = comp_value
 
             stats.log_stats_to_tb(episode, ep_stats)
-            total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
-            stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
+            total_label = (
+                f"{duration_min:.1f}min" if use_duration else str(max_episodes)
+            )
+            stats.log_progress(
+                episode,
+                total_label,
+                ep_stats,
+                {"Loss": metrics.get("loss_critic", 0.0)},
+            )
 
             if episode % args["eval_frequency"] == 0:
                 _handle_eval(
-                    episode, eval_env, eval_venv, agent, args, stats, buffer,
-                    agent._step_count)
+                    episode,
+                    eval_env,
+                    eval_venv,
+                    agent,
+                    args,
+                    stats,
+                    buffer,
+                    agent._step_count,
+                )
 
             if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
+                logger.info(
+                    f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes."
+                )
                 break
             if shutdown_requested:
                 break
@@ -477,14 +551,27 @@ def train(args: dict, stats: StatsCollector):
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
 
+        # Save full training state (including replay buffer) once at the
+        # end.  This is in the finally block so it also runs on crash /
+        # signal / exception, ensuring the progress is preserved for
+        # resume.
+        try:
+            stats.save_train_state(
+                episode,
+                agent.learner.state,
+                buffer,
+                stats,
+                agent_step_count=agent._step_count,
+            )
+            stats.flush_stats_to_disk()
+            stats.save_checkpoint(agent.learner.state, "final")
+            logger.info(f"Dumped training statistics to {stats.stats_file}.")
+        except Exception:
+            logger.exception("Failed to save final training state.")
+
         if use_vectorized:
             venv.close()
         if eval_venv is not None:
             eval_venv.close()
 
-    stats.save_train_state(episode, agent.learner.state, buffer, stats,
-                           agent_step_count=agent._step_count)
-    stats.flush_stats_to_disk()
-    stats.save_checkpoint(agent.learner.state, "final")
-    logger.info(f"Dumped training statistics to {stats.stats_file}.")
     logger.success("Training completed successfully!")

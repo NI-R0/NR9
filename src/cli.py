@@ -166,5 +166,13 @@ def parse_args() -> dict:
         help="Launch interactive dm_control viewer with the loaded agent. "
         "Requires a display (not headless).",
     )
+    parser.add_argument(
+        "--respawn",
+        default=False,
+        action="store_true",
+        help="Test mode: use the same termination/respawn logic as training. "
+        "When the env terminates, it is reset and the episode continues "
+        "until --steps is reached.  All sub-episodes are logged individually.",
+    )
 
     return vars(parser.parse_args())

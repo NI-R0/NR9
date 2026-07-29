@@ -8,14 +8,16 @@ from src.collector import StatsCollector
 from src.train import train
 from src.test import test
 
+
 def _nvidia_gpu_available() -> bool:
     """Check whether an NVIDIA GPU with working drivers is present."""
     if not any(os.path.exists(f"/dev/nvidia{i}") for i in range(4)):
         return False
     try:
-        return subprocess.run(
-            ["nvidia-smi"], capture_output=True, timeout=5
-        ).returncode == 0
+        return (
+            subprocess.run(["nvidia-smi"], capture_output=True, timeout=5).returncode
+            == 0
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
@@ -32,11 +34,11 @@ else:
     )
 
 
-
 @logger.catch
 def main():
     args = parse_args()
     stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
+    stats.set_profile(args["profile"])
 
     profiler = None
     try:
@@ -61,6 +63,7 @@ def main():
             logger.info("Top 30 functions by cumulative time:")
             summary.print_stats(30)
 
+        stats.log_io_summary()
         stats.close()
 
 
