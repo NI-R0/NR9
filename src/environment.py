@@ -9,6 +9,7 @@ import sys
 class Environment:
     def __init__(self, domain_name: str = "cartpole", task_name: str = "balance", max_steps: int = 1000):
         """Standard dm_control wrapper. Flattens dict observations into 1D arrays."""
+        self._preferred_camera: Union[str, int] = 0
         self.env = self._load_control_env(domain_name, task_name)
 
         self.action_spec = self.env.action_spec()
@@ -18,6 +19,24 @@ class Environment:
         self.state_dim = self._flatten_observation(first_timestep.observation).shape
 
         self.ep_max_steps = max_steps
+        self._setup_camera()
+
+    def _setup_camera(self):
+        """Pick the best available named camera, falling back to camera 0."""
+        physics = self.env.physics
+
+        def camera_exists(name: str) -> bool:
+            try:
+                physics.model.name2id(name, 'camera')
+                return True
+            except (KeyError, ValueError):
+                return False
+
+        for cam in ('side', 'back', 'lookatcart', 'fixed'):
+            if camera_exists(cam):
+                self._preferred_camera = cam
+                return
+        self._preferred_camera = 0
 
     def _load_control_env(self, domain_name: str, task_name: str):
         try:
@@ -46,16 +65,10 @@ class Environment:
 
         return state, reward, done, {}
 
-    def render(self, height: int = 240, width: int = 320, camera_id: Union[str, int] = 0):
-        """Returns the current frame as an (H, W, 3) uint8 RGB array.
-
-        Requires a configured MuJoCo GL backend (env var MUJOCO_GL=egl or
-        osmesa for headless offscreen rendering, glfw if a real display is
-        available), set before dm_control is imported.
-
-        Author's Note: Rendering process designed by Claude. 
-        """
-        return self.env.physics.render(height=height, width=width, camera_id=camera_id)
+    def render(self, height: int = 240, width: int = 320, camera_id: Union[str, int] = None):
+        """Returns the current frame as an (H, W, 3) uint8 RGB array."""
+        cam = camera_id if camera_id is not None else self._preferred_camera
+        return self.env.physics.render(height=height, width=width, camera_id=cam)
 
     def set_phase(self, phase: int):
         """Propagate curriculum phase to the underlying task, if supported."""

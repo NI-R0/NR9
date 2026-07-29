@@ -47,12 +47,10 @@ def _propagate_phase(phase: int, use_vectorized: bool, venv, env, eval_env):
     eval_env.set_phase(phase)
     logger.info(f"Curriculum phase set to {phase} for all environments.")
 
+
 def run_episode(env: Environment, agent: SoccerAgent, args: dict, explore: bool = True,
                 visualize: bool = False, profile: bool = False):
     state = env.reset()
-    # print(env.env.physics.model.ncam)
-    # print(env.env.physics.model.name2id("side", "camera"))
-    # print(env.env.physics.model.name2id("back", "camera"))
     episode_reward = 0.0
     done = False
     step = 0
@@ -285,7 +283,7 @@ def train(args: dict, stats: StatsCollector):
         phase1_threshold = args.get("phase1_threshold", 5.0)
         phase2_threshold = args.get("phase2_threshold", 15.0)
         logger.info(f"Curriculum enabled: starting at phase {current_phase} "
-                     f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold})")
+                    f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold})")
         _propagate_phase(current_phase, use_vectorized,
                          venv if use_vectorized else None,
                          env if not use_vectorized else None,
