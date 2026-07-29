@@ -43,6 +43,18 @@ class Environment:
         reward = timestep.reward if timestep.reward is not None else 0.0
         done = timestep.last()
 
+        # Check custom early-termination (e.g. agent fell).
+        # Only active if the task implements should_terminate and the
+        # timestep is not already terminated by the time limit.
+        if not done:
+            task = getattr(self.env, 'task', None)
+            if task is not None and hasattr(task, 'should_terminate'):
+                if task.should_terminate(self.env.physics):
+                    # Force a termination: dm_control doesn't expose a public
+                    # API to force-step-termination, so we set done manually.
+                    # The reward for this step is still returned.
+                    done = True
+
         info = {}
         task = getattr(self.env, 'task', None)
         if task is not None and hasattr(task, '_reward_components'):

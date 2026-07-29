@@ -78,6 +78,17 @@ _TARGET_SHRINK = 0.1
 _SUCCESS_THRESHOLD = 5
 
 # ---------------------------------------------------------------------------
+# Early-termination thresholds
+# ---------------------------------------------------------------------------
+# The episode terminates immediately when the agent "falls": either the
+# torso drops below a safe height or non-foot body parts touch the ground
+# firmly.  A short grace period after reset prevents spurious terminations
+# from initial randomization.
+_TERMINATE_HEIGHT = 0.5       # Torso height (m) below which episode ends
+_TERMINATE_NON_FOOT = 2.0     # Sum of tanh(non-foot touch) that triggers end
+_TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
+
+# ---------------------------------------------------------------------------
 # Reward design – cascading gates, single set of weights
 # ---------------------------------------------------------------------------
 # Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties),
@@ -595,6 +606,7 @@ class Walker3DBall(base.Task):
             "march": collections.deque(maxlen=_GATE_SMOOTHING),
             "approach": collections.deque(maxlen=_GATE_SMOOTHING),
         }
+        self._step_count = 0  # per-episode step counter for grace period
         super().__init__(random=random)
 
     def register_success(self):
@@ -647,6 +659,7 @@ class Walker3DBall(base.Task):
         for key in self._gate_history:
             self._gate_history[key].clear()
 
+        self._step_count = 0
         super().initialize_episode(physics)
 
     def _place_target(self, physics):
@@ -684,6 +697,28 @@ class Walker3DBall(base.Task):
         if not hist:
             return 0.0
         return float(sum(hist) / len(hist))
+
+    def should_terminate(self, physics) -> bool:
+        """Returns ``True`` when the agent has fallen and the episode should end.
+
+        Termination conditions (only checked after ``_TERMINATE_GRACE_STEPS``
+        to avoid spurious triggers from initial randomization):
+
+        1. **Torso too low** — ``torso_height() < _TERMINATE_HEIGHT`` (fallen down).
+        2. **Non-foot contact** — any non-foot body part touches the ground
+           firmly (summed tanh touch > ``_TERMINATE_NON_FOOT``).
+
+        The time-limit termination (1000 steps) is handled by the
+        ``control.Environment`` itself via ``time_limit``.
+        """
+        self._step_count += 1
+        if self._step_count <= _TERMINATE_GRACE_STEPS:
+            return False
+        if physics.torso_height() < _TERMINATE_HEIGHT:
+            return True
+        if physics.non_foot_touch() > _TERMINATE_NON_FOOT:
+            return True
+        return False
 
     def get_reward(self, physics):
         """Cascading-gate reward: all components active, each gated by the
