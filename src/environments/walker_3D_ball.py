@@ -29,9 +29,23 @@ Single-phase reward with cascading smoothed gates:
     gate_approach ← march_reward * gate_march
     gate_full     ← approach_reward * gate_approach
 
-  Stand-specific penalties (hip_align, leg_spread, feet_under,
-  symmetry) fade out via ``(1 - gate_march)`` so they don't block
-  walking or kicking.
+  Flat-foot and stability rewards are gated by gate_stand (they require
+  the agent to already have foot contact).  Stand-specific penalties
+  (hip_align, leg_spread, feet_under) fade out via ``(1 - gate_march)``
+  so they don't block walking or kicking.
+
+Foot design:
+  Each foot is a flat box geom with separate heel and toe touch sensors.
+  The ``flat_foot`` reward (positive) fires when heel and toe are both
+  in ground contact, encouraging a flat-foot stance rather than standing
+  on tiptoes.  The ``stability`` reward fires when the COM ground
+  projection lies inside the support polygon (convex hull of foot
+  contact points), encouraging balanced postures.
+
+Early termination:
+  The episode terminates immediately when the agent falls (torso too
+  low or non-foot body parts touching the ground), after a short grace
+  period.
 
 Most reward components are normalised to [0, 1] (rewards) or [-1, 0]
 (penalties).  The exception is the *kick* reward, which is in [-1, 1]
@@ -116,22 +130,29 @@ _TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
 # ---------------------------------------------------------------------------
 
 # Positive weights (sum = 1.0)
-_W_FEET = 0.15
-_W_STAND = 0.20
+_W_FEET = 0.10
+_W_FLAT_FOOT = 0.10       # reward for heel+toe simultaneously on ground
+_W_STABILITY = 0.10       # reward for COM projection inside support polygon
+_W_STAND = 0.10
 _W_SYMMETRY = 0.10
-_W_WEIGHT_SHIFT = 0.15
+_W_WEIGHT_SHIFT = 0.10
 _W_MARCH = 0.10
 _W_APPROACH = 0.10
 _W_GAIT = 0.10
 _W_KICK = 0.05
 _W_TARGET = 0.05
 
+# Check that positive weights sum to 1.0
+assert abs(sum([
+    _W_FEET, _W_FLAT_FOOT, _W_STABILITY, _W_STAND, _W_SYMMETRY,
+    _W_WEIGHT_SHIFT, _W_MARCH, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
+]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
+
 # Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
 _W_EFFORT = 0.03
 _W_FEET_UNDER = 0.03      # fades via (1 - gate_march)
 _W_HIP_ALIGN = 0.03       # fades via (1 - gate_march)
 _W_LEG_SPREAD = 0.02      # fades via (1 - gate_march)
-_W_ANKLE_FLAT = 0.02      # fades via (1 - gate_march)
 _W_SMOOTHNESS = 0.02      # always active
 
 # Gate smoothing window (steps)
@@ -155,7 +176,8 @@ _MARCH_HIP_PITCH_TARGET = np.radians(45)  # Target hip pitch for knee lift
 _FEET_UNDER_MAX_OFFSET = (
     0.5  # Max xy-distance (m) from feet-midpoint to torso for feet_under reward
 )
-_ANKLE_FLAT_MAX = np.radians(30)  # Ankle angle at which flat-foot bonus reaches 0
+_FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
+_SUPPORT_MARGIN = 0.05            # Margin (m) beyond support polygon edge
 
 # Alternation parameters (march + weight_shift)
 _MARCH_SWITCH_BONUS = 0.1  # Bonus for switching swing leg (small, just a nudge)
@@ -173,9 +195,13 @@ _NON_FOOT_TOUCHES = (
     "right_leg_touch",
     "left_leg_touch",
 )
+# Foot is split into heel and toe touch sensors (4 sensors total).
+# A flat foot = both heel AND toe in contact with the ground.
 _FOOT_TOUCHES = (
-    "right_foot_touch",
-    "left_foot_touch",
+    "right_heel_touch",
+    "right_toe_touch",
+    "left_heel_touch",
+    "left_toe_touch",
 )
 _ALL_TOUCHES = _NON_FOOT_TOUCHES + _FOOT_TOUCHES
 
@@ -306,10 +332,18 @@ class Physics(mujoco.Physics):
         # Sensor addresses
         self._sensor_linvel = model.sensor_adr[
             mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, "torso_subtreelinvel")]
-        self._sensor_r_foot = model.sensor_adr[
-            mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, "right_foot_touch")]
-        self._sensor_l_foot = model.sensor_adr[
-            mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, "left_foot_touch")]
+        # Foot touch sensors: heel and toe for each foot (4 sensors).
+        # Order: right_heel, right_toe, left_heel, left_toe
+        self._sensor_foot = np.array([
+            model.sensor_adr[
+                mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, name)]
+            for name in _FOOT_TOUCHES
+        ], dtype=np.int64)
+        # Convenience indices into the 4-element _sensor_foot array
+        self._si_r_heel = 0
+        self._si_r_toe = 1
+        self._si_l_heel = 2
+        self._si_l_toe = 3
         # Non-foot touch sensors (torso, right_thigh, left_thigh, right_leg, left_leg)
         self._sensor_non_foot = np.array([
             model.sensor_adr[
@@ -378,11 +412,107 @@ class Physics(mujoco.Physics):
         return np.tanh(self.data.sensordata[self._sensor_all_touch])
 
     def feet_touch(self):
-        """Returns summed tanh-saturated touch force for feet only."""
+        """Returns summed tanh-saturated touch force for feet only (all 4 sensors)."""
         self._ensure_indices()
-        s = self.data.sensordata
-        return float(np.tanh(s[self._sensor_r_foot]) +
-                      np.tanh(s[self._sensor_l_foot]))
+        return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
+
+    def flat_foot_contact(self):
+        """Returns the fraction of foot-parts (heel/toe) that are in ground contact.
+
+        Each of the 4 sensors (right_heel, right_toe, left_heel, left_toe)
+        contributes 0.25 when its tanh(touch) exceeds ``_FLAT_FOOT_TOUCH_THRESHOLD``.
+        A value of 1.0 means all four sensors are in contact (both feet flat).
+        A value of 0.5 means two sensors are in contact (e.g. one foot flat).
+        """
+        self._ensure_indices()
+        touches = np.tanh(self.data.sensordata[self._sensor_foot])
+        return float(np.mean(touches > _FLAT_FOOT_TOUCH_THRESHOLD))
+
+    def foot_contact_points(self):
+        """Returns the xy positions of all foot contact points on the ground.
+
+        A contact point is added for each foot-part sensor (heel/toe) whose
+        tanh(touch) exceeds ``_FLAT_FOOT_TOUCH_THRESHOLD``.  The xy position
+        is taken from the corresponding body's world position.
+        """
+        self._ensure_indices()
+        touches = np.tanh(self.data.sensordata[self._sensor_foot])
+        # Map sensor indices to body IDs for position lookup.
+        # Sensor order: right_heel, right_toe, left_heel, left_toe
+        foot_body_ids = np.array([
+            self._bid_right_foot, self._bid_right_foot,
+            self._bid_left_foot, self._bid_left_foot,
+        ])
+        in_contact = touches > _FLAT_FOOT_TOUCH_THRESHOLD
+        if not np.any(in_contact):
+            return np.empty((0, 2))
+        return self.data.xpos[foot_body_ids[in_contact], :2].copy()
+
+    def com_ground_projection(self):
+        """Returns the [x, y] ground projection of the centre of mass.
+
+        Uses ``subtree_com`` of the torso (the full upper-body COM).
+        """
+        self._ensure_indices()
+        return self.data.subtree_com[self._bid_torso, :2].copy()
+
+    def com_to_support_distance(self):
+        """Returns the distance from the COM ground projection to the support polygon.
+
+        The support polygon is the convex hull of all foot contact points.
+        Returns 0.0 if the COM is inside the polygon (stable), or the
+        positive distance to the nearest polygon edge if outside (unstable).
+        Returns a large value (1e6) if no foot contacts exist (airborne).
+        """
+        from scipy.spatial import ConvexHull
+
+        contact_pts = self.foot_contact_points()
+        if len(contact_pts) < 1:
+            return 1e6
+        if len(contact_pts) == 1:
+            # Single contact point: distance to that point
+            return float(np.linalg.norm(
+                self.com_ground_projection() - contact_pts[0]))
+
+        com_xy = self.com_ground_projection()
+
+        if len(contact_pts) == 2:
+            # Two points: distance to the line segment
+            p1, p2 = contact_pts
+            seg = p2 - p1
+            seg_len_sq = float(np.dot(seg, seg))
+            if seg_len_sq < 1e-12:
+                return float(np.linalg.norm(com_xy - p1))
+            t = np.clip(np.dot(com_xy - p1, seg) / seg_len_sq, 0.0, 1.0)
+            proj = p1 + t * seg
+            return float(np.linalg.norm(com_xy - proj))
+
+        # 3+ points: use convex hull
+        hull = ConvexHull(contact_pts)
+        hull_pts = contact_pts[hull.vertices]
+
+        # If COM is inside the hull, distance is 0
+        # Check using halfspace distances
+        min_dist = float("inf")
+        n = len(hull_pts)
+        for i in range(n):
+            p1 = hull_pts[i]
+            p2 = hull_pts[(i + 1) % n]
+            edge = p2 - p1
+            edge_len = float(np.linalg.norm(edge))
+            if edge_len < 1e-12:
+                continue
+            normal = np.array([edge[1], -edge[0]]) / edge_len
+            # Ensure normal points outward
+            centroid = np.mean(hull_pts, axis=0)
+            if np.dot(normal, centroid - p1) > 0:
+                normal = -normal
+            dist = float(np.dot(com_xy - p1, normal))
+            if dist < min_dist:
+                min_dist = dist
+
+        # Negative distance = inside, positive = outside
+        return max(0.0, min_dist)
 
     def non_foot_touch(self):
         """Returns summed tanh-saturated touch force for non-foot body parts."""
@@ -562,9 +692,9 @@ class Walker3DBall(base.Task):
       gate_approach ← march_reward * gate_march
       gate_full     ← approach_reward * gate_approach
 
-    Stand-specific penalties (hip_align, leg_spread, feet_under,
-    symmetry) fade out via ``(1 - gate_march)`` so they don't block
-    walking or kicking.
+    Flat-foot and stability rewards are gated by gate_stand.  Stand-
+    specific penalties (hip_align, leg_spread, feet_under) fade out
+    via ``(1 - gate_march)`` so they don't block walking or kicking.
 
     Target curriculum: ``register_success`` increments a counter.  After
     ``_SUCCESS_THRESHOLD`` consecutive successes the target zone shrinks
@@ -746,14 +876,18 @@ class Walker3DBall(base.Task):
         # feet_only: 1 when no non-foot contact, 0 when any. ∈ [0, 1].
         feet_only = 1.0 - non_foot_contact
 
-        # --- Flat-foot signal [0, 1]: 1 when ankles near neutral (flat feet),
-        # 0 when strongly plantarflexed (toe-stand).  Indices 4 and 9 in
-        # joint_positions() are right_ankle and left_ankle respectively.
-        # Used as a weak penalty (toe-stand → penalty) that fades once marching.
-        joints = physics.joint_positions()
-        ankle_angles = np.array([joints[4], joints[9]])
-        ankle_flat = 1.0 - float(
-            np.clip(np.mean(np.abs(ankle_angles)) / _ANKLE_FLAT_MAX, 0.0, 1.0)
+        # --- Flat-foot reward [0, 1]: fraction of heel/toe sensors in contact.
+        # 1.0 = both feet flat (all 4 sensors touching), 0.0 = no foot contact.
+        # This positively rewards keeping the full foot on the ground instead
+        # of standing on tiptoes.
+        flat_foot_reward = physics.flat_foot_contact()
+
+        # --- Stability reward [0, 1]: COM ground projection inside support polygon.
+        # 1.0 when COM is well inside the support polygon (distance = 0),
+        # decaying to 0 as the COM moves outside by _SUPPORT_MARGIN meters.
+        com_support_dist = physics.com_to_support_distance()
+        stability_reward = 1.0 - float(
+            np.clip(com_support_dist / _SUPPORT_MARGIN, 0.0, 1.0)
         )
 
         # --- Feet reward [0, 1]: foot contact scaled by absence of non-foot contact ---
@@ -795,7 +929,7 @@ class Walker3DBall(base.Task):
         # symmetric stance means right_hip_roll == -left_hip_roll.  We flip the
         # sign of those joints before comparing so the reward matches the true
         # symmetric pose.
-        # joints already computed above for ankle_flat
+        joints = physics.joint_positions()
         right_joints = joints[:5].copy()
         left_joints = joints[5:]
         right_joints[list(_SYMMETRY_MIRROR_INDICES)] *= -1.0
@@ -894,8 +1028,10 @@ class Walker3DBall(base.Task):
         right_lift = (right_knee_lift + right_hip_lift) / 2.0
         left_lift = (left_knee_lift + left_hip_lift) / 2.0
 
-        touch_r = float(np.tanh(physics.data.sensordata[physics._sensor_r_foot]))
-        touch_l = float(np.tanh(physics.data.sensordata[physics._sensor_l_foot]))
+        touch_r = float(np.tanh(physics.data.sensordata[
+            physics._sensor_foot[physics._si_r_heel]]))
+        touch_l = float(np.tanh(physics.data.sensordata[
+            physics._sensor_foot[physics._si_l_heel]]))
         touch_sum = touch_r + touch_l
         single_support = float(
             rewards.tolerance(
@@ -1042,6 +1178,8 @@ class Walker3DBall(base.Task):
         reward = (
             # Positive rewards (sum of weights = 1.0)
             _W_FEET * feet_reward
+            + _W_FLAT_FOOT * flat_foot_reward * gate_stand
+            + _W_STABILITY * stability_reward * gate_stand
             + _W_STAND * stand_gated
             + _W_SYMMETRY * symmetry_reward * gate_stand
             + _W_WEIGHT_SHIFT * ws_gated
@@ -1055,13 +1193,14 @@ class Walker3DBall(base.Task):
             + _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade
             + _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade
             + _W_LEG_SPREAD * leg_spread * stand_penalty_fade
-            + _W_ANKLE_FLAT * (ankle_flat - 1.0) * stand_penalty_fade
             + _W_SMOOTHNESS * smoothness_penalty
         )
 
         # Log raw (unweighted) values for inspection
         self._reward_components = {
             "feet": feet_reward,
+            "flat_foot": flat_foot_reward * gate_stand,
+            "stability": stability_reward * gate_stand,
             "stand": stand_gated,
             "symmetry": symmetry_reward * gate_stand,
             "weight_shift": ws_gated,
@@ -1074,7 +1213,6 @@ class Walker3DBall(base.Task):
             "feet_under": (feet_under - 1.0) * stand_penalty_fade,
             "hip_align": hip_align_penalty * stand_penalty_fade,
             "leg_spread": leg_spread * stand_penalty_fade,
-            "ankle_flat": (ankle_flat - 1.0) * stand_penalty_fade,
             "smoothness": smoothness_penalty,
             "gate_stand": gate_stand,
             "gate_ws": gate_ws,
