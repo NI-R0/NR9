@@ -274,23 +274,23 @@ def run_live(
       available.  The window title is updated to show the checkpoint's
       source episode and best reward.
     """
-    reloader = None
-
     # We use Application directly (instead of viewer.launch) so we can
     # update the window title dynamically via set_title.
-    app = application.Application(title=_format_title(None, None))
+    initial_ep = reloader.checkpoint_episode if reloader else None
+    initial_rw = reloader.checkpoint_reward if reloader else None
+    app = application.Application(title=_format_title(initial_ep, initial_rw))
 
     def _on_swap(episode, reward):
         title = _format_title(episode, reward)
+        logger.info(f"on_swap callback fired: episode={episode}, reward={reward} -> '{title}'")
         try:
             app._window.set_title(title)
-        except Exception:
-            logger.debug(f"Could not set window title to '{title}'.")
+        except Exception as e:
+            logger.warning(f"Could not set window title to '{title}': {e}")
 
     if stream_url and reloader is not None:
         # Reuse the reloader created by test() for the initial fetch.
         reloader._on_swap = _on_swap
-        _on_swap(reloader.checkpoint_episode, reloader.checkpoint_reward)
         reloader.start()
     elif stream_url:
         url = RemoteCheckpointReloader.normalize_stream_url(stream_url)
@@ -298,7 +298,6 @@ def run_live(
         reloader = RemoteCheckpointReloader(
             url, agent, effective_interval, on_swap=_on_swap
         )
-        _on_swap(reloader.checkpoint_episode, reloader.checkpoint_reward)
         reloader.start()
     elif checkpoint_path and poll_interval > 0:
         reloader = _CheckpointReloader(checkpoint_path, agent, poll_interval)
