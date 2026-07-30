@@ -9,11 +9,11 @@ from jax.random import PRNGKey
 
 class SoccerAgent:
     def __init__(
-        self, 
-        observation_shape, 
-        action_shape, 
-        actor_net, 
-        critic_net, 
+        self,
+        observation_shape,
+        action_shape,
+        actor_net,
+        critic_net,
         buffer: NStepTransitionBuffer,
         **kwargs
     ):
@@ -75,9 +75,12 @@ class SoccerAgent:
         to total environment steps (not meta-steps).
         """
         self.buffer.add_many(states, actions, rewards, next_states, dones)
+        previous_count = self._step_count
         self._step_count += self.buffer._num_envs
 
-        if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
+        should_update = (self._step_count // self.update_every) > (previous_count // self.update_every)
+
+        if len(self.buffer) > self.warmup and should_update:
             self.random_key, sample_key = jax.random.split(self.random_key)
             batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)

@@ -185,8 +185,8 @@ class MPOLearner:
 
         sampled_actions = jnp.swapaxes(sampled_actions, 0, 1)  # (batch, K, action_dim)
 
-        return (log_weights, max_q, sampled_actions, 
-                q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state, 
+        return (log_weights, max_q, sampled_actions,
+                q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state,
                 entropy, max_weight)
 
     def _dual_loss(self, log_eta, log_weights, max_q, epsilon):
