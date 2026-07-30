@@ -174,5 +174,26 @@ def parse_args() -> dict:
         "When the env terminates, it is reset and the episode continues "
         "until --steps is reached.  All sub-episodes are logged individually.",
     )
+    parser.add_argument(
+        "--live-stream",
+        type=int,
+        default=2324,
+        metavar="PORT",
+        help="Test mode: start an HTTP MJPEG stream on the given port instead of "
+        "the interactive viewer.  Designed for headless clusters: render frames "
+        "with MUJOCO_GL=egl and view them in a local browser via SSH port "
+        "forwarding (ssh -L PORT:localhost:PORT).  Works with --checkpoint "
+        "polling: when set to 'latest' or 'best_ckpt', the stream periodically "
+        "checks for updated checkpoint files and hot-swaps the agent.",
+    )
+    parser.add_argument(
+        "--checkpoint_poll_interval",
+        type=float,
+        default=10.0,
+        metavar="SECONDS",
+        help="When --live-stream is active, poll the checkpoint file for changes "
+        "every SECONDS seconds and reload if the file was modified.  Set to 0 "
+        "to disable polling (load once at startup).",
+    )
 
     return vars(parser.parse_args())
