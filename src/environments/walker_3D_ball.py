@@ -84,6 +84,7 @@ _STAND_HEIGHT = 1.2  # below fully-upright; allows forward lean when running
 _WALK_SPEED = 1
 _RUN_SPEED = 8
 _BALL_RADIUS = 0.2
+_APPROACH_OFFSET = 0.3  # m behind ball (away from target) for approach point
 _BALL_START_POS = np.array([1.5, 0.0, 0.15])
 _TARGET_MIN_DIST = 2.0
 _TARGET_MAX_DIST = 5.0
@@ -91,6 +92,7 @@ _TARGET_SIZE_MAX = 1.0
 _TARGET_SIZE_MIN = 0.2
 _TARGET_SHRINK = 0.1
 _SUCCESS_THRESHOLD = 5
+_TARGET_HIT_BONUS = 100.0  # flat bonus added to reward when ball reaches target
 
 # ---------------------------------------------------------------------------
 # Early-termination thresholds
@@ -418,28 +420,30 @@ class Physics(mujoco.Physics):
         return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
 
     def flat_foot_contact(self):
-        """Returns fraction of feet with BOTH heel and toe in ground contact.
+        """Returns 1.0 if at least one foot is flat on the ground, else 0.0.
 
         A foot counts as "flat" only when its heel AND toe sensor both
         exceed ``_FLAT_FOOT_TOUCH_THRESHOLD``.
 
-        Returns:
-            1.0 = both feet flat, 0.5 = one foot flat, 0.0 = no flat foot.
-            Standing on tiptoes yields 0.0 because neither foot has both
-            heel and toe in contact.
+        Binary by design: two flat feet give the same reward as one.
+        This prevents the agent from getting "stuck" standing on both
+        feet, because lifting one foot (for walking) no longer cuts the
+        reward in half.  The agent learns to stand on either foot;
+        balanced two-foot standing emerges naturally once the march /
+        weight-shift rewards activate.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
         # Sensor order: right_heel, right_toe, left_heel, left_toe
-        r_flat = float(
+        r_flat = (
             touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD
             and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
         )
-        l_flat = float(
+        l_flat = (
             touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD
             and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
         )
-        return (r_flat + l_flat) / 2.0
+        return 1.0 if (r_flat or l_flat) else 0.0
 
     def foot_contact_points(self):
         """Returns the xy positions of all foot contact points on the ground.
@@ -819,6 +823,15 @@ class Walker3DBall(base.Task):
         joints, places the ball at its start position, and randomly places the
         target.  Also applies the current curriculum target size.
         """
+        self._setup_episode(physics)
+        super().initialize_episode(physics)
+
+    def _setup_episode(self, physics):
+        """Reset walker pose, ball, target, and per-episode bookkeeping.
+
+        Shared between ``initialize_episode`` (full episode reset) and
+        mid-episode respawn after a successful target hit.
+        """
         physics.named.data.qpos["root"] = [0.0, 0.0, 1.3, 1.0, 0.0, 0.0, 0.0]
         physics.named.data.qvel["root"] = 0.0
         randomizers.randomize_limited_and_rotational_joints(physics, self.random)
@@ -843,7 +856,6 @@ class Walker3DBall(base.Task):
             self._gate_history[key].clear()
 
         self._step_count = 0
-        super().initialize_episode(physics)
 
     def _place_target(self, physics):
         """Randomly places the target at a random angle and distance."""
@@ -852,11 +864,15 @@ class Walker3DBall(base.Task):
         self._target_pos = np.array([dist * np.cos(angle), dist * np.sin(angle)])
         physics.set_target_position(self._target_pos)
 
-    def _reset_ball_and_target(self, physics):
-        """Re-places ball and target after a successful hit (mid-episode)."""
-        physics.named.data.qpos["ball_joint"] = list(_BALL_START_POS) + [1, 0, 0, 0]
-        physics.named.data.qvel["ball_joint"] = 0.0
-        self._place_target(physics)
+    def _respawn_after_hit(self, physics):
+        """Full mid-episode respawn: walker, ball, and target are reset.
+
+        Called when the ball reaches the target.  The episode continues
+        (no termination) — the agent must stand up and approach the new
+        ball from scratch.  Gate history and step counter are reset so
+        the cascading gates start clean.
+        """
+        self._setup_episode(physics)
 
     def get_observation(self, physics):
         """Returns an observation of body state, ball, target, touches, and joints."""
@@ -1144,12 +1160,26 @@ class Walker3DBall(base.Task):
         # ======================================================================
         # Approach + gait reward
         # ======================================================================
+        # Instead of approaching the ball directly, the agent approaches a
+        # point _APPROACH_OFFSET meters behind the ball on the side away
+        # from the target.  This positions the agent so that when it reaches
+        # the approach point, the ball is between it and the target — the
+        # ideal stance for kicking the ball toward the target.
         torso_xy = physics.torso_xy()
         ball_xy = physics.ball_xy()
-        dist_to_ball = np.linalg.norm(ball_xy - torso_xy)
+        target_xy = physics.target_xy()
+        ball_to_target = target_xy - ball_xy
+        ball_to_target_norm = np.linalg.norm(ball_to_target)
+        if ball_to_target_norm > 1e-6:
+            dir_ball_to_target = ball_to_target / ball_to_target_norm
+        else:
+            dir_ball_to_target = np.array([1.0, 0.0])
+        # Approach point: behind the ball, away from the target
+        approach_point = ball_xy - dir_ball_to_target * _APPROACH_OFFSET
+        dist_to_approach = np.linalg.norm(approach_point - torso_xy)
         approach = float(
             rewards.tolerance(
-                dist_to_ball,
+                dist_to_approach,
                 bounds=(0, _BALL_RADIUS),
                 margin=3.0,
                 value_at_margin=0.1,
@@ -1193,15 +1223,9 @@ class Walker3DBall(base.Task):
         # ======================================================================
         # Kick + target reward
         # ======================================================================
-        target_xy = physics.target_xy()
         ball_vel_xy = physics.ball_linear_velocity_xy()
-        ball_to_target = target_xy - ball_xy
-        ball_to_target_norm = np.linalg.norm(ball_to_target)
-        if ball_to_target_norm > 1e-6:
-            dir_to_target = ball_to_target / ball_to_target_norm
-        else:
-            dir_to_target = np.array([1.0, 0.0])
-        ball_speed_toward = float(np.dot(ball_vel_xy, dir_to_target))
+        # Reuse dir_ball_to_target computed above (unit vector ball→target)
+        ball_speed_toward = float(np.dot(ball_vel_xy, dir_ball_to_target))
         kick_reward = float(np.tanh(ball_speed_toward / 5.0))  # [-1, 1]
 
         target_size = physics.get_target_size()
@@ -1210,7 +1234,7 @@ class Walker3DBall(base.Task):
         target_reward = 1.0 if target_hit else 0.0
 
         if target_hit:
-            self._reset_ball_and_target(physics)
+            self._respawn_after_hit(physics)
 
         # ======================================================================
         # Compute gated values for this step (to be stored in gate history)
@@ -1252,6 +1276,14 @@ class Walker3DBall(base.Task):
             + _W_SMOOTHNESS * smoothness_penalty
         )
 
+        # Large flat bonus for hitting the target.  Added after the gated
+        # reward so it is not attenuated by any gate.  The agent loses
+        # proximity to the ball after respawn and must stand / approach
+        # again, so the bonus must be large enough to outweigh the
+        # temporary reward dip during the next approach cycle.
+        if target_hit:
+            reward += _TARGET_HIT_BONUS
+
         # Log raw (unweighted) values for inspection
         self._reward_components = {
             "feet": feet_reward,
@@ -1275,6 +1307,7 @@ class Walker3DBall(base.Task):
             "gate_march": gate_march,
             "gate_approach": gate_approach,
             "gate_full": gate_full,
+            "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         self._prev_action = ctrl.copy()
         return float(reward)

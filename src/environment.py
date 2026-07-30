@@ -50,9 +50,11 @@ class Environment:
             task = getattr(self.env, 'task', None)
             if task is not None and hasattr(task, 'should_terminate'):
                 if task.should_terminate(self.env.physics):
-                    # Force a termination: dm_control doesn't expose a public
-                    # API to force-step-termination, so we set done manually.
-                    # The reward for this step is still returned.
+                    # Early termination (agent fell): override reward with
+                    # a fixed large penalty so the agent learns that falling
+                    # is bad, instead of just ending early with whatever
+                    # reward it accumulated.
+                    reward = -10.0
                     done = True
 
         info = {}
