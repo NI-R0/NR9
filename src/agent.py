@@ -7,7 +7,7 @@ from src.buffer import NStepTransitionBuffer
 from jax.random import PRNGKey
 
 
-class SoccerAgent:
+class MPOAgent:
     def __init__(
         self,
         observation_shape,
