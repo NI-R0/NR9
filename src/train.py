@@ -328,6 +328,7 @@ def _handle_eval(
     # during evaluation.  The full training state (including the buffer)
     # is saved once at the end of training to minimise I/O load.
     stats.save_checkpoint(agent.learner.state, "latest")
+    stats._write_training_meta(episode, agent_step_count)
     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
         logger.info(
             f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved."

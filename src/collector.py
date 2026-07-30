@@ -310,6 +310,24 @@ Evaluation Configuration:
             self.save_checkpoint(state, "best_ckpt")
         return improved
 
+    def _write_training_meta(self, episode: int, agent_step_count: int = 0):
+        """Write training_meta.json with current episode + best reward.
+
+        This is read by the checkpoint server (``--task serve``) and
+        external tools (e.g. check_convergence.py) without unpickling
+        the full state.
+        """
+        meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
+        meta = {
+            "episode": episode,
+            "best_eval_reward": self.best_eval_reward,
+            "agent_step_count": agent_step_count,
+        }
+        t_meta = time.perf_counter()
+        with open(meta_path, "w") as f:
+            json.dump(meta, f, indent=2)
+        self._record_io("save_train_meta", time.perf_counter() - t_meta)
+
     def save_train_state(
         self, episode: int, learner_state, buffer, collector, agent_step_count: int = 0
     ):
@@ -342,19 +360,7 @@ Evaluation Configuration:
         self._record_io("save_train_state", time.perf_counter() - t0)
         logger.debug(f"Full training state saved to {path}.")
 
-        # Also write a small JSON file with metadata that external tools
-        # (e.g. check_convergence.py) can read without unpickling the
-        # full state.
-        meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
-        meta = {
-            "episode": episode,
-            "best_eval_reward": collector.best_eval_reward,
-            "agent_step_count": agent_step_count,
-        }
-        t_meta = time.perf_counter()
-        with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
-        self._record_io("save_train_meta", time.perf_counter() - t_meta)
+        self._write_training_meta(episode, agent_step_count)
 
     @staticmethod
     def load_train_state(filepath: str):
