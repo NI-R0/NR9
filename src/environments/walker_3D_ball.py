@@ -37,10 +37,13 @@ Single-phase reward with cascading smoothed gates:
 
 Foot design:
   Each foot is a flat box geom with separate heel and toe touch sensors.
-  The ``flat_foot`` reward (positive) fires when heel and toe are both
-  in ground contact, encouraging a flat-foot stance rather than standing
-  on tiptoes.  The ``stability`` reward fires when the COM ground
-  projection lies inside the support polygon (convex hull of foot
+  The ``flat_foot`` reward is continuous: when any part of a foot touches
+  the ground, the foot's tilt angle (via the rotation-matrix zz component)
+  determines the reward — ``cos(tilt)`` yields 1.0 for a flat sole and
+  0.0 for a vertical foot.  ``max(right, left)`` means one flat foot
+  suffices for the full standing reward, so the agent can later lift the
+  other foot for walking.  The ``stability`` reward fires when the COM
+  ground projection lies inside the support polygon (convex hull of foot
   contact points), encouraging balanced postures.
 
 Early termination:
@@ -134,7 +137,7 @@ _TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
 
 # Positive weights (sum = 1.0)
 _W_FEET = 0.10
-_W_FLAT_FOOT = 0.10       # reward for heel+toe simultaneously on ground
+_W_FLAT_FOOT = 0.10       # reward for foot sole flatness (cos of tilt angle)
 _W_STABILITY = 0.10       # reward for COM projection inside support polygon
 _W_STAND = 0.10
 _W_SYMMETRY = 0.10
@@ -169,8 +172,8 @@ _HIP_ROLL_MAX = np.radians(45)  # Max hip-roll deviation from neutral for normal
 # right, because the joint axes are NOT mirrored in the XML (e.g. hip_roll
 # uses axis="1 0 0" for both legs).  Indices refer to the 5-joint per-leg
 # block returned by Physics.joint_positions():
-#   0=hip_yaw, 1=hip_roll, 2=hip_pitch, 3=knee, 4=ankle
-_SYMMETRY_MIRROR_INDICES = (1,)  # hip_roll must be sign-flipped for comparison
+#   0=hip_yaw, 1=hip_roll, 2=hip_pitch, 3=knee, 4=ankle_pitch, 5=ankle_roll
+_SYMMETRY_MIRROR_INDICES = (1, 5)  # hip_roll, ankle_roll: sign-flip for comparison
 _SYMMETRY_JOINT_MAX = np.radians(45)  # Normalization for symmetry reward
 _GAIT_MIN_VELOCITY = 0.3  # Min horizontal velocity (m/s) for gait reward to activate
 _SHIN_LENGTH = 0.25  # Shin (leg) capsule half-length in m; used as foot-clearance target
@@ -298,9 +301,9 @@ class Physics(mujoco.Physics):
         # Joint qpos / qvel addresses
         joint_names = [
             "right_hip_yaw", "right_hip_roll", "right_hip_pitch",
-            "right_knee", "right_ankle",
+            "right_knee", "right_ankle_pitch", "right_ankle_roll",
             "left_hip_yaw", "left_hip_roll", "left_hip_pitch",
-            "left_knee", "left_ankle",
+            "left_knee", "left_ankle_pitch", "left_ankle_roll",
         ]
         self._qpos_joints = np.array([
             model.jnt_qposadr[mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, n)]
@@ -358,6 +361,14 @@ class Physics(mujoco.Physics):
             model.sensor_adr[
                 mujoco.mj_name2id(model, mjt.mjOBJ_SENSOR, name)]
             for name in _ALL_TOUCHES
+        ], dtype=np.int64)
+
+        # Site IDs for heel/toe touch sites (used by foot_contact_points
+        # to get actual contact-point world positions, not body origins).
+        # Order matches _FOOT_TOUCHES: right_heel, right_toe, left_heel, left_toe
+        self._sid_foot = np.array([
+            mujoco.mj_name2id(model, mjt.mjOBJ_SITE, name)
+            for name in _FOOT_TOUCHES
         ], dtype=np.int64)
 
         # Mocap ID for target body
@@ -420,50 +431,45 @@ class Physics(mujoco.Physics):
         return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
 
     def flat_foot_contact(self):
-        """Returns 1.0 if at least one foot is flat on the ground, else 0.0.
+        """Returns the flatness [0, 1] of the *best* foot touching the ground.
 
-        A foot counts as "flat" only when its heel AND toe sensor both
-        exceed ``_FLAT_FOOT_TOUCH_THRESHOLD``.
+        For each foot that has **any** contact (heel OR toe sensor above
+        ``_FLAT_FOOT_TOUCH_THRESHOLD``), the flatness is derived from the
+        foot's tilt angle via the zz-component of its rotation matrix
+        (``xmat``): ``cos(tilt)`` yields 1.0 when the foot sole is
+        parallel to the ground and 0.0 when it is vertical.
 
-        Binary by design: two flat feet give the same reward as one.
-        This prevents the agent from getting "stuck" standing on both
-        feet, because lifting one foot (for walking) no longer cuts the
-        reward in half.  The agent learns to stand on either foot;
-        balanced two-foot standing emerges naturally once the march /
-        weight-shift rewards activate.
+        ``max(right, left)`` is returned so that one fully-flat foot
+        already gives the full standing reward — the agent is not
+        penalised for lifting the other foot (prerequisite for walking).
+        Feet with no ground contact contribute 0.0.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
         # Sensor order: right_heel, right_toe, left_heel, left_toe
-        r_flat = (
-            touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD
-            and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
-        )
-        l_flat = (
-            touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD
-            and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
-        )
-        return 1.0 if (r_flat or l_flat) else 0.0
+        r_touching = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD or touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
+        l_touching = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD or touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
+        r_flat = float(max(0.0, self.data.xmat[self._bid_right_foot, 8])) if r_touching else 0.0
+        l_flat = float(max(0.0, self.data.xmat[self._bid_left_foot, 8])) if l_touching else 0.0
+        return max(r_flat, l_flat)
 
     def foot_contact_points(self):
         """Returns the xy positions of all foot contact points on the ground.
 
         A contact point is added for each foot-part sensor (heel/toe) whose
         tanh(touch) exceeds ``_FLAT_FOOT_TOUCH_THRESHOLD``.  The xy position
-        is taken from the corresponding body's world position.
+        is taken from the corresponding **site** world position
+        (``data.site_xpos``), not the foot body origin, so heel and toe
+        of the same foot yield distinct points — critical for a meaningful
+        support polygon.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
-        # Map sensor indices to body IDs for position lookup.
-        # Sensor order: right_heel, right_toe, left_heel, left_toe
-        foot_body_ids = np.array([
-            self._bid_right_foot, self._bid_right_foot,
-            self._bid_left_foot, self._bid_left_foot,
-        ])
         in_contact = touches > _FLAT_FOOT_TOUCH_THRESHOLD
         if not np.any(in_contact):
             return np.empty((0, 2))
-        return self.data.xpos[foot_body_ids[in_contact], :2].copy()
+        # site_xpos has shape (nsite, 3); use precomputed site IDs
+        return self.data.site_xpos[self._sid_foot[in_contact], :2].copy()
 
     def com_ground_projection(self):
         """Returns the [x, y] ground projection of the centre of mass.
@@ -664,11 +670,11 @@ class Physics(mujoco.Physics):
         ])
 
     def joint_positions(self):
-        """Returns all non-root joint angles as a 1-D array (10 joints).
+        """Returns all non-root joint angles as a 1-D array (12 joints).
 
         Order: right_hip_yaw, right_hip_roll, right_hip_pitch, right_knee,
-        right_ankle, left_hip_yaw, left_hip_roll, left_hip_pitch,
-        left_knee, left_ankle.
+        right_ankle_pitch, right_ankle_roll, left_hip_yaw, left_hip_roll,
+        left_hip_pitch, left_knee, left_ankle_pitch, left_ankle_roll.
         """
         self._ensure_indices()
         return self.data.qpos[self._qpos_joints].copy()
@@ -945,10 +951,10 @@ class Walker3DBall(base.Task):
         # feet_only: 1 when no non-foot contact, 0 when any. ∈ [0, 1].
         feet_only = 1.0 - non_foot_contact
 
-        # --- Flat-foot reward [0, 1]: fraction of heel/toe sensors in contact.
-        # 1.0 = both feet flat (all 4 sensors touching), 0.0 = no foot contact.
-        # This positively rewards keeping the full foot on the ground instead
-        # of standing on tiptoes.
+        # --- Flat-foot reward [0, 1]: foot sole flatness via tilt angle.
+        # 1.0 = foot sole parallel to ground, 0.0 = vertical.  Uses the
+        # best (flattest) foot that has ground contact; one flat foot
+        # suffices so the agent can lift the other for walking.
         flat_foot_reward = physics.flat_foot_contact()
 
         # --- Stability reward [0, 1]: COM ground projection inside support polygon.
@@ -999,8 +1005,8 @@ class Walker3DBall(base.Task):
         # sign of those joints before comparing so the reward matches the true
         # symmetric pose.
         joints = physics.joint_positions()
-        right_joints = joints[:5].copy()
-        left_joints = joints[5:]
+        right_joints = joints[:6].copy()
+        left_joints = joints[6:]
         right_joints[list(_SYMMETRY_MIRROR_INDICES)] *= -1.0
         symmetry_err = float(
             np.mean(np.abs(right_joints - left_joints) / _SYMMETRY_JOINT_MAX)

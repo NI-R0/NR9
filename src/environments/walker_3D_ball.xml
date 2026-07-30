@@ -42,7 +42,8 @@
           <geom name="right_leg" size="0.04 0.25"/>
           <site name="right_leg_touch" class="touch" pos="0 0 -0.12" size="0.045 0.25"/>
           <body name="right_foot" pos="0.06 0 -0.25">
-            <joint name="right_ankle" pos="-0.06 0 0" axis="0 -1 0" range="-45 45"/>
+            <joint name="right_ankle_pitch" pos="-0.06 0 0" axis="0 -1 0" range="-45 45"/>
+            <joint name="right_ankle_roll" pos="-0.06 0 0" axis="1 0 0" range="-30 30"/>
             <geom name="right_foot" type="box" pos="0.05 0 -0.035" size="0.1 0.04 0.015" friction="1.0 0.1 0.1"/>
             <site name="right_heel_touch" class="touch" type="sphere" pos="-0.03 0 -0.04" size="0.05"/>
             <site name="right_toe_touch" class="touch" type="sphere" pos="0.13 0 -0.04" size="0.05"/>
@@ -60,7 +61,8 @@
           <geom name="left_leg" size="0.04 0.25"/>
           <site name="left_leg_touch" class="touch" pos="0 0 -0.12" size="0.045 0.25"/>
           <body name="left_foot" pos="0.06 0 -0.25">
-            <joint name="left_ankle" pos="-0.06 0 0" axis="0 -1 0" range="-45 45"/>
+            <joint name="left_ankle_pitch" pos="-0.06 0 0" axis="0 -1 0" range="-45 45"/>
+            <joint name="left_ankle_roll" pos="-0.06 0 0" axis="1 0 0" range="-30 30"/>
             <geom name="left_foot" type="box" pos="0.05 0 -0.035" size="0.1 0.04 0.015" friction="1.0 0.1 0.1"/>
             <site name="left_heel_touch" class="touch" type="sphere" pos="-0.03 0 -0.04" size="0.05"/>
             <site name="left_toe_touch" class="touch" type="sphere" pos="0.13 0 -0.04" size="0.05"/>
@@ -103,11 +105,13 @@
     <motor name="right_hip_roll" joint="right_hip_roll" gear="50"/>
     <motor name="right_hip_pitch" joint="right_hip_pitch" gear="100"/>
     <motor name="right_knee" joint="right_knee" gear="50"/>
-    <motor name="right_ankle" joint="right_ankle" gear="20"/>
+    <motor name="right_ankle_pitch" joint="right_ankle_pitch" gear="20"/>
+    <motor name="right_ankle_roll" joint="right_ankle_roll" gear="20"/>
     <motor name="left_hip_yaw" joint="left_hip_yaw" gear="50"/>
     <motor name="left_hip_roll" joint="left_hip_roll" gear="50"/>
     <motor name="left_hip_pitch" joint="left_hip_pitch" gear="100"/>
     <motor name="left_knee" joint="left_knee" gear="50"/>
-    <motor name="left_ankle" joint="left_ankle" gear="20"/>
+    <motor name="left_ankle_pitch" joint="left_ankle_pitch" gear="20"/>
+    <motor name="left_ankle_roll" joint="left_ankle_roll" gear="20"/>
   </actuator>
 </mujoco>
