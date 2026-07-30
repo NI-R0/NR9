@@ -54,7 +54,7 @@ class Environment:
                     # a fixed large penalty so the agent learns that falling
                     # is bad, instead of just ending early with whatever
                     # reward it accumulated.
-                    reward = -10.0
+                    reward = -0.5
                     done = True
 
         info = {}
