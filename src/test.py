@@ -3,6 +3,7 @@ import io
 import time
 import threading
 import http.server
+from typing import Optional
 import numpy as np
 import jax
 import imageio
@@ -267,8 +268,8 @@ class _MJPEGStreamHandler(http.server.BaseHTTPRequestHandler):
     """HTTP request handler that streams JPEG frames as MJPEG."""
 
     # Shared frame buffer set by run_live_stream().
-    _frame_buffer: list[bytes] | None = None
-    _frame_lock: threading.Lock | None = None
+    _frame_buffer: Optional[list[bytes]] = None
+    _frame_lock: Optional[threading.Lock] = None
     _fps: int = 30
 
     def do_GET(self):
