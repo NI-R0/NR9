@@ -77,7 +77,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--dual_lr",
         type=float,
-        default=1e-4,
+        default=0.01,
         help="Learning rate for dual variables. If not set, defaults to --lr (paper).",
     )
     parser.add_argument("--capacity", type=int, default=100000)
@@ -96,7 +96,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--epsilon_std",
         type=float,
-        default=1e-4,
+        default=1e-6,
         help="KL constraint for M-step (std).",
     )
     parser.add_argument(
@@ -120,7 +120,7 @@ def parse_args() -> dict:
     parser.add_argument(
         "--target_update_period",
         type=int,
-        default=100,
+        default=25,
         help="Hard target network update period in learner steps (Acme).",
     )
     parser.add_argument(

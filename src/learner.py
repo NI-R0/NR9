@@ -74,21 +74,22 @@ class MPOLearner:
                  observation_shape: tuple,
                  action_shape: tuple,
                  random_key,
-                 lr=3e-4,
+                 lr=5e-4,
                  critic_lr=None,
                  dual_lr=None,
                  **kwargs):
 
         self.actor_net = actor_net
         self.critic_net = critic_net
+        self.gamma = kwargs.get("gamma", 0.99)
 
         critic_lr = critic_lr if critic_lr is not None else lr
-        dual_lr = dual_lr if dual_lr is not None else 1e-4
+        dual_lr = dual_lr if dual_lr is not None else lr
 
         self.config = {
             "epsilon": kwargs.get("epsilon", 0.1),
             "epsilon_mean": kwargs.get("epsilon_mean", 0.0025),
-            "epsilon_std": kwargs.get("epsilon_std", 1e-4),
+            "epsilon_std": kwargs.get("epsilon_std", 1e-6),
             "sample_k": kwargs.get("sample_k", 20),
             "sgd_steps_per_learner_step": kwargs.get("sgd_steps_per_learner_step", 8),
             "target_update_period": kwargs.get("target_update_period", 100),

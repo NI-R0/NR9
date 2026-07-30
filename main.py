@@ -54,11 +54,8 @@ def main():
             profiler = cProfile.Profile()
             profiler.enable()
 
-        task = args["task"]
-        if task == "train":
+        if args["task"] == "train":
             train(args, stats)
-        elif task == "serve":
-            serve(args, stats)
         else:
             test(args, stats)
     except KeyboardInterrupt:

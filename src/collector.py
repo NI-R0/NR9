@@ -41,7 +41,6 @@ class StatsCollector:
         else:
             run_name = args["run_name"] or self._default_run_name()
         self.is_test = args["task"] == "test" and args["load_dir"]
-        self.is_stream = args["task"] == "test" and not args["load_dir"]
 
         if self.is_test:
             self.run_dir = os.path.join(os.getcwd(), args["load_dir"])

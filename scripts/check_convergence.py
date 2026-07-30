@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Check whether training has converged, is stagnant, or should continue.
+"""Check whether training has converged or should continue.
 
-Three possible outcomes:
+Two possible outcomes:
 
 * **Converged (exit 0)** - The agent achieved at least ``--min_reward``,
   and the smoothed improvement over the last ``--convergence_episodes``
@@ -9,18 +9,12 @@ Three possible outcomes:
   mean of all eval rewards in the first half of the episode range versus
   the mean of the second half.  Stop training - success.
 
-* **Stagnant (exit 2)** - The agent has been training for a long time
-  (``--stagnation_window`` evals) without meaningful improvement
-  (improvement < ``--stagnation_threshold``).  Stop training - likely a
-  bug or fundamental issue.  No reschedule.
-
 * **Continue (exit 1)** - None of the above; schedule the next job.
 
 Exit codes
 ----------
 0  converged  - stop, training successful
 1  continue   - reschedule next job
-2  stagnant   - stop, training is stuck (possible bug)
 """
 
 import argparse
@@ -52,7 +46,7 @@ def load_eval_rewards(run_dir: str) -> list[tuple[int, float]]:
 
 
 def load_training_meta(run_dir: str) -> dict:
-    """Load training_meta.json (phase, episode, best_eval_reward). Returns empty dict if missing."""
+    """Load training_meta.json (episode, best_eval_reward). Returns empty dict if missing."""
     meta_path = os.path.join(run_dir, "checkpoints", "training_meta.json")
     if not os.path.isfile(meta_path):
         logger.warning(f"No training_meta.json found in {meta_path}")
@@ -66,10 +60,8 @@ def check_convergence(
     convergence_episodes: int,
     threshold: float,
     min_reward: float,
-    stagnation_window: int,
-    stagnation_threshold: float,
 ) -> int:
-    """Decide whether to stop (converged/stagnant) or continue training.
+    """Decide whether to stop (converged) or continue training.
 
     Convergence is assessed by looking at all eval points within the last
     ``convergence_episodes`` episodes.  These are split into a first and
@@ -77,7 +69,7 @@ def check_convergence(
     difference (second − first) is the smoothed improvement.  If that
     improvement is below ``threshold``, training has converged.
 
-    Returns 0 (converged), 1 (continue), or 2 (stagnant).
+    Returns 0 (converged) or 1 (continue).
     """
     eval_rewards = load_eval_rewards(run_dir)
     meta = load_training_meta(run_dir)
@@ -131,9 +123,7 @@ def check_convergence(
     )
 
     # ------------------------------------------------------------------
-    # 1) Convergence check - are we done?
-    #    Requires: reward >= min_reward, and smoothed improvement below
-    #    threshold.
+    # Convergence check - are we done?
     # ------------------------------------------------------------------
     meets_reward = best_recent >= min_reward
     meets_improvement = improvement < threshold
@@ -147,14 +137,7 @@ def check_convergence(
         return 0
 
     # ------------------------------------------------------------------
-    # 2) Stagnation check - DISABLED.
-    #    Stagnation detection was too aggressive during training.
-    #    The check is left here for documentation but always continues.
-    # ------------------------------------------------------------------
-    logger.info("  Stagnation check disabled.")
-
-    # ------------------------------------------------------------------
-    # 3) Not converged, not stagnant - continue training.
+    # Not converged - continue training.
     # ------------------------------------------------------------------
     if not meets_reward:
         logger.info(
@@ -171,7 +154,7 @@ def check_convergence(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Check training convergence, stagnation, or continue."
+        description="Check training convergence or continue."
     )
     parser.add_argument(
         "--run_dir", type=str, required=True, help="Path to the run directory to check."
@@ -194,25 +177,11 @@ def main():
     parser.add_argument(
         "--min_reward",
         type=float,
-        default=600.0,
+        default=100.0,
         help="Minimum best recent reward to allow convergence "
-        "(default: 600.0). Below this, always continue.",
+        "(default: 100.0). Below this, always continue.",
     )
 
-    parser.add_argument(
-        "--stagnation_window",
-        type=int,
-        default=10,
-        help="Number of evals to check for stagnation (default: 10). "
-        "Must be >= 2× the comparison half.",
-    )
-    parser.add_argument(
-        "--stagnation_threshold",
-        type=float,
-        default=1.0,
-        help="If improvement over stagnation_window evals is below "
-        "this, training is stagnant (default: 1.0).",
-    )
     args = parser.parse_args()
 
     result = check_convergence(
@@ -220,8 +189,6 @@ def main():
         convergence_episodes=args.convergence_episodes,
         threshold=args.threshold,
         min_reward=args.min_reward,
-        stagnation_window=args.stagnation_window,
-        stagnation_threshold=args.stagnation_threshold,
     )
     sys.exit(result)
 
