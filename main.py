@@ -7,6 +7,7 @@ from src.cli import parse_args
 from src.collector import StatsCollector
 from src.train import train
 from src.test import test
+from src.serve import serve
 
 
 def _nvidia_gpu_available() -> bool:
@@ -46,7 +47,13 @@ def main():
             profiler = cProfile.Profile()
             profiler.enable()
 
-        train(args, stats) if args["task"] == "train" else test(args, stats)
+        task = args["task"]
+        if task == "train":
+            train(args, stats)
+        elif task == "serve":
+            serve(args, stats)
+        else:
+            test(args, stats)
     except KeyboardInterrupt:
         logger.warning("Shutting down training!")
     except Exception as e:

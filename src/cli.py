@@ -5,7 +5,7 @@ def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "-t", "--task", type=str, choices=["train", "test"], default="train"
+        "-t", "--task", type=str, choices=["train", "test", "serve"], default="train"
     )
     parser.add_argument(
         "-v",
@@ -175,25 +175,23 @@ def parse_args() -> dict:
         "until --steps is reached.  All sub-episodes are logged individually.",
     )
     parser.add_argument(
-        "--live-stream",
+        "--checkpoint_poll_interval",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="When --live or --task serve is active, poll the checkpoint file "
+        "for changes every SECONDS seconds and hot-swap the agent's weights "
+        "if the file was modified.  Default is 0 (disabled – load once at "
+        "startup).",
+    )
+    parser.add_argument(
+        "--serve_port",
         type=int,
         default=2324,
         metavar="PORT",
-        help="Test mode: start an HTTP MJPEG stream on the given port instead of "
-        "the interactive viewer.  Designed for headless clusters: render frames "
-        "with MUJOCO_GL=egl and view them in a local browser via SSH port "
-        "forwarding (ssh -L PORT:localhost:PORT).  Works with --checkpoint "
-        "polling: when set to 'latest' or 'best_ckpt', the stream periodically "
-        "checks for updated checkpoint files and hot-swaps the agent.",
-    )
-    parser.add_argument(
-        "--checkpoint_poll_interval",
-        type=float,
-        default=10.0,
-        metavar="SECONDS",
-        help="When --live-stream is active, poll the checkpoint file for changes "
-        "every SECONDS seconds and reload if the file was modified.  Set to 0 "
-        "to disable polling (load once at startup).",
+        help="Serve mode (--task serve): TCP port for the HTTP MJPEG stream.  "
+        "Forward this port (e.g. via SSH or VS Code) and open "
+        "http://localhost:PORT in a browser.",
     )
 
     return vars(parser.parse_args())

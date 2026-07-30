@@ -1,14 +1,10 @@
 import os
-import io
 import time
 import threading
-import http.server
-from typing import Optional
 import numpy as np
 import jax
 import imageio
 import dm_env
-from PIL import Image
 from loguru import logger
 from dm_control import viewer
 from src.collector import StatsCollector
@@ -177,35 +173,12 @@ class _AutoResetWrapper:
         )
 
 
-def run_live(env: Environment, agent: SoccerAgent, respawn: bool = False):
-    """Launch the interactive dm_control viewer with the trained agent.
-
-    The viewer calls the policy function on each timestep. We flatten the
-    observation for the agent and convert its JAX output back to numpy.
-
-    When ``respawn`` is ``True``, the environment auto-resets on every
-    termination (fall or time-limit) so the viewer runs continuously.
-    """
-    def policy(timestep):
-        obs = env._flatten_observation(timestep.observation)
-        action = agent.select_action(obs, explore=False)
-        return np.asarray(action, dtype=np.float32)
-
-    raw_env = _AutoResetWrapper(env.env, respawn=respawn)
-
-    logger.info(
-        "Launching interactive viewer. Close the window to exit."
-        + (" (respawn enabled)" if respawn else "")
-    )
-    viewer.launch(environment_loader=raw_env, policy=policy)
-
-
 class _CheckpointReloader:
     """Polls a checkpoint file for changes and reloads the agent state.
 
-    Thread-safe: the env-loop thread calls :meth:`maybe_reload` which
-    checks the file's mtime and, if changed, loads the new state into
-    ``agent.learner.state``.
+    Thread-safe: callers from the viewer/env loop invoke
+    :meth:`maybe_reload` which checks the file's mtime and, if changed,
+    loads the new state into ``agent.learner.state``.
     """
 
     def __init__(
@@ -221,17 +194,14 @@ class _CheckpointReloader:
         self._last_check: float = 0.0
         self._lock = threading.Lock()
 
-        # Record initial mtime (without reloading, since test() already
-        # loaded the checkpoint once).
         if os.path.isfile(self._path):
             self._last_mtime = os.path.getmtime(self._path)
 
     def maybe_reload(self):
         """Check if the checkpoint file changed and reload if so.
 
-        Should be called from the env-loop thread on every step (or
-        every few steps).  Uses ``_poll_interval`` to avoid stat-ing
-        the file too frequently.
+        Uses ``_poll_interval`` to avoid stat-ing the file too
+        frequently.  Safe to call on every step.
         """
         if self._poll_interval <= 0:
             return
@@ -264,170 +234,49 @@ class _CheckpointReloader:
                 )
 
 
-class _MJPEGStreamHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP request handler that streams JPEG frames as MJPEG."""
-
-    # Shared frame buffer set by run_live_stream().
-    _frame_buffer: Optional[list[bytes]] = None
-    _frame_lock: Optional[threading.Lock] = None
-    _fps: int = 30
-
-    def do_GET(self):
-        if self.path != "/" and self.path != "/stream":
-            self.send_error(404)
-            return
-
-        self.send_response(200)
-        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-        self.send_header("Cache-Control", "no-cache, private")
-        self.send_header("Pragma", "no-cache")
-        self.end_headers()
-
-        frame_idx = 0
-        while True:
-            if _MJPEGStreamHandler._frame_buffer is None:
-                time.sleep(0.1)
-                continue
-
-            with _MJPEGStreamHandler._frame_lock:
-                if frame_idx >= len(_MJPEGStreamHandler._frame_buffer):
-                    time.sleep(1.0 / max(_MJPEGStreamHandler._fps, 1))
-                    continue
-                jpg_bytes = _MJPEGStreamHandler._frame_buffer[frame_idx]
-                # Trim old frames to avoid unbounded memory growth.
-                if frame_idx > 64:
-                    del _MJPEGStreamHandler._frame_buffer[:frame_idx]
-                    frame_idx = 0
-            frame_idx += 1
-
-            try:
-                self.wfile.write(b"--frame\r\n")
-                self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                self.wfile.write(f"Content-Length: {len(jpg_bytes)}\r\n".encode())
-                self.wfile.write(b"\r\n")
-                self.wfile.write(jpg_bytes)
-                self.wfile.write(b"\r\n")
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                break
-
-    def log_message(self, format, *args):
-        # Suppress default HTTP logging to keep the console clean.
-        pass
-
-
-def run_live_stream(
+def run_live(
     env: Environment,
     agent: SoccerAgent,
-    checkpoint_path: str,
-    port: int,
-    poll_interval: float,
     respawn: bool = False,
+    checkpoint_path: str | None = None,
+    poll_interval: float = 0.0,
 ):
-    """Run the agent in the env and stream frames via HTTP MJPEG.
+    """Launch the interactive dm_control viewer with the trained agent.
 
-    Designed for headless clusters: uses ``env.render()`` (offscreen
-    EGL/OSMesa) and serves JPEG frames over HTTP.  View in a local
-    browser via SSH port forwarding::
+    The viewer calls the policy function on each timestep. We flatten the
+    observation for the agent and convert its JAX output back to numpy.
 
-        ssh -L <PORT>:localhost:<PORT> user@cluster
-        # then open http://localhost:<PORT> in your browser
+    When ``respawn`` is ``True``, the environment auto-resets on every
+    termination (fall or time-limit) so the viewer runs continuously.
 
-    The checkpoint file is polled every ``poll_interval`` seconds.  When
-    the file changes (e.g. training saved a new ``latest.pkl``), the
-    agent's weights are hot-swapped without restarting the stream.
-
-    Args:
-        env: The Environment wrapper (must support ``render()``).
-        agent: The SoccerAgent with loaded weights.
-        checkpoint_path: Path to the checkpoint .pkl file to watch.
-        port: TCP port for the HTTP server.
-        poll_interval: Seconds between checkpoint file checks (0 = off).
-        respawn: If True, auto-reset the env on termination.
+    When ``poll_interval > 0`` and ``checkpoint_path`` is given, the
+    checkpoint file is polled on every step.  If it changes (e.g.
+    training saved a new ``latest.pkl``), the agent's weights are
+    hot-swapped without restarting the viewer.
     """
-    # --- Shared frame buffer ---
-    frame_buffer: list[bytes] = []
-    frame_lock = threading.Lock()
-    _MJPEGStreamHandler._frame_buffer = frame_buffer
-    _MJPEGStreamHandler._frame_lock = frame_lock
-    _MJPEGStreamHandler._fps = 30
+    reloader: _CheckpointReloader | None = None
+    if checkpoint_path and poll_interval > 0:
+        reloader = _CheckpointReloader(checkpoint_path, agent, poll_interval)
+        logger.info(
+            f"Checkpoint hot-swap enabled: polling '{checkpoint_path}' "
+            f"every {poll_interval:.1f}s"
+        )
 
-    # --- HTTP server in background thread ---
-    server = http.server.ThreadingHTTPServer(
-        ("0.0.0.0", port), _MJPEGStreamHandler
-    )
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    logger.info(
-        f"MJPEG stream ready on http://localhost:{port}  "
-        f"(connect via SSH port forwarding: ssh -L {port}:localhost:{port})"
-    )
-
-    # --- Checkpoint reloader ---
-    reloader = _CheckpointReloader(checkpoint_path, agent, poll_interval)
-
-    # --- Env loop ---
-    state = env.reset()
-    ep_reward = 0.0
-    ep_length = 0
-    step = 0
-
-    logger.info("Starting live stream env loop. Press Ctrl+C to stop.")
-
-    try:
-        while True:
+    def policy(timestep):
+        if reloader is not None:
             reloader.maybe_reload()
+        obs = env._flatten_observation(timestep.observation)
+        action = agent.select_action(obs, explore=False)
+        return np.asarray(action, dtype=np.float32)
 
-            frame = env.render(height=360, width=480)
+    raw_env = _AutoResetWrapper(env.env, respawn=respawn)
 
-            # Encode to JPEG
-            img = Image.fromarray(frame)
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            jpg_bytes = buf.getvalue()
-
-            with frame_lock:
-                frame_buffer.append(jpg_bytes)
-                # Keep buffer bounded
-                if len(frame_buffer) > 128:
-                    del frame_buffer[:64]
-
-            action = agent.select_action(state, explore=False)
-            next_state, reward, done, _ = env.step(action)
-
-            ep_reward += reward
-            ep_length += 1
-            step += 1
-
-            if done:
-                if respawn:
-                    logger.info(
-                        f"Respawn at step {step} | "
-                        f"reward: {ep_reward:.2f} | length: {ep_length}"
-                    )
-                    ep_reward = 0.0
-                    ep_length = 0
-                    next_state = env.reset()
-                else:
-                    logger.info(
-                        f"Episode ended at step {step} | "
-                        f"reward: {ep_reward:.2f} | length: {ep_length} -> resetting"
-                    )
-                    ep_reward = 0.0
-                    ep_length = 0
-                    next_state = env.reset()
-
-            state = next_state
-
-            # Pace the loop to ~30 FPS to avoid burning 100% CPU.
-            time.sleep(1.0 / 30.0)
-
-    except KeyboardInterrupt:
-        logger.info("Live stream stopped by user.")
-    finally:
-        server.shutdown()
-        server_thread.join(timeout=2)
-        logger.info("HTTP server shut down.")
+    logger.info(
+        "Launching interactive viewer. Close the window to exit."
+        + (" (respawn enabled)" if respawn else "")
+        + (f" (hot-swap every {poll_interval:.0f}s)" if reloader else "")
+    )
+    viewer.launch(environment_loader=raw_env, policy=policy)
 
 
 def test(args: dict, stats: StatsCollector):
@@ -465,20 +314,14 @@ def test(args: dict, stats: StatsCollector):
     agent.learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
 
     use_respawn = args.get("respawn", False)
-    live_stream_port = args.get("live_stream", 0)
 
     if args.get("live", False):
-        run_live(env, agent, respawn=use_respawn)
-        return
-
-    if live_stream_port > 0:
-        run_live_stream(
-            env=env,
-            agent=agent,
-            checkpoint_path=checkpoint_path,
-            port=live_stream_port,
-            poll_interval=args.get("checkpoint_poll_interval", 10.0),
+        run_live(
+            env,
+            agent,
             respawn=use_respawn,
+            checkpoint_path=checkpoint_path,
+            poll_interval=args.get("checkpoint_poll_interval", 0.0),
         )
         return
 

@@ -33,26 +33,44 @@ git submodule update --init
 
 ---
 
-## Live Stream (Headless Cluster)
+## Live Viewer with Checkpoint Hot-Swap (`--live`)
 
-On a headless cluster (no display), use `--live-stream PORT` to serve an
-MJPEG video stream over HTTP.  This works with offscreen rendering
-(`MUJOCO_GL=egl`) and can be viewed in a local browser via SSH port
-forwarding.
+Launch the interactive dm_control viewer (requires a display) with the
+trained agent.  When `--checkpoint_poll_interval > 0`, the checkpoint
+file is polled and the agent's weights are hot-swapped when a new
+checkpoint is saved by training — no restart needed.
+
+```bash
+uv run python main.py --task test \
+  --load_dir runs/run_20260730_102646 --checkpoint latest \
+  --live --respawn \
+  --env_domain walker_3D_ball --env_task run \
+  --checkpoint_poll_interval 5
+```
+
+Set `--checkpoint_poll_interval 0` (default) to disable hot-swap and
+load the checkpoint once at startup.
+
+---
+
+## Headless MJPEG Stream (`--task serve`)
+
+On a headless cluster (no display), use `--task serve` to run the agent
+and stream rendered frames over HTTP as MJPEG.  Works with offscreen
+rendering (`MUJOCO_GL=egl`) and includes checkpoint hot-swap.
 
 ### Quick Start
 
 1. **On the cluster** — start the stream (e.g. port 8080):
 
 ```bash
-MUJOCO_GL=egl uv run python main.py -t test \
-  --load_dir runs/run_20260730_102646 \
-  --checkpoint latest \
-  --live-stream 8080 \
-  --respawn
+MUJOCO_GL=egl uv run python main.py --task serve \
+  --load_dir runs/run_20260730_102646 --checkpoint latest \
+  --serve_port 8080 --checkpoint_poll_interval 5 --respawn \
+  --env_domain walker_3D_ball --env_task run
 ```
 
-2. **On your local machine** — forward the port via SSH:
+2. **Forward the port** (SSH or VS Code port forwarding):
 
 ```bash
 ssh -L 8080:localhost:8080 user@cluster
@@ -60,21 +78,10 @@ ssh -L 8080:localhost:8080 user@cluster
 
 3. Open `http://localhost:8080` in your browser.
 
-### Checkpoint Hot-Swap
+### Options
 
-The stream watches the checkpoint file for changes.  When training
-writes a new `latest.pkl` or `best_ckpt.pkl`, the agent's weights are
-automatically reloaded without restarting the stream:
-
-```bash
-# Poll every 5 seconds (default: 10)
-MUJOCO_GL=egl uv run python main.py -t test \
-  --load_dir runs/run_20260730_102646 \
-  --checkpoint latest \
-  --live-stream 8080 \
-  --checkpoint_poll_interval 5 \
-  --respawn
-```
-
-Set `--checkpoint_poll_interval 0` to disable polling (load once at
-startup).
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--serve_port PORT` | 2324 | TCP port for the HTTP MJPEG stream |
+| `--checkpoint_poll_interval SECONDS` | 0 | Poll checkpoint for changes (0 = disabled) |
+| `--respawn` | off | Auto-reset env on termination |
