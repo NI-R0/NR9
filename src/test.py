@@ -6,7 +6,7 @@ import jax
 import imageio
 import dm_env
 from loguru import logger
-from dm_control import viewer
+from dm_control.viewer import application
 from src.collector import StatsCollector
 from src.environment import Environment
 from src.learner import MPOLearner
@@ -235,6 +235,16 @@ class _CheckpointReloader:
                 )
 
 
+def _format_title(episode, reward):
+    """Build a compact window title showing checkpoint origin."""
+    parts = ["NR9 Viewer"]
+    if episode is not None:
+        parts.append(f"Ep {episode}")
+    if reward is not None:
+        parts.append(f"R {reward:.1f}")
+    return " | ".join(parts)
+
+
 def run_live(
     env: Environment,
     agent: SoccerAgent,
@@ -242,6 +252,7 @@ def run_live(
     checkpoint_path: str | None = None,
     poll_interval: float = 0.0,
     stream_url: str | None = None,
+    reloader: RemoteCheckpointReloader | None = None,
 ):
     """Launch the interactive dm_control viewer with the trained agent.
 
@@ -258,19 +269,37 @@ def run_live(
       hot-swapped when it changes.
     - *Remote server*: when ``stream_url`` is given, a
       :class:`RemoteCheckpointReloader` polls the remote checkpoint
-      server (e.g. on a cluster, accessed via port forwarding) and
-      hot-swaps weights when a newer checkpoint is available.  The
-      ``poll_interval`` controls how often the server is queried.
+      server (e.g. on a cluster, accessed via port forwarding) in a
+      background thread and hot-swaps weights when a newer checkpoint is
+      available.  The window title is updated to show the checkpoint's
+      source episode and best reward.
     """
     reloader = None
-    if stream_url:
+
+    # We use Application directly (instead of viewer.launch) so we can
+    # update the window title dynamically via set_title.
+    app = application.Application(title=_format_title(None, None))
+
+    def _on_swap(episode, reward):
+        title = _format_title(episode, reward)
+        try:
+            app._window.set_title(title)
+        except Exception:
+            logger.debug(f"Could not set window title to '{title}'.")
+
+    if stream_url and reloader is not None:
+        # Reuse the reloader created by test() for the initial fetch.
+        reloader._on_swap = _on_swap
+        _on_swap(reloader.checkpoint_episode, reloader.checkpoint_reward)
+        reloader.start()
+    elif stream_url:
         url = RemoteCheckpointReloader.normalize_stream_url(stream_url)
         effective_interval = poll_interval if poll_interval > 0 else 5.0
-        reloader = RemoteCheckpointReloader(url, agent, effective_interval)
-        logger.info(
-            f"Remote checkpoint hot-swap enabled: polling '{url}' "
-            f"every {effective_interval:.1f}s"
+        reloader = RemoteCheckpointReloader(
+            url, agent, effective_interval, on_swap=_on_swap
         )
+        _on_swap(reloader.checkpoint_episode, reloader.checkpoint_reward)
+        reloader.start()
     elif checkpoint_path and poll_interval > 0:
         reloader = _CheckpointReloader(checkpoint_path, agent, poll_interval)
         logger.info(
@@ -292,17 +321,36 @@ def run_live(
         + (" (respawn enabled)" if respawn else "")
         + (f" (hot-swap every {poll_interval:.0f}s)" if reloader else "")
     )
-    viewer.launch(environment_loader=raw_env, policy=policy)
+    try:
+        app.launch(environment_loader=raw_env, policy=policy)
+    finally:
+        if isinstance(reloader, RemoteCheckpointReloader):
+            reloader.stop()
 
 
 def test(args: dict, stats: StatsCollector):
-    if not args["load_dir"]:
-        logger.error("Test mode requires --load_dir to be set to some previous run's directoriy.")
+    use_stream = bool(args.get("stream"))
 
-    checkpoint_path = os.path.join(args["load_dir"], "checkpoints", f"{args['checkpoint']}.pkl")
-    if not os.path.isfile(checkpoint_path):
-        logger.error(f"No checkpoint found at '{checkpoint_path}'.")
-        return
+    if use_stream:
+        # Stream mode: initial checkpoint comes from the remote server,
+        # no local --load_dir needed.
+        if not args.get("live", False):
+            logger.error("--stream requires --live mode.")
+            return
+        checkpoint_path = None
+    else:
+        if not args["load_dir"]:
+            logger.error(
+                "Test mode requires --load_dir to be set to some previous run's directory."
+            )
+            return
+
+        checkpoint_path = os.path.join(
+            args["load_dir"], "checkpoints", f"{args['checkpoint']}.pkl"
+        )
+        if not os.path.isfile(checkpoint_path):
+            logger.error(f"No checkpoint found at '{checkpoint_path}'.")
+            return
 
     env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
@@ -326,8 +374,23 @@ def test(args: dict, stats: StatsCollector):
         **args
     )
 
-    logger.info(f"Loading checkpoint '{args['checkpoint']}' from {checkpoint_path}")
-    agent.learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
+    if use_stream:
+        # Fetch initial checkpoint from the remote server (blocks once).
+        stream_url = RemoteCheckpointReloader.normalize_stream_url(args["stream"])
+        reloader = RemoteCheckpointReloader(
+            stream_url, agent,
+            poll_interval=args.get("checkpoint_poll_interval", 0.0) or 5.0,
+        )
+        initial_state = reloader.fetch_initial()
+        if initial_state is None:
+            logger.error("Could not fetch initial checkpoint from remote server. Aborting.")
+            return
+        agent.learner.state = initial_state
+        logger.info("Loaded initial checkpoint from remote server.")
+    else:
+        reloader = None
+        logger.info(f"Loading checkpoint '{args['checkpoint']}' from {checkpoint_path}")
+        agent.learner.state = StatsCollector.load_checkpoint_file(checkpoint_path)
 
     use_respawn = args.get("respawn", False)
 
@@ -339,6 +402,7 @@ def test(args: dict, stats: StatsCollector):
             checkpoint_path=checkpoint_path,
             poll_interval=args.get("checkpoint_poll_interval", 0.0),
             stream_url=args.get("stream"),
+            reloader=reloader,
         )
         return
 

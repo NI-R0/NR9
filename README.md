@@ -56,16 +56,19 @@ uv run python main.py --task test \
 
 When training runs on a cluster, use `--task serve` there to expose the
 latest checkpoint over HTTP, forward the port, and connect locally with
-`--stream`.  The viewer keeps running continuously; weights are swapped
-in the background when a newer checkpoint appears.
+`--stream`.  The viewer keeps running continuously; the checkpoint is
+polled and downloaded in a **background thread** so the simulation never
+stalls.  Weights are swapped instantly when the download finishes.
+
+No `--load_dir` is needed on the local side — the initial checkpoint is
+fetched from the server at startup.
 
 1. **On the cluster** — start the checkpoint server:
 
 ```bash
 uv run python main.py --task serve \
   --load_dir runs/run_20260730_102646 --checkpoint latest \
-  --serve_port 2324 \
-  --env_domain walker_3D_ball --env_task run
+  --serve_port 2324
 ```
 
 2. **Forward the port** (SSH or VS Code port forwarding):
@@ -74,11 +77,10 @@ uv run python main.py --task serve \
 ssh -L 2324:localhost:2324 user@cluster
 ```
 
-3. **Locally** — launch the viewer with `--stream`:
+3. **Locally** — launch the viewer with `--stream` (no `--load_dir` needed):
 
 ```bash
 uv run python main.py --task test \
-  --load_dir runs/run_20260730_102646 --checkpoint latest \
   --live --respawn \
   --env_domain walker_3D_ball --env_task run \
   --stream http://localhost:2324 --checkpoint_poll_interval 5
@@ -87,10 +89,8 @@ uv run python main.py --task test \
 `--stream` accepts a full URL (`http://localhost:2324`), `host:port`
 (`localhost:2324`), or just a port (`2324`).  Use
 `--checkpoint_poll_interval` to control how often the server is polled
-(defaults to 5 s when `--stream` is set).
-
-Set `--checkpoint_poll_interval 0` (default) to disable local file
-hot-swap and load the checkpoint once at startup.
+(defaults to 5 s when `--stream` is set).  Polling and downloading happen
+in a background thread — the simulation is never interrupted.
 
 ---
 

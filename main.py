@@ -38,6 +38,13 @@ else:
 @logger.catch
 def main():
     args = parse_args()
+
+    # serve mode needs no StatsCollector, no output directories, no
+    # TensorBoard — just the checkpoint file path and an HTTP server.
+    if args["task"] == "serve":
+        serve(args)
+        return
+
     stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
     stats.set_profile(args["profile"])
 
