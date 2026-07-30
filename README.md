@@ -36,9 +36,13 @@ git submodule update --init
 ## Live Viewer with Checkpoint Hot-Swap (`--live`)
 
 Launch the interactive dm_control viewer (requires a display) with the
-trained agent.  When `--checkpoint_poll_interval > 0`, the checkpoint
-file is polled and the agent's weights are hot-swapped when a new
-checkpoint is saved by training — no restart needed.
+trained agent.  Weights can be hot-swapped at runtime — no restart needed.
+
+### Local file hot-swap
+
+When `--checkpoint_poll_interval > 0`, the local checkpoint file is
+polled and the agent's weights are hot-swapped when a new checkpoint is
+saved by training.
 
 ```bash
 uv run python main.py --task test \
@@ -48,40 +52,56 @@ uv run python main.py --task test \
   --checkpoint_poll_interval 5
 ```
 
-Set `--checkpoint_poll_interval 0` (default) to disable hot-swap and
-load the checkpoint once at startup.
+### Remote checkpoint hot-swap (`--stream`)
 
----
+When training runs on a cluster, use `--task serve` there to expose the
+latest checkpoint over HTTP, forward the port, and connect locally with
+`--stream`.  The viewer keeps running continuously; weights are swapped
+in the background when a newer checkpoint appears.
 
-## Headless MJPEG Stream (`--task serve`)
-
-On a headless cluster (no display), use `--task serve` to run the agent
-and stream rendered frames over HTTP as MJPEG.  Works with offscreen
-rendering (`MUJOCO_GL=egl`) and includes checkpoint hot-swap.
-
-### Quick Start
-
-1. **On the cluster** — start the stream (e.g. port 8080):
+1. **On the cluster** — start the checkpoint server:
 
 ```bash
-MUJOCO_GL=egl uv run python main.py --task serve \
+uv run python main.py --task serve \
   --load_dir runs/run_20260730_102646 --checkpoint latest \
-  --serve_port 8080 --checkpoint_poll_interval 5 --respawn \
+  --serve_port 2324 \
   --env_domain walker_3D_ball --env_task run
 ```
 
 2. **Forward the port** (SSH or VS Code port forwarding):
 
 ```bash
-ssh -L 8080:localhost:8080 user@cluster
+ssh -L 2324:localhost:2324 user@cluster
 ```
 
-3. Open `http://localhost:8080` in your browser.
+3. **Locally** — launch the viewer with `--stream`:
 
-### Options
+```bash
+uv run python main.py --task test \
+  --load_dir runs/run_20260730_102646 --checkpoint latest \
+  --live --respawn \
+  --env_domain walker_3D_ball --env_task run \
+  --stream http://localhost:2324 --checkpoint_poll_interval 5
+```
+
+`--stream` accepts a full URL (`http://localhost:2324`), `host:port`
+(`localhost:2324`), or just a port (`2324`).  Use
+`--checkpoint_poll_interval` to control how often the server is polled
+(defaults to 5 s when `--stream` is set).
+
+Set `--checkpoint_poll_interval 0` (default) to disable local file
+hot-swap and load the checkpoint once at startup.
+
+---
+
+## Headless Checkpoint Server (`--task serve`)
+
+Runs on the cluster and serves the latest checkpoint over HTTP so that a
+local machine can hot-swap weights via `--stream`.  No browser needed.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--serve_port PORT` | 2324 | TCP port for the HTTP MJPEG stream |
-| `--checkpoint_poll_interval SECONDS` | 0 | Poll checkpoint for changes (0 = disabled) |
+| `--serve_port PORT` | 2324 | TCP port for the checkpoint server |
+| `--stream URL` | off | Local: poll a remote checkpoint server for new weights |
+| `--checkpoint_poll_interval SECONDS` | 0 | Poll frequency (0 = disabled; defaults to 5 s with `--stream`) |
 | `--respawn` | off | Auto-reset env on termination |

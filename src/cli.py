@@ -189,9 +189,20 @@ def parse_args() -> dict:
         type=int,
         default=2324,
         metavar="PORT",
-        help="Serve mode (--task serve): TCP port for the HTTP MJPEG stream.  "
-        "Forward this port (e.g. via SSH or VS Code) and open "
-        "http://localhost:PORT in a browser.",
+        help="Serve mode (--task serve): TCP port for the checkpoint server.  "
+        "Forward this port (e.g. via SSH or VS Code) and connect locally "
+        "with --stream.",
+    )
+    parser.add_argument(
+        "--stream",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="Test mode (--task test --live): poll a remote checkpoint server "
+        "for new weights and hot-swap them without restarting the viewer.  "
+        "Accepts a full URL (http://localhost:2324), host:port "
+        "(localhost:2324), or just a port (2324).  Use with "
+        "--checkpoint_poll_interval to set the poll frequency.",
     )
 
     return vars(parser.parse_args())

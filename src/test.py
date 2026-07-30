@@ -14,6 +14,7 @@ from src.agent import SoccerAgent
 from src.buffer import NStepTransitionBuffer
 from src.networks import ActorNetwork, CriticNetwork
 from src.train import run_episode
+from src.serve import RemoteCheckpointReloader
 
 
 def run_episode_with_respawn(
@@ -240,6 +241,7 @@ def run_live(
     respawn: bool = False,
     checkpoint_path: str | None = None,
     poll_interval: float = 0.0,
+    stream_url: str | None = None,
 ):
     """Launch the interactive dm_control viewer with the trained agent.
 
@@ -249,16 +251,30 @@ def run_live(
     When ``respawn`` is ``True``, the environment auto-resets on every
     termination (fall or time-limit) so the viewer runs continuously.
 
-    When ``poll_interval > 0`` and ``checkpoint_path`` is given, the
-    checkpoint file is polled on every step.  If it changes (e.g.
-    training saved a new ``latest.pkl``), the agent's weights are
-    hot-swapped without restarting the viewer.
+    **Hot-swap modes** (mutually exclusive):
+
+    - *Local file*: when ``poll_interval > 0`` and ``checkpoint_path`` is
+      given, the local checkpoint file is polled and weights are
+      hot-swapped when it changes.
+    - *Remote server*: when ``stream_url`` is given, a
+      :class:`RemoteCheckpointReloader` polls the remote checkpoint
+      server (e.g. on a cluster, accessed via port forwarding) and
+      hot-swaps weights when a newer checkpoint is available.  The
+      ``poll_interval`` controls how often the server is queried.
     """
-    reloader: _CheckpointReloader | None = None
-    if checkpoint_path and poll_interval > 0:
+    reloader = None
+    if stream_url:
+        url = RemoteCheckpointReloader.normalize_stream_url(stream_url)
+        effective_interval = poll_interval if poll_interval > 0 else 5.0
+        reloader = RemoteCheckpointReloader(url, agent, effective_interval)
+        logger.info(
+            f"Remote checkpoint hot-swap enabled: polling '{url}' "
+            f"every {effective_interval:.1f}s"
+        )
+    elif checkpoint_path and poll_interval > 0:
         reloader = _CheckpointReloader(checkpoint_path, agent, poll_interval)
         logger.info(
-            f"Checkpoint hot-swap enabled: polling '{checkpoint_path}' "
+            f"Local checkpoint hot-swap enabled: polling '{checkpoint_path}' "
             f"every {poll_interval:.1f}s"
         )
 
@@ -322,6 +338,7 @@ def test(args: dict, stats: StatsCollector):
             respawn=use_respawn,
             checkpoint_path=checkpoint_path,
             poll_interval=args.get("checkpoint_poll_interval", 0.0),
+            stream_url=args.get("stream"),
         )
         return
 
