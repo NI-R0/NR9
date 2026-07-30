@@ -80,7 +80,7 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = 0.025
-_STAND_HEIGHT = 1.4  # slightly below fully-upright to discourage tiptoe stretching
+_STAND_HEIGHT = 1.2  # below fully-upright; allows forward lean when running
 _WALK_SPEED = 1
 _RUN_SPEED = 8
 _BALL_RADIUS = 0.2
@@ -100,7 +100,7 @@ _SUCCESS_THRESHOLD = 5
 # firmly.  A short grace period after reset prevents spurious terminations
 # from initial randomization.
 _TERMINATE_HEIGHT = 0.5       # Torso height (m) below which episode ends
-_TERMINATE_NON_FOOT = 2.0     # Sum of tanh(non-foot touch) that triggers end
+_TERMINATE_NON_FOOT = 0     # Sum of tanh(non-foot touch) that triggers end
 _TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
 
 # ---------------------------------------------------------------------------
@@ -418,16 +418,28 @@ class Physics(mujoco.Physics):
         return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
 
     def flat_foot_contact(self):
-        """Returns the fraction of foot-parts (heel/toe) that are in ground contact.
+        """Returns fraction of feet with BOTH heel and toe in ground contact.
 
-        Each of the 4 sensors (right_heel, right_toe, left_heel, left_toe)
-        contributes 0.25 when its tanh(touch) exceeds ``_FLAT_FOOT_TOUCH_THRESHOLD``.
-        A value of 1.0 means all four sensors are in contact (both feet flat).
-        A value of 0.5 means two sensors are in contact (e.g. one foot flat).
+        A foot counts as "flat" only when its heel AND toe sensor both
+        exceed ``_FLAT_FOOT_TOUCH_THRESHOLD``.
+
+        Returns:
+            1.0 = both feet flat, 0.5 = one foot flat, 0.0 = no flat foot.
+            Standing on tiptoes yields 0.0 because neither foot has both
+            heel and toe in contact.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
-        return float(np.mean(touches > _FLAT_FOOT_TOUCH_THRESHOLD))
+        # Sensor order: right_heel, right_toe, left_heel, left_toe
+        r_flat = float(
+            touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD
+            and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
+        )
+        l_flat = float(
+            touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD
+            and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
+        )
+        return (r_flat + l_flat) / 2.0
 
     def foot_contact_points(self):
         """Returns the xy positions of all foot contact points on the ground.
