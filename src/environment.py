@@ -50,11 +50,6 @@ class Environment:
             task = getattr(self.env, 'task', None)
             if task is not None and hasattr(task, 'should_terminate'):
                 if task.should_terminate(self.env.physics):
-                    # Early termination (agent fell): override reward with
-                    # a fixed large penalty so the agent learns that falling
-                    # is bad, instead of just ending early with whatever
-                    # reward it accumulated.
-                    reward = -0.5
                     done = True
 
         info = {}

@@ -184,6 +184,7 @@ _FEET_UNDER_MAX_OFFSET = (
 )
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
 _SUPPORT_MARGIN = 0.05            # Margin (m) beyond support polygon edge
+_ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatness reward
 
 # Alternation parameters (march + weight_shift)
 _MARCH_SWITCH_BONUS = 0.1  # Bonus for switching swing leg (small, just a nudge)
@@ -334,6 +335,10 @@ class Physics(mujoco.Physics):
             mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_hip_pitch")]
         self._qpos_l_hip_pitch = model.jnt_qposadr[
             mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_hip_pitch")]
+        self._qpos_r_ankle_roll = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_ankle_roll")]
+        self._qpos_l_ankle_roll = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_ankle_roll")]
 
         # Sensor addresses
         self._sensor_linvel = model.sensor_adr[
@@ -430,14 +435,37 @@ class Physics(mujoco.Physics):
         self._ensure_indices()
         return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
 
+    @staticmethod
+    def _flatness_curve(x: float) -> float:
+        """Shaped flatness curve: ~0 when far from flat, steep rise to 0.5,
+        full 1.0 only when completely flat.
+
+        ``x`` is a [0, 1] flatness measure (1 = perfectly flat).
+        Returns a value in [0, 1] with the shape:
+          - x ≈ 0   → ~0 (not flat, almost no reward)
+          - x ≈ 0.8 → ~0.2 (approaching flat, steep rise begins)
+          - x ≈ 0.95→ ~0.5 (nearly flat, capped at 0.5)
+          - x = 1.0 → 1.0 (completely flat, full reward)
+
+        Implemented as ``0.5 * x^4 + 0.5 * x^32``:
+        the x^4 term provides a moderate gradient, the x^32 term adds a
+        sharp bonus only when very close to perfectly flat.
+        """
+        x = max(0.0, min(1.0, x))
+        return float(0.5 * x**2)
+
     def flat_foot_contact(self):
         """Returns the flatness [0, 1] of the *best* foot touching the ground.
 
-        For each foot that has **any** contact (heel OR toe sensor above
-        ``_FLAT_FOOT_TOUCH_THRESHOLD``), the flatness is derived from the
-        foot's tilt angle via the zz-component of its rotation matrix
-        (``xmat``): ``cos(tilt)`` yields 1.0 when the foot sole is
-        parallel to the ground and 0.0 when it is vertical.
+        Combines two flatness measures via multiplication:
+        1. **Sole tilt** — cos(tilt) from the foot's rotation-matrix zz
+           component (1.0 = sole parallel to ground, 0.0 = vertical).
+        2. **Ankle-roll angle** — 1.0 when ankle_roll is at 0° (flat),
+           decaying to 0 at the joint's range limit (±30°).
+
+        Both are passed through :meth:`_flatness_curve` so the reward
+        stays near 0 unless the foot is close to flat, rises steeply to
+        0.5, and reaches 1.0 only when perfectly flat.
 
         ``max(right, left)`` is returned so that one fully-flat foot
         already gives the full standing reward — the agent is not
@@ -447,10 +475,29 @@ class Physics(mujoco.Physics):
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
         # Sensor order: right_heel, right_toe, left_heel, left_toe
+        if ((touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD) or (touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD)):
+            return 1
+
         r_touching = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD or touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
         l_touching = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD or touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
-        r_flat = float(max(0.0, self.data.xmat[self._bid_right_foot, 8])) if r_touching else 0.0
-        l_flat = float(max(0.0, self.data.xmat[self._bid_left_foot, 8])) if l_touching else 0.0
+
+        # Sole tilt flatness via xmat zz-component
+        r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8])) if r_touching else 0.0
+        l_tilt = float(max(0.0, self.data.xmat[self._bid_left_foot, 8])) if l_touching else 0.0
+
+        # Ankle-roll flatness: 1.0 at 0°, 0 at ±_ANKLE_ROLL_MAX
+        r_roll = 0.0
+        l_roll = 0.0
+        if r_touching:
+            r_roll_angle = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
+            r_roll = 1.0 - min(1.0, r_roll_angle / _ANKLE_ROLL_MAX)
+        if l_touching:
+            l_roll_angle = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
+            l_roll = 1.0 - min(1.0, l_roll_angle / _ANKLE_ROLL_MAX)
+
+        # Shape each measure, then multiply sole × ankle_roll
+        r_flat = self._flatness_curve(r_tilt) * self._flatness_curve(r_roll) if r_touching else 0.0
+        l_flat = self._flatness_curve(l_tilt) * self._flatness_curve(l_roll) if l_touching else 0.0
         return max(r_flat, l_flat)
 
     def foot_contact_points(self):
