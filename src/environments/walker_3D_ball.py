@@ -29,11 +29,10 @@ Single-phase reward with cascading smoothed gates:
     gate_approach ← march_reward * gate_march
     gate_full     ← approach_reward * gate_approach
 
-  Flat-foot and stability rewards are gated by gate_stand (they require
-  the agent to already have foot contact).  Stand-specific penalties
+  Flat-foot rewards are gated by gate_stand.  Stand-specific penalties
   (hip_align, leg_spread, feet_under) activate via ``gate_stand * (1 -
-  gate_march)``: they are off while the agent can't stand yet, on once
-  it stands, and fade out again when it starts marching.
+  gate_march)``: off while the agent can't stand yet, on once it stands,
+  and fade out again when it starts marching.
 
 Foot design:
   Each foot is a flat box geom with separate heel and toe touch sensors.
@@ -42,26 +41,26 @@ Foot design:
   determines the reward — ``cos(tilt)`` yields 1.0 for a flat sole and
   0.0 for a vertical foot.  ``max(right, left)`` means one flat foot
   suffices for the full standing reward, so the agent can later lift the
-  other foot for walking.  The ``stability`` reward fires when the COM
-  ground projection lies inside the support polygon (convex hull of foot
-  contact points), encouraging balanced postures.
+  other foot for walking.
 
 Early termination:
   The episode terminates immediately when the agent falls (torso too
   low or non-foot body parts touching the ground), after a short grace
   period.
 
-Most reward components are normalised to [0, 1] (rewards) or [-1, 0]
-(penalties).  The exception is the *kick* reward, which is in [-1, 1]
-so that a ball rolling *away* from the target actively lowers the
-reward.  Positive weights sum to 1.0 so a perfect step (with ball
-moving toward the target) yields reward = 1.0.  Penalty weights are on
-top of the 1.0 budget, so the realistic optimum (task fulfilled with
-some unavoidable control cost) lands slightly below 1.0.
+Reward normalisation: all positive rewards in [0, 1], penalties in [-1, 0].
+Kick reward is [0, 1] based on the angle between ball velocity and target
+direction — 0 when the ball moves away or sideways, 1 when it moves
+directly toward the target.
 
-Logged reward components are **raw (unweighted)** values in [0, 1] or
-[-1, 0] (kick in [-1, 1]), making it easy to inspect each sub-reward's
-quality directly.
+Positive weights sum to 1.0 so a perfect step yields reward = 1.0.
+Penalty weights are on top of the 1.0 budget, so the realistic optimum
+lands slightly below 1.0.
+
+Weight priority: kick and target (the actual task) are weighted highest,
+followed by locomotion skills in order of dependency (stand → march →
+approach).  This gives the agent clear signal that kicking the ball
+is the ultimate goal.
 
 Target curriculum: the target zone shrinks after enough successful hits
 during evaluation (success counter incremented externally via
@@ -95,7 +94,7 @@ _TARGET_SIZE_MAX = 1.0
 _TARGET_SIZE_MIN = 0.2
 _TARGET_SHRINK = 0.1
 _SUCCESS_THRESHOLD = 5
-_TARGET_HIT_BONUS = 100.0  # flat bonus added to reward when ball reaches target
+_TARGET_HIT_BONUS = 5.0  # flat bonus added to reward when ball reaches target
 
 # ---------------------------------------------------------------------------
 # Early-termination thresholds
@@ -111,9 +110,7 @@ _TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
 # ---------------------------------------------------------------------------
 # Reward design – cascading gates, single set of weights
 # ---------------------------------------------------------------------------
-# Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties),
-# **except** the kick reward which is in [-1, 1]: a ball moving toward the
-# target yields positive values, a ball moving away yields negative values.
+# Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties).
 #
 # **Positive weights** sum to exactly 1.0 → a perfect step (all rewards = 1,
 # all penalties = 0, ball moving toward target) yields reward = 1.0.
@@ -129,29 +126,28 @@ _TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
 #   gate_ws       ← mean(stand_gated_history)       [stand * gate_stand]
 #   gate_march    ← mean(ws_gated_history)          [ws * gate_ws]
 #   gate_approach ← mean(march_gated_history)       [march * gate_march]
-#   gate_full     ← mean(approach_gated_history)    [approach * gate_approach]
+#   gate_full     ← mean(approach_gated_history)    [approach * gate_full]
 #
 # Stand-specific penalties activate via gate_stand * (1 - gate_march):
 # off until the agent stands, on while standing, fade out when marching.
 # ---------------------------------------------------------------------------
 
-# Positive weights (sum = 1.0)
-_W_FEET = 0.10
-_W_FLAT_FOOT = 0.10       # reward for foot sole flatness (cos of tilt angle)
-_W_STABILITY = 0.10       # reward for COM projection inside support polygon
+# Positive weights (sum = 1.0) — kick and target weighted highest as they
+# are the actual task goal; locomotion rewards are stepping stones.
+_W_FEET = 0.08
+_W_FLAT_FOOT = 0.08       # foot sole flatness (cos of tilt angle)
 _W_STAND = 0.10
-_W_SYMMETRY = 0.10
 _W_WEIGHT_SHIFT = 0.10
 _W_MARCH = 0.10
-_W_APPROACH = 0.10
+_W_APPROACH = 0.12
 _W_GAIT = 0.10
-_W_KICK = 0.05
-_W_TARGET = 0.05
+_W_KICK = 0.17            # ball direction toward target — the main task
+_W_TARGET = 0.15          # ball in target zone
 
 # Check that positive weights sum to 1.0
 assert abs(sum([
-    _W_FEET, _W_FLAT_FOOT, _W_STABILITY, _W_STAND, _W_SYMMETRY,
-    _W_WEIGHT_SHIFT, _W_MARCH, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
+    _W_FEET, _W_FLAT_FOOT, _W_STAND, _W_WEIGHT_SHIFT,
+    _W_MARCH, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
 # Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
@@ -168,13 +164,6 @@ _GATE_SMOOTHING = 10
 _LEG_SPREAD_THRESHOLD = 0.2
 _HIP_YAW_MAX = np.radians(45)  # Max hip-yaw range for normalization
 _HIP_ROLL_MAX = np.radians(45)  # Max hip-roll deviation from neutral for normalization
-# Symmetry: joint indices whose sign must be flipped when comparing left vs
-# right, because the joint axes are NOT mirrored in the XML (e.g. hip_roll
-# uses axis="1 0 0" for both legs).  Indices refer to the 5-joint per-leg
-# block returned by Physics.joint_positions():
-#   0=hip_yaw, 1=hip_roll, 2=hip_pitch, 3=knee, 4=ankle_pitch, 5=ankle_roll
-_SYMMETRY_MIRROR_INDICES = (1, 5)  # hip_roll, ankle_roll: sign-flip for comparison
-_SYMMETRY_JOINT_MAX = np.radians(45)  # Normalization for symmetry reward
 _GAIT_MIN_VELOCITY = 0.3  # Min horizontal velocity (m/s) for gait reward to activate
 _SHIN_LENGTH = 0.25  # Shin (leg) capsule half-length in m; used as foot-clearance target
 _MARCH_KNEE_TARGET = np.radians(60)  # Target knee lift angle for marching
@@ -183,16 +172,7 @@ _FEET_UNDER_MAX_OFFSET = (
     0.5  # Max xy-distance (m) from feet-midpoint to torso for feet_under reward
 )
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
-_SUPPORT_MARGIN = 0.05            # Margin (m) beyond support polygon edge
 _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatness reward
-
-# Alternation parameters (march + weight_shift)
-_MARCH_SWITCH_BONUS = 0.1  # Bonus for switching swing leg (small, just a nudge)
-_MARCH_MIN_SAME = 15  # Min steps on same leg before a switch bonus is given
-_MARCH_MAX_SAME = 40  # Steps before same-leg reward starts decaying (~1s)
-_WEIGHT_SHIFT_SWITCH_BONUS = 0.1
-_WEIGHT_SHIFT_MIN_SAME = 15
-_WEIGHT_SHIFT_MAX_SAME = 40
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -801,10 +781,10 @@ class Walker3DBall(base.Task):
       gate_approach ← march_reward * gate_march
       gate_full     ← approach_reward * gate_approach
 
-    Flat-foot and stability rewards are gated by gate_stand.  Stand-
-    specific penalties (hip_align, leg_spread, feet_under) activate via
-    ``gate_stand * (1 - gate_march)``: they are off while the agent
-    can't stand yet, on once it stands, and fade out when it marches.
+    Flat-foot rewards are gated by gate_stand.  Stand-specific penalties
+    (hip_align, leg_spread, feet_under) activate via ``gate_stand * (1 -
+    gate_march)``: they are off while the agent can't stand yet, on once
+    it stands, and fade out when it starts marching.
 
     Target curriculum: ``register_success`` increments a counter.  After
     ``_SUCCESS_THRESHOLD`` consecutive successes the target zone shrinks
@@ -828,14 +808,6 @@ class Walker3DBall(base.Task):
         self._target_pos = None
         self._reward_components: dict[str, float] = {}
         self._prev_action: np.ndarray | None = None  # for action smoothness penalty
-        self._last_swing_leg: str | None = (
-            None  # 'right' or 'left' (for march alternation)
-        )
-        self._same_swing_count: int = 0  # consecutive steps with same swing leg
-        self._last_shift_side: str | None = (
-            None  # 'right' or 'left' (for weight-shift alternation)
-        )
-        self._same_shift_count: int = 0  # consecutive steps with same shift side
         # Gate history: rolling window of gated values for smoothing.
         # Each entry is the *gated* (i.e. gate × raw) value of the
         # corresponding component at that step.
@@ -900,10 +872,6 @@ class Walker3DBall(base.Task):
         physics.set_target_size(self._target_size)
         self._place_target(physics)
         self._prev_action = None  # reset action history
-        self._last_swing_leg = None
-        self._same_swing_count = 0
-        self._last_shift_side = None
-        self._same_shift_count = 0
         # Reset gate history at the start of each episode
         for key in self._gate_history:
             self._gate_history[key].clear()
@@ -981,7 +949,7 @@ class Walker3DBall(base.Task):
 
         ``_reward_components`` stores **raw (unweighted)** values so logged
         components directly show each sub-reward's quality in [0, 1] or
-        [-1, 0] (kick in [-1, 1]).
+        [-1, 0].
         """
         ctrl = physics.control()
 
@@ -999,18 +967,7 @@ class Walker3DBall(base.Task):
         feet_only = 1.0 - non_foot_contact
 
         # --- Flat-foot reward [0, 1]: foot sole flatness via tilt angle.
-        # 1.0 = foot sole parallel to ground, 0.0 = vertical.  Uses the
-        # best (flattest) foot that has ground contact; one flat foot
-        # suffices so the agent can lift the other for walking.
         flat_foot_reward = physics.flat_foot_contact()
-
-        # --- Stability reward [0, 1]: COM ground projection inside support polygon.
-        # 1.0 when COM is well inside the support polygon (distance = 0),
-        # decaying to 0 as the COM moves outside by _SUPPORT_MARGIN meters.
-        com_support_dist = physics.com_to_support_distance()
-        stability_reward = 1.0 - float(
-            np.clip(com_support_dist / _SUPPORT_MARGIN, 0.0, 1.0)
-        )
 
         # --- Feet reward [0, 1]: foot contact scaled by absence of non-foot contact ---
         feet_reward = feet_contact * feet_only
@@ -1046,20 +1003,6 @@ class Walker3DBall(base.Task):
             )
         )
 
-        # --- Symmetry reward [0, 1] ---
-        # hip_roll has the same axis ("1 0 0") for both legs, so a physically
-        # symmetric stance means right_hip_roll == -left_hip_roll.  We flip the
-        # sign of those joints before comparing so the reward matches the true
-        # symmetric pose.
-        joints = physics.joint_positions()
-        right_joints = joints[:6].copy()
-        left_joints = joints[6:]
-        right_joints[list(_SYMMETRY_MIRROR_INDICES)] *= -1.0
-        symmetry_err = float(
-            np.mean(np.abs(right_joints - left_joints) / _SYMMETRY_JOINT_MAX)
-        )
-        symmetry_reward = 1.0 - float(np.clip(symmetry_err, 0.0, 1.0))
-
         # --- Smoothness penalty [-1, 0] ---
         if self._prev_action is not None:
             action_diff = float(np.mean((ctrl - self._prev_action) ** 2) / 4.0)
@@ -1076,30 +1019,19 @@ class Walker3DBall(base.Task):
         # ======================================================================
         # Cascading gates (smoothed over last _GATE_SMOOTHING steps)
         # ======================================================================
-        # gate_stand: activated by feet reward
         gate_stand = self._gate_mean("feet")
-        # gate_ws: activated by stand * gate_stand
         gate_ws = self._gate_mean("stand")
-        # gate_march: activated by weight_shift * gate_ws
         gate_march = self._gate_mean("weight_shift")
-        # gate_approach: activated by march * gate_march
         gate_approach = self._gate_mean("march")
-        # gate_full: activated by approach * gate_approach
         gate_full = self._gate_mean("approach")
 
-        # Stand-specific penalties only activate once the agent is standing
-        # (gate_stand > 0) and fade out again when it starts marching
-        # (gate_march → 1).  This prevents punishing hip alignment, leg
-        # spread, or feet placement before the agent can stand at all.
+        # Stand-specific penalties activate while standing, fade when marching.
         stand_penalty_fade = gate_stand * (1.0 - gate_march)
 
         # ======================================================================
-        # Weight shift reward
+        # Weight shift reward (simplified: COM over one foot)
         # ======================================================================
         com_to_feet = physics.com_lateral_to_foot()
-        # Normalise by the *lateral* (y) foot separation, not the full xy
-        # distance, so that spreading the feet in x cannot trivialise the
-        # weight-shift reward.
         half_foot_dist = max(physics.feet_lateral_distance() / 2.0, 1e-6)
         shift_right = 1.0 - float(
             np.clip(np.abs(com_to_feet[0]) / half_foot_dist, 0.0, 1.0)
@@ -1107,37 +1039,13 @@ class Walker3DBall(base.Task):
         shift_left = 1.0 - float(
             np.clip(np.abs(com_to_feet[1]) / half_foot_dist, 0.0, 1.0)
         )
-
-        current_side = "right" if shift_right > shift_left else "left"
-        current_shift_value = max(shift_right, shift_left)
-
-        if self._last_shift_side is not None and current_side != self._last_shift_side:
-            if self._same_shift_count >= _WEIGHT_SHIFT_MIN_SAME:
-                switch_bonus = _WEIGHT_SHIFT_SWITCH_BONUS
-            else:
-                switch_bonus = 0.0
-            self._same_shift_count = 0
-        else:
-            switch_bonus = 0.0
-            self._same_shift_count += 1
-        self._last_shift_side = current_side
-
-        if self._same_shift_count > _WEIGHT_SHIFT_MAX_SAME:
-            ws_decay = max(
-                0.0, 1.0 - (self._same_shift_count - _WEIGHT_SHIFT_MAX_SAME) / 20.0
-            )
-        else:
-            ws_decay = 1.0
-
-        weight_shift_reward = float(
-            np.clip(current_shift_value * ws_decay + switch_bonus, 0.0, 1.0)
-        )
+        weight_shift_reward = float(np.clip(max(shift_right, shift_left), 0.0, 1.0))
         stillness = 1.0 - float(
             np.clip(physics.horizontal_velocity() / _GAIT_MIN_VELOCITY, 0.0, 1.0)
         )
 
         # ======================================================================
-        # March reward
+        # March reward (simplified: one leg lifts while other supports)
         # ======================================================================
         knee = physics.knee_angles()
         hip_pitch = physics.hip_pitch_angles()
@@ -1148,7 +1056,9 @@ class Walker3DBall(base.Task):
         right_hip_lift = float(
             np.clip(hip_pitch[0] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0)
         )
-        left_hip_lift = float(np.clip(hip_pitch[1] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0))
+        left_hip_lift = float(
+            np.clip(hip_pitch[1] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0)
+        )
 
         right_lift = (right_knee_lift + right_hip_lift) / 2.0
         left_lift = (left_knee_lift + left_hip_lift) / 2.0
@@ -1170,54 +1080,13 @@ class Walker3DBall(base.Task):
 
         right_as_swing = right_lift * (1.0 - touch_r) * touch_l
         left_as_swing = left_lift * (1.0 - touch_l) * touch_r
+        march_lift = float(max(right_as_swing, left_as_swing))
 
-        if right_as_swing > left_as_swing:
-            current_swing = "right"
-            march_lift = float(right_as_swing)
-        else:
-            current_swing = "left"
-            march_lift = float(left_as_swing)
-
-        if self._last_swing_leg is not None and current_swing != self._last_swing_leg:
-            if self._same_swing_count >= _MARCH_MIN_SAME:
-                switch_bonus = _MARCH_SWITCH_BONUS
-            else:
-                switch_bonus = 0.0
-            self._same_swing_count = 0
-        else:
-            switch_bonus = 0.0
-            self._same_swing_count += 1
-        self._last_swing_leg = current_swing
-
-        if self._same_swing_count > _MARCH_MAX_SAME:
-            march_decay = max(
-                0.0, 1.0 - (self._same_swing_count - _MARCH_MAX_SAME) / 20.0
-            )
-        else:
-            march_decay = 1.0
-
-        march_stillness = 1.0 - float(
-            np.clip(physics.horizontal_velocity() / _GAIT_MIN_VELOCITY, 0.0, 1.0)
-        )
-
-        march_reward = float(
-            np.clip(
-                (march_lift * march_decay + switch_bonus)
-                * single_support
-                * march_stillness,
-                0.0,
-                1.0,
-            )
-        )
+        march_reward = float(np.clip(march_lift * single_support, 0.0, 1.0))
 
         # ======================================================================
         # Approach + gait reward
         # ======================================================================
-        # Instead of approaching the ball directly, the agent approaches a
-        # point _APPROACH_OFFSET meters behind the ball on the side away
-        # from the target.  This positions the agent so that when it reaches
-        # the approach point, the ball is between it and the target — the
-        # ideal stance for kicking the ball toward the target.
         torso_xy = physics.torso_xy()
         ball_xy = physics.ball_xy()
         target_xy = physics.target_xy()
@@ -1227,7 +1096,7 @@ class Walker3DBall(base.Task):
             dir_ball_to_target = ball_to_target / ball_to_target_norm
         else:
             dir_ball_to_target = np.array([1.0, 0.0])
-        # Approach point: behind the ball, away from the target
+
         approach_point = ball_xy - dir_ball_to_target * _APPROACH_OFFSET
         dist_to_approach = np.linalg.norm(approach_point - torso_xy)
         approach = float(
@@ -1255,10 +1124,6 @@ class Walker3DBall(base.Task):
 
         h_vel = physics.horizontal_velocity()
         gait_gate = float(np.clip(h_vel / _GAIT_MIN_VELOCITY, 0.0, 1.0))
-        # Foot clearance measured relative to the support foot (the lower one)
-        # so that the reward reflects the actual *lift* of the swing foot,
-        # independent of the robot's absolute height.  The target lift is one
-        # shin length (_SHIN_LENGTH ≈ 0.25 m).
         support_foot_z = float(np.min(foot_z))
         swing_foot_lift = float(np.max(foot_z)) - support_foot_z
         foot_clearance = float(
@@ -1270,16 +1135,20 @@ class Walker3DBall(base.Task):
                 sigmoid="linear",
             )
         )
-        # Reuse the single_support signal computed for march.
         gait_reward = gait_gate * (foot_clearance + single_support) / 2.0
 
         # ======================================================================
         # Kick + target reward
         # ======================================================================
         ball_vel_xy = physics.ball_linear_velocity_xy()
-        # Reuse dir_ball_to_target computed above (unit vector ball→target)
-        ball_speed_toward = float(np.dot(ball_vel_xy, dir_ball_to_target))
-        kick_reward = float(np.tanh(ball_speed_toward / 5.0))  # [-1, 1]
+        ball_speed = float(np.linalg.norm(ball_vel_xy))
+        if ball_speed > 1e-6:
+            ball_vel_dir = ball_vel_xy / ball_speed
+            cos_angle = float(np.dot(ball_vel_dir, dir_ball_to_target))
+            # cos_angle > 0 = toward target, < 0 = away → clip to [0, 1]
+            kick_reward = float(max(0.0, cos_angle))
+        else:
+            kick_reward = 0.0
 
         target_size = physics.get_target_size()
         dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
@@ -1290,7 +1159,7 @@ class Walker3DBall(base.Task):
             self._respawn_after_hit(physics)
 
         # ======================================================================
-        # Compute gated values for this step (to be stored in gate history)
+        # Compute gated values for this step
         # ======================================================================
         feet_gated = feet_reward * flat_foot_reward
         stand_gated = stand_reward * gate_stand
@@ -1298,7 +1167,6 @@ class Walker3DBall(base.Task):
         march_gated = march_reward * gate_march
         approach_gated = approach_reward * gate_approach
 
-        # Update gate history for the next step
         self._gate_history["feet"].append(feet_gated)
         self._gate_history["stand"].append(stand_gated)
         self._gate_history["weight_shift"].append(ws_gated)
@@ -1306,15 +1174,13 @@ class Walker3DBall(base.Task):
         self._gate_history["approach"].append(approach_gated)
 
         # ======================================================================
-        # Final reward: all components, gated, single set of weights
+        # Final reward
         # ======================================================================
         reward = (
             # Positive rewards (sum of weights = 1.0)
             _W_FEET * feet_reward
             + _W_FLAT_FOOT * flat_foot_reward * gate_stand
-            + _W_STABILITY * stability_reward * gate_stand
             + _W_STAND * stand_gated
-            + _W_SYMMETRY * symmetry_reward * gate_stand
             + _W_WEIGHT_SHIFT * ws_gated
             + _W_MARCH * march_gated
             + _W_APPROACH * approach_gated
@@ -1329,21 +1195,14 @@ class Walker3DBall(base.Task):
             + _W_SMOOTHNESS * smoothness_penalty
         )
 
-        # Large flat bonus for hitting the target.  Added after the gated
-        # reward so it is not attenuated by any gate.  The agent loses
-        # proximity to the ball after respawn and must stand / approach
-        # again, so the bonus must be large enough to outweigh the
-        # temporary reward dip during the next approach cycle.
         if target_hit:
             reward += _TARGET_HIT_BONUS
 
-        # Log raw (unweighted) values for inspection
+        # Log gated values for inspection
         self._reward_components = {
             "feet": feet_reward,
             "flat_foot": flat_foot_reward * gate_stand,
-            "stability": stability_reward * gate_stand,
             "stand": stand_gated,
-            "symmetry": symmetry_reward * gate_stand,
             "weight_shift": ws_gated,
             "march": march_gated,
             "approach": approach_gated,
