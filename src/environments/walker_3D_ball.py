@@ -170,10 +170,16 @@ _FEET_UNDER_MAX_OFFSET = (
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
 _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatness reward
 
-# March alternation: reward knee-lift only when the swing leg switches.
-# Agent must alternate legs within _MARCH_MAX_SAME steps; reward decays after.
-_MARCH_MAX_SAME = 40  # Steps before same-leg reward starts decaying (~1s)
-_MARCH_MIN_SAME = 8   # Min steps on same leg before switch bonus activates (~0.2s)
+# March alternation: trapezoidal hold-time curve.
+# Steps on same swing leg:
+#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (learn to hold leg up)
+#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (plateau)
+#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (force switch)
+# This lets the agent walk slowly (short hold) or run (longer hold),
+# but punishes staying on one leg too long.
+_MARCH_RAMP_UP = 10         # Steps to ramp up to full reward (~0.25s)
+_MARCH_DECAY_START = 40     # Steps before reward starts decaying (~1s)
+_MARCH_DECAY_END = 60       # Steps where reward hits 0 (~1.5s)
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -1083,31 +1089,36 @@ class Walker3DBall(base.Task):
         left_as_swing = left_lift * (1.0 - touch_l) * touch_r
         march_lift = float(max(right_as_swing, left_as_swing))
 
-        # --- March alternation: track swing leg and reward switching ---
+        # --- March alternation: trapezoidal hold-time curve ---
         if right_as_swing > left_as_swing:
             current_swing_leg = "right"
         else:
             current_swing_leg = "left"
 
-        if self._last_swing_leg is None:
+        if self._last_swing_leg is None or current_swing_leg != self._last_swing_leg:
+            # First step or leg switched → reset counter
             self._same_swing_count = 0
-        elif current_swing_leg == self._last_swing_leg:
-            self._same_swing_count += 1
         else:
-            # Switch detected — bonus if the agent stayed long enough first
-            if self._same_swing_count >= _MARCH_MIN_SAME:
-                self._same_swing_count = 0
-            else:
-                self._same_swing_count = 0
+            self._same_swing_count += 1
         self._last_swing_leg = current_swing_leg
 
-        # Decay factor: starts at 1.0, fades to 0.0 after _MARCH_MAX_SAME steps
-        alternation_decay = float(
-            max(0.0, 1.0 - max(0, self._same_swing_count - _MARCH_MIN_SAME)
-                / max(1, _MARCH_MAX_SAME - _MARCH_MIN_SAME))
-        )
+        # Trapezoidal curve: ramp up → plateau → decay
+        count = self._same_swing_count
+        if count < _MARCH_RAMP_UP:
+            # Ramp-up phase: 0 → 1
+            alternation_factor = float(count / _MARCH_RAMP_UP)
+        elif count < _MARCH_DECAY_START:
+            # Plateau: full reward
+            alternation_factor = 1.0
+        elif count < _MARCH_DECAY_END:
+            # Decay phase: 1 → 0
+            alternation_factor = float(
+                max(0.0, (_MARCH_DECAY_END - count) / (_MARCH_DECAY_END - _MARCH_DECAY_START))
+            )
+        else:
+            alternation_factor = 0.0
 
-        march_reward = float(np.clip(march_lift * single_support * alternation_decay, 0.0, 1.0))
+        march_reward = float(np.clip(march_lift * single_support * alternation_factor, 0.0, 1.0))
 
         # ======================================================================
         # Approach + gait reward
