@@ -87,7 +87,6 @@ _WALK_SPEED = 1
 _RUN_SPEED = 8
 _BALL_RADIUS = 0.2
 _APPROACH_OFFSET = 0.3  # m behind ball (away from target) for approach point
-_BALL_START_POS = np.array([1.5, 0.0, 0.15])
 _TARGET_MIN_DIST = 2.0
 _TARGET_MAX_DIST = 5.0
 _TARGET_SIZE_MAX = 1.0
@@ -857,16 +856,20 @@ class Walker3DBall(base.Task):
         Shared between ``initialize_episode`` (full episode reset) and
         mid-episode respawn after a successful target hit.
         """
-        # Spawn upright, slightly elevated so feet start near the ground.
-        physics.named.data.qpos["root"] = [0.0, 0.0, 1.5, 1.0, 0.0, 0.0, 0.0]
+        # Spawn: walker at random xy, ball at random distance/angle from walker.
+        spawn_x = self.random.uniform(-1.5, 1.5)
+        spawn_y = self.random.uniform(-1.5, 1.5)
+        physics.named.data.qpos["root"] = [spawn_x, spawn_y, 1.8, 1.0, 0.0, 0.0, 0.0]
         physics.named.data.qvel["root"] = 0.0
-        # Small joint perturbation (±10°) instead of full-limit randomisation —
-        # the walker starts nearly upright and can recover on its own.
         joints = physics.joint_positions()
         joints += self.random.uniform(-0.175, 0.175, size=joints.shape)
         physics.data.qpos[physics._qpos_joints] = joints
 
-        physics.named.data.qpos["ball_joint"] = list(_BALL_START_POS) + [1, 0, 0, 0]
+        ball_dist = self.random.uniform(1.0, 2.5)
+        ball_angle = self.random.uniform(0, 2 * np.pi)
+        ball_x = spawn_x + ball_dist * np.cos(ball_angle)
+        ball_y = spawn_y + ball_dist * np.sin(ball_angle)
+        physics.named.data.qpos["ball_joint"] = [ball_x, ball_y, 0.15, 1, 0, 0, 0]
         physics.named.data.qvel["ball_joint"] = 0.0
 
         physics.set_target_size(self._target_size)
@@ -1198,27 +1201,22 @@ class Walker3DBall(base.Task):
         if target_hit:
             reward += _TARGET_HIT_BONUS
 
-        # Log gated values for inspection
+        # Log weighted values for inspection
         self._reward_components = {
-            "feet": feet_reward,
-            "flat_foot": flat_foot_reward * gate_stand,
-            "stand": stand_gated,
-            "weight_shift": ws_gated,
-            "march": march_gated,
-            "approach": approach_gated,
-            "gait": gait_reward * gate_approach,
-            "kick": kick_reward * gate_full,
-            "target": target_reward * gate_full,
-            "effort": effort_penalty,
-            "feet_under": (feet_under - 1.0) * stand_penalty_fade,
-            "hip_align": hip_align_penalty * stand_penalty_fade,
-            "leg_spread": leg_spread * stand_penalty_fade,
-            "smoothness": smoothness_penalty,
-            "gate_stand": gate_stand,
-            "gate_ws": gate_ws,
-            "gate_march": gate_march,
-            "gate_approach": gate_approach,
-            "gate_full": gate_full,
+            "feet": _W_FEET * feet_reward,
+            "flat_foot": _W_FLAT_FOOT * flat_foot_reward * gate_stand,
+            "stand": _W_STAND * stand_gated,
+            "weight_shift": _W_WEIGHT_SHIFT * ws_gated,
+            "march": _W_MARCH * march_gated,
+            "approach": _W_APPROACH * approach_gated,
+            "gait": _W_GAIT * gait_reward * gate_approach,
+            "kick": _W_KICK * kick_reward * gate_full,
+            "target": _W_TARGET * target_reward * gate_full,
+            "effort": _W_EFFORT * effort_penalty,
+            "feet_under": _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade,
+            "hip_align": _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade,
+            "leg_spread": _W_LEG_SPREAD * leg_spread * stand_penalty_fade,
+            "smoothness": _W_SMOOTHNESS * smoothness_penalty,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         self._prev_action = ctrl.copy()
