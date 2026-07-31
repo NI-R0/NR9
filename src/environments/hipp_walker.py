@@ -237,15 +237,15 @@ class Hipp_walker(base.Task):
      )
      touch_penalty = min(touch_penalty, 1.0)
      reward = height_reward + 0.5 * stand_bonus - 0.5 * touch_penalty
-     small_control = rewards.tolerance(physics.control(), margin=1,
-                                       value_at_margin=0,
-                                       sigmoid='quadratic').mean()
-     small_control = (4 + small_control) / 5
+
+     # Effort penalty: small additive term to discourage extreme controls
+     # (replaces the old multiplicative small_control which made the agent "lazy")
+     effort_penalty = -float(np.mean(physics.control() ** 2))
 
      if self._move_speed == 0:
          horizontal_velocity = physics.center_of_mass_velocity()[[0, 1]]
          dont_move = rewards.tolerance(horizontal_velocity, margin=2).mean()
-         reward = reward * small_control * dont_move
+         reward = reward * dont_move + 0.02 * effort_penalty
      else:
          com_velocity = np.linalg.norm(
              physics.center_of_mass_velocity()[[0, 1]])
@@ -254,6 +254,6 @@ class Hipp_walker(base.Task):
                                   margin=self._move_speed, value_at_margin=0,
                                   sigmoid='linear')
          move = (5 * move + 1) / 6
-         reward = reward * small_control * move
+         reward = reward * move + 0.02 * effort_penalty
 
      return reward

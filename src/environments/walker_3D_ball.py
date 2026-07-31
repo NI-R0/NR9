@@ -74,7 +74,6 @@ from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
 from dm_control.suite import common
-from dm_control.suite.utils import randomizers
 from dm_control.utils import containers
 from dm_control.utils import rewards
 import numpy as np
@@ -82,6 +81,7 @@ import numpy as np
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = 0.025
+_GATE_SMOOTHING = 10   # Rolling window size for gate cascade smoothing
 _STAND_HEIGHT = 1.2  # below fully-upright; allows forward lean when running
 _WALK_SPEED = 1
 _RUN_SPEED = 8
@@ -149,15 +149,12 @@ assert abs(sum([
     _W_MARCH, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
-# Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
-_W_EFFORT = 0.03
+# Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.03)
+# Effort kept very low so the agent is not discouraged from lifting legs.
+_W_EFFORT = 0.01
 _W_FEET_UNDER = 0.03      # fades via (1 - gate_march)
 _W_HIP_ALIGN = 0.03       # fades via (1 - gate_march)
 _W_LEG_SPREAD = 0.02      # fades via (1 - gate_march)
-_W_SMOOTHNESS = 0.02      # always active
-
-# Gate smoothing window (steps)
-_GATE_SMOOTHING = 10
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -172,6 +169,11 @@ _FEET_UNDER_MAX_OFFSET = (
 )
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
 _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatness reward
+
+# March alternation: reward knee-lift only when the swing leg switches.
+# Agent must alternate legs within _MARCH_MAX_SAME steps; reward decays after.
+_MARCH_MAX_SAME = 40  # Steps before same-leg reward starts decaying (~1s)
+_MARCH_MIN_SAME = 8   # Min steps on same leg before switch bonus activates (~0.2s)
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -806,7 +808,8 @@ class Walker3DBall(base.Task):
         self._consecutive_successes = 0
         self._target_pos = None
         self._reward_components: dict[str, float] = {}
-        self._prev_action: np.ndarray | None = None  # for action smoothness penalty
+        self._last_swing_leg: str | None = None  # 'right' or 'left' (for march alternation)
+        self._same_swing_count: int = 0  # consecutive steps with same swing leg
         # Gate history: rolling window of gated values for smoothing.
         # Each entry is the *gated* (i.e. gate × raw) value of the
         # corresponding component at that step.
@@ -880,6 +883,8 @@ class Walker3DBall(base.Task):
             self._gate_history[key].clear()
 
         self._step_count = 0
+        self._last_swing_leg = None
+        self._same_swing_count = 0
 
     def _place_target(self, physics):
         """Randomly places the target at a random angle and distance."""
@@ -1006,13 +1011,6 @@ class Walker3DBall(base.Task):
             )
         )
 
-        # --- Smoothness penalty [-1, 0] ---
-        if self._prev_action is not None:
-            action_diff = float(np.mean((ctrl - self._prev_action) ** 2) / 4.0)
-        else:
-            action_diff = 0.0
-        smoothness_penalty = -float(np.clip(action_diff, 0.0, 1.0))
-
         # --- Feet under torso [0, 1] ---
         feet_offset = physics.feet_xy_offset()
         feet_under = 1.0 - float(
@@ -1085,7 +1083,31 @@ class Walker3DBall(base.Task):
         left_as_swing = left_lift * (1.0 - touch_l) * touch_r
         march_lift = float(max(right_as_swing, left_as_swing))
 
-        march_reward = float(np.clip(march_lift * single_support, 0.0, 1.0))
+        # --- March alternation: track swing leg and reward switching ---
+        if right_as_swing > left_as_swing:
+            current_swing_leg = "right"
+        else:
+            current_swing_leg = "left"
+
+        if self._last_swing_leg is None:
+            self._same_swing_count = 0
+        elif current_swing_leg == self._last_swing_leg:
+            self._same_swing_count += 1
+        else:
+            # Switch detected — bonus if the agent stayed long enough first
+            if self._same_swing_count >= _MARCH_MIN_SAME:
+                self._same_swing_count = 0
+            else:
+                self._same_swing_count = 0
+        self._last_swing_leg = current_swing_leg
+
+        # Decay factor: starts at 1.0, fades to 0.0 after _MARCH_MAX_SAME steps
+        alternation_decay = float(
+            max(0.0, 1.0 - max(0, self._same_swing_count - _MARCH_MIN_SAME)
+                / max(1, _MARCH_MAX_SAME - _MARCH_MIN_SAME))
+        )
+
+        march_reward = float(np.clip(march_lift * single_support * alternation_decay, 0.0, 1.0))
 
         # ======================================================================
         # Approach + gait reward
@@ -1195,7 +1217,6 @@ class Walker3DBall(base.Task):
             + _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade
             + _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade
             + _W_LEG_SPREAD * leg_spread * stand_penalty_fade
-            + _W_SMOOTHNESS * smoothness_penalty
         )
 
         if target_hit:
@@ -1216,7 +1237,6 @@ class Walker3DBall(base.Task):
             "feet_under": _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade,
             "hip_align": _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade,
             "leg_spread": _W_LEG_SPREAD * leg_spread * stand_penalty_fade,
-            "smoothness": _W_SMOOTHNESS * smoothness_penalty,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         self._prev_action = ctrl.copy()
