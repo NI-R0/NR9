@@ -155,6 +155,7 @@ _W_EFFORT = 0.01
 _W_FEET_UNDER = 0.03      # fades via (1 - gate_march)
 _W_HIP_ALIGN = 0.03       # fades via (1 - gate_march)
 _W_LEG_SPREAD = 0.02      # fades via (1 - gate_march)
+_W_SELF_COLLISION = 0.05  # penalizes interpenetration of non-adjacent body parts
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -285,6 +286,21 @@ class Physics(mujoco.Physics):
         self._bid_right_foot = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "right_foot")
         self._bid_left_foot = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "left_foot")
         self._bid_target = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "target")
+        self._bid_ball = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "ball")
+        # Additional body IDs for self-collision check
+        self._bid_right_thigh = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "right_thigh")
+        self._bid_left_thigh = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "left_thigh")
+        self._bid_right_leg = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "right_leg")
+        self._bid_left_leg = mujoco.mj_name2id(model, mjt.mjOBJ_BODY, "left_leg")
+        # Adjacent body pairs (directly connected by joints — exempt from collision penalty)
+        self._adjacent_pairs = frozenset([
+            frozenset((self._bid_torso, self._bid_right_thigh)),
+            frozenset((self._bid_torso, self._bid_left_thigh)),
+            frozenset((self._bid_right_thigh, self._bid_right_leg)),
+            frozenset((self._bid_left_thigh, self._bid_left_leg)),
+            frozenset((self._bid_right_leg, self._bid_right_foot)),
+            frozenset((self._bid_left_leg, self._bid_left_foot)),
+        ])
 
         # Joint qpos / qvel addresses
         joint_names = [
@@ -771,6 +787,54 @@ class Physics(mujoco.Physics):
         left_foot_com = float(np.linalg.norm(com_xy - left_foot_xy))
         return float((right_foot_com + left_foot_com) / 2)
 
+    def self_collision_penalty(self):
+        """Returns the total self-collision penalty [-1, 0].
+
+        Iterates over all active MuJoCo contacts.  Contacts between
+        body-pairs that are **directly connected by a joint** (adjacent
+        in the kinematic tree) are ignored — they are physically allowed
+        to overlap.  All other interpenetrations are penalised by their
+        contact depth (``contact.dist`` is negative when bodies overlap).
+
+        Returns ``-min(1.0, total_penetration / depth_scale)`` so the
+        output is in [-1, 0].  Zero means no self-collision.
+        """
+        self._ensure_indices()
+        data = self.data
+        model = self.model.ptr
+        depth_scale = 0.05  # 5cm of total penetration = fully saturated penalty
+
+        total_depth = 0.0
+        for i in range(int(data.ncon)):
+            c = data.contact[i]
+            # Find the body that owns each geom of this contact
+            geom1_body = model.geom_bodyid[int(c.geom1)]
+            geom2_body = model.geom_bodyid[int(c.geom2)]
+
+            # Skip if bodies are the same (self-contact within one body)
+            if geom1_body == geom2_body:
+                continue
+
+            # Skip adjacent pairs (parent-child in kinematic tree)
+            pair = frozenset((geom1_body, geom2_body))
+            if pair in self._adjacent_pairs:
+                continue
+
+            # Skip contacts involving the ball, floor, target, or worldbody
+            if geom1_body == self._bid_ball or geom2_body == self._bid_ball:
+                continue
+            if geom1_body == self._bid_target or geom2_body == self._bid_target:
+                continue
+            # body 0 = worldbody (floor etc.)
+            if geom1_body == 0 or geom2_body == 0:
+                continue
+
+            # dist < 0 means interpenetration; deeper = more negative
+            if c.dist < 0:
+                total_depth += abs(c.dist)
+
+        return float(-min(1.0, total_depth / depth_scale))
+
 
 class Walker3DBall(base.Task):
     """3D walker with cascading-gate reward and target curriculum.
@@ -988,6 +1052,9 @@ class Walker3DBall(base.Task):
 
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
         effort_penalty = -float(np.mean(ctrl**2))
+
+        # --- Self-collision penalty [-1, 0]: interpenetration of non-adjacent bodies ---
+        self_collision = physics.self_collision_penalty()
 
         # --- Standing [0, 1]: height + upright orientation ---
         standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
@@ -1225,6 +1292,7 @@ class Walker3DBall(base.Task):
             + _W_TARGET * target_reward * gate_full
             # Penalties (on top, small weights)
             + _W_EFFORT * effort_penalty
+            + _W_SELF_COLLISION * self_collision
             + _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade
             + _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade
             + _W_LEG_SPREAD * leg_spread * stand_penalty_fade
@@ -1245,6 +1313,7 @@ class Walker3DBall(base.Task):
             "kick": _W_KICK * kick_reward * gate_full,
             "target": _W_TARGET * target_reward * gate_full,
             "effort": _W_EFFORT * effort_penalty,
+            "self_collision": _W_SELF_COLLISION * self_collision,
             "feet_under": _W_FEET_UNDER * (feet_under - 1.0) * stand_penalty_fade,
             "hip_align": _W_HIP_ALIGN * hip_align_penalty * stand_penalty_fade,
             "leg_spread": _W_LEG_SPREAD * leg_spread * stand_penalty_fade,
