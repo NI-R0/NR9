@@ -105,7 +105,7 @@ _TARGET_HIT_BONUS = 5.0  # flat bonus added to reward when ball reaches target
 # from initial randomization.
 _TERMINATE_HEIGHT = 0.5       # Torso height (m) below which episode ends
 _TERMINATE_NON_FOOT = 0     # Sum of tanh(non-foot touch) that triggers end
-_TERMINATE_GRACE_STEPS = 5    # Steps after reset before termination is active
+_TERMINATE_GRACE_STEPS = 10  # Steps after reset before termination is active (0.25s)
 
 # ---------------------------------------------------------------------------
 # Reward design – cascading gates, single set of weights
@@ -857,14 +857,14 @@ class Walker3DBall(base.Task):
         Shared between ``initialize_episode`` (full episode reset) and
         mid-episode respawn after a successful target hit.
         """
-        physics.named.data.qpos["root"] = [0.0, 0.0, 1.3, 1.0, 0.0, 0.0, 0.0]
+        # Spawn upright, slightly elevated so feet start near the ground.
+        physics.named.data.qpos["root"] = [0.0, 0.0, 1.5, 1.0, 0.0, 0.0, 0.0]
         physics.named.data.qvel["root"] = 0.0
-        randomizers.randomize_limited_and_rotational_joints(physics, self.random)
-        # Restore upright root orientation – randomize_limited_and_rotational_joints
-        # also randomizes the free-joint quaternion, overwriting the upright pose.
-        root_qpos = physics.named.data.qpos["root"].copy()
-        root_qpos[3:] = [1.0, 0.0, 0.0, 0.0]
-        physics.named.data.qpos["root"] = root_qpos
+        # Small joint perturbation (±10°) instead of full-limit randomisation —
+        # the walker starts nearly upright and can recover on its own.
+        joints = physics.joint_positions()
+        joints += self.random.uniform(-0.175, 0.175, size=joints.shape)
+        physics.data.qpos[physics._qpos_joints] = joints
 
         physics.named.data.qpos["ball_joint"] = list(_BALL_START_POS) + [1, 0, 0, 0]
         physics.named.data.qvel["ball_joint"] = 0.0
