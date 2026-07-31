@@ -878,7 +878,7 @@ class Walker3DBall(base.Task):
         ball_angle = self.random.uniform(0, 2 * np.pi)
         ball_x = spawn_x + ball_dist * np.cos(ball_angle)
         ball_y = spawn_y + ball_dist * np.sin(ball_angle)
-        physics.named.data.qpos["ball_joint"] = [ball_x, ball_y, 0.15, 1, 0, 0, 0]
+        physics.named.data.qpos["ball_joint"] = [ball_x, ball_y, 0.3, 1, 0, 0, 0]
         physics.named.data.qvel["ball_joint"] = 0.0
 
         physics.set_target_size(self._target_size)

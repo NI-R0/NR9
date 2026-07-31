@@ -11,7 +11,7 @@
 
   <default>
     <joint damping=".1" armature="0.01" limited="true" solimplimit="0 .99 .01"/>
-    <geom contype="1" conaffinity="1" friction=".7 .1 .1"/>
+    <geom contype="1" conaffinity="0" friction=".7 .1 .1"/>
     <motor ctrlrange="-1 1" ctrllimited="true"/>
     <site size="0.01"/>
     <default class="walker">
@@ -60,7 +60,7 @@
           <joint name="left_knee" pos="0 0 0.25" axis="0 -1 0" range="-150 0"/>
           <geom name="left_leg" size="0.04 0.25"/>
           <site name="left_leg_touch" class="touch" pos="0 0 -0.12" size="0.045 0.25"/>
-          <body name="left_foot" pos="0.06 0 -0.25">
+          <body name="left_foot" pos="-0.06 0 -0.25">
             <joint name="left_ankle_pitch" pos="-0.06 0 0" axis="0 -1 0" range="-45 45"/>
             <joint name="left_ankle_roll" pos="-0.06 0 0" axis="1 0 0" range="-30 30"/>
             <geom name="left_foot" type="box" pos="0.05 0 -0.035" size="0.1 0.04 0.015" friction="1.0 0.1 0.1"/>
@@ -72,7 +72,7 @@
     </body>
 
     <!-- Ball to kick (free-floating) -->
-    <body name="ball" pos="1.5 0 0.15">
+    <body name="ball" pos="1.5 0 0.3">
       <freejoint name="ball_joint"/>
       <geom name="ball" type="sphere" size="0.2" rgba="0.8 0.2 0.2 1" mass="0.01"
             contype="1" conaffinity="1"/>
