@@ -16,9 +16,11 @@ def _nvidia_gpu_available() -> bool:
     if not any(os.path.exists(f"/dev/nvidia{i}") for i in range(4)):
         return False
     try:
-        return subprocess.run(
-            ["nvidia-smi"], capture_output=True, timeout=5
-        ).returncode == 0
+        return (
+            subprocess.run(
+                ["nvidia-smi"], capture_output=True, timeout=5
+            ).returncode == 0
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
