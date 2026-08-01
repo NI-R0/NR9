@@ -161,7 +161,8 @@ class ParallelVectorEnv:
         self._terminal_obs_buf = np.ndarray(
             shm_specs["terminal_obs"][1],
             dtype=shm_specs["terminal_obs"][2],
-            buffer=self._shm_segments["terminal_obs"].buf)
+            buffer=self._shm_segments["terminal_obs"].buf
+        )
 
         for i in range(num_envs):
             parent_remote, child_remote = ctx.Pipe()

@@ -321,7 +321,6 @@ class MPOLearner:
             key, key_critic = jax.random.split(state.random_key, 2)
 
             # --- Critic update (uses target networks for bootstrap) ---
-
             def critic_loss_fn(p):
                 return self._critic_loss(
                     p,
