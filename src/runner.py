@@ -175,3 +175,64 @@ def run_vectorized_episode(
         )
 
     return finished_stats, avg_metrics
+
+
+def run_episode_with_respawn(
+    env: Environment,
+    agent: MPOAgent,
+    args: dict,
+    visualize: bool = False,
+):
+    """Run a test episode with the same termination/respawn logic as training.
+    Unlike ``run_episode``, which stops at the first termination, this
+    function keeps stepping until ``max_steps`` is reached.  When the env
+    terminates (done=True) it is reset and the episode continues —
+    mirroring the auto-reset behaviour of ``run_vectorized_episode``
+    during training.
+    All completed sub-episodes are tracked individually so you can see
+    how many terminations/respawns occur and what reward/length each
+    sub-episode achieves.
+    Returns ``(all_rewards, all_lengths, frames)``.
+    """
+    max_steps = args["steps"]
+    state = env.reset()
+    ep_reward = 0.0
+    ep_length = 0
+    all_rewards: list[float] = []
+    all_lengths: list[int] = []
+    frames = [] if visualize else None
+
+    for step in range(max_steps):
+        if visualize:
+            frame = env.render()
+            frames.append(frame)
+
+        action = agent.select_action(state, explore=False)
+        next_state, reward, done, info = env.step(action)
+
+        ep_reward += reward
+        ep_length += 1
+
+        if done:
+            all_rewards.append(ep_reward)
+            all_lengths.append(ep_length)
+            logger.info(
+                f"  Sub-episode terminated at step {step + 1}/{max_steps} | "
+                f"Reward: {ep_reward:.2f} | Length: {ep_length} -> respawning"
+            )
+            ep_reward = 0.0
+            ep_length = 0
+            next_state = env.reset()
+
+        state = next_state
+
+    # Collect any in-flight (not-yet-terminated) sub-episode.
+    if ep_length > 0:
+        all_rewards.append(ep_reward)
+        all_lengths.append(ep_length)
+        logger.info(
+            f"  Final sub-episode (no termination) | "
+            f"Reward: {ep_reward:.2f} | Length: {ep_length}"
+        )
+
+    return all_rewards, all_lengths, frames
