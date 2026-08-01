@@ -10,35 +10,6 @@ from src.agent import MPOAgent
 from src.networks import ActorNetwork, CriticNetwork
 from src.vector_env import ParallelVectorEnv
 from src.runner import run_episode, run_vectorized_episode
-from src.environments.walker_3D_ball import PHASE_STAND, PHASE_APPROACH, PHASE_FULL
-
-
-def _check_phase_advancement(current_phase: int, mean_eval_reward: float,
-                             phase1_threshold: float, phase2_threshold: float) -> int:
-    """Check if the curriculum phase should advance based on eval reward.
-
-    Returns the new phase (same as current if no advancement).
-    """
-    if current_phase == PHASE_STAND and mean_eval_reward >= phase1_threshold:
-        logger.info(
-            f"Curriculum: advancing from STAND to APPROACH "
-            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase1_threshold:.2f})"
-        )
-        return PHASE_APPROACH
-    elif current_phase == PHASE_APPROACH and mean_eval_reward >= phase2_threshold:
-        logger.info(
-            f"Curriculum: advancing from APPROACH to FULL "
-            f"(eval reward {mean_eval_reward:.2f} >= threshold {phase2_threshold:.2f})"
-        )
-        return PHASE_FULL
-    return current_phase
-
-
-def _propagate_phase(phase: int, train_env, eval_env):
-    """Send phase update to the train environment and the eval environment."""
-    train_env.set_phase(phase)
-    eval_env.set_phase(phase)
-    logger.info(f"Curriculum phase set to {phase} for all environments.")
 
 
 def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
@@ -48,6 +19,9 @@ def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
     num_eval = args["num_eval_episodes"]
 
     if eval_venv is not None:
+        assert eval_venv.num_envs == num_eval, (
+            f"eval_venv has {eval_venv.num_envs} envs, expected {num_eval}"
+        )
         states = eval_venv.reset()
         ep_rewards_arr = np.zeros(eval_venv.num_envs, dtype=np.float32)
         finished = [False] * eval_venv.num_envs
@@ -96,7 +70,6 @@ def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
 def train(args: dict, stats: StatsCollector):
     num_envs = args.get("num_envs", 1)
     use_vectorized = num_envs > 1
-    is_resume = args.get("resume") is not None and os.path.exists(args.get("resume", ""))
 
     if use_vectorized:
         venv = ParallelVectorEnv(
@@ -113,9 +86,8 @@ def train(args: dict, stats: StatsCollector):
         state_dim = env.state_dim
         action_dim = env.action_dim
 
-    eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
-
     num_eval = args["num_eval_episodes"]
+    eval_env = None
     eval_venv = None
     if use_vectorized and num_eval > 1:
         eval_venv = ParallelVectorEnv(
@@ -125,6 +97,8 @@ def train(args: dict, stats: StatsCollector):
             num_envs=num_eval,
             seed=args.get("seed", 42) + 10000,
         )
+    else:
+        eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
     actor_net = ActorNetwork(action_dim)
     critic_net = CriticNetwork()
@@ -173,20 +147,6 @@ def train(args: dict, stats: StatsCollector):
 
     logger.info("Setup complete.")
 
-    # Curriculum phase initialization
-    use_curriculum = args.get("curriculum", False)
-    if use_curriculum:
-        current_phase = PHASE_STAND
-        phase1_threshold = args.get("phase1_threshold", 5.0)
-        phase2_threshold = args.get("phase2_threshold", 15.0)
-        logger.info(f"Curriculum enabled: starting at phase {current_phase} "
-                    f"(thresholds: phase1={phase1_threshold}, phase2={phase2_threshold})")
-        _propagate_phase(current_phase, venv if use_vectorized else env, eval_env)
-    else:
-        current_phase = PHASE_FULL
-        phase1_threshold = 0.0
-        phase2_threshold = 0.0
-
     duration_min = args.get("duration")
     use_duration = duration_min is not None
     max_episodes = args["episodes"]
@@ -204,16 +164,6 @@ def train(args: dict, stats: StatsCollector):
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
-    if not is_resume:
-        dummy_stats = {
-            "Episode_Reward": 0,
-            "Episode_Length": args["steps"],
-            "Buffer_Size": len(buffer),
-            "Episode_Loss": np.nan,
-        }
-        stats.log_stats_to_tb(0, dummy_stats)
-
-    # Log hyperparameters to TensorBoard HParams tab (once, at start)
     stats.log_hparams(args)
 
     profile = args.get("profile", False)
@@ -268,14 +218,7 @@ def train(args: dict, stats: StatsCollector):
             stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
             if episode % args["eval_frequency"] == 0:
-                mean_eval_reward = _run_eval(episode, eval_env, eval_venv, agent, args, stats)
-                if use_curriculum:
-                    new_phase = _check_phase_advancement(
-                        current_phase, mean_eval_reward,
-                        phase1_threshold, phase2_threshold)
-                    if new_phase != current_phase:
-                        current_phase = new_phase
-                        _propagate_phase(current_phase, venv if use_vectorized else env, eval_env)
+                _run_eval(episode, eval_env, eval_venv, agent, args, stats)
 
             if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
                 logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
