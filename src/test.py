@@ -7,10 +7,10 @@ from dm_control import viewer
 from src.collector import StatsCollector
 from src.environment import Environment
 from src.learner import MPOLearner
-from src.agent import SoccerAgent
+from src.agent import MPOAgent
 from src.buffer import NStepTransitionBuffer
 from src.networks import ActorNetwork, CriticNetwork
-from src.train import run_episode
+from src.runner import run_episode
 
 
 def save_video(frames: list, path: str, fps: int = 30):
@@ -28,7 +28,7 @@ def save_video(frames: list, path: str, fps: int = 30):
             return None
 
 
-def run_live(env: Environment, agent: SoccerAgent):
+def run_live(env: Environment, agent: MPOAgent):
     """Launch the interactive dm_control viewer with the trained agent.
 
     The viewer calls the policy function on each timestep. We flatten the
@@ -67,7 +67,7 @@ def test(args: dict, stats: StatsCollector):
         gamma=args.get("gamma", 0.99),
     )
 
-    agent = SoccerAgent(
+    agent = MPOAgent(
         observation_shape=env.state_dim,
         action_shape=env.action_dim,
         actor_net=actor_net,
@@ -94,7 +94,7 @@ def test(args: dict, stats: StatsCollector):
     frames = [] if visualize else None
     for episode in range(1, args["num_eval_episodes"] + 1):
         ep_reward, ep_length, _, ep_frames = run_episode(
-            env, agent, args, explore=False, visualize=visualize
+            env, agent, explore=False, visualize=visualize
         )
         episode_rewards.append(ep_reward)
         logger.info(

@@ -4,6 +4,18 @@ import jax.numpy as jnp
 import distrax
 
 
+class MLP(nn.Module):
+    """Shared MLP trunk: N hidden layers of the same width, ELU activations."""
+    hidden_sizes: tuple[int, ...] = (400, 400, 400)
+
+    @nn.compact
+    def __call__(self, x: jax.Array) -> jax.Array:
+        for size in self.hidden_sizes:
+            x = nn.Dense(features=size)(x)
+            x = nn.elu(x)
+        return x
+
+
 class ActorNetwork(nn.Module):
     """Actor network with diagonal Gaussian output (Acme-style).
 
@@ -17,31 +29,16 @@ class ActorNetwork(nn.Module):
     @nn.compact
     def __call__(self, obs: jax.Array) -> distrax.MultivariateNormalDiag:
         dim = self.action_dim[0]
-
-        x = nn.Dense(features=400)(obs)
-        x = nn.elu(x)
-        x = nn.Dense(features=400)(x)
-        x = nn.elu(x)
-        x = nn.Dense(features=400)(x)
-        x = nn.elu(x)
-
+        x = MLP()(obs)
         mu = nn.Dense(features=dim)(x)
 
-        initial_log_std = jnp.log(
-            jnp.expm1(self.init_scale)
-        )
-
+        initial_log_std = jnp.log(jnp.expm1(self.init_scale))
         log_std = nn.Dense(
             features=dim,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.constant(initial_log_std),
         )(x)
-        
-        scale = jnp.clip(
-            jax.nn.softplus(log_std),
-            1e-4,
-            1.0
-        )
+        scale = jnp.clip(jax.nn.softplus(log_std), 1e-4, 1.0)
 
         return distrax.MultivariateNormalDiag(loc=mu, scale_diag=scale)
 
@@ -49,15 +46,5 @@ class ActorNetwork(nn.Module):
 class CriticNetwork(nn.Module):
     @nn.compact
     def __call__(self, obs: jax.Array, action: jax.Array) -> jax.Array:
-        inputs = jnp.concatenate([obs, action], axis=-1)
-
-        x = nn.Dense(features=400)(inputs)
-        x = nn.elu(x)
-        x = nn.Dense(features=400)(x)
-        x = nn.elu(x)
-        x = nn.Dense(features=400)(x)
-        x = nn.elu(x)
-
-        q_value = nn.Dense(features=1)(x)
-
-        return jnp.squeeze(q_value, axis=-1)
+        x = MLP()(jnp.concatenate([obs, action], axis=-1))
+        return jnp.squeeze(nn.Dense(features=1)(x), axis=-1)
