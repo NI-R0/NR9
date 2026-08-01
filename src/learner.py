@@ -21,12 +21,32 @@ class TrainingState(typing.NamedTuple):
 
 
 def _clip_log_dual_params(dual_params: dict) -> dict:
-    """Clip dual parameters in log-space to ``max(-18, log_x)`` (Acme)."""
+    """Clip dual parameters in log-space to stay within a reasonable range.
+    Prevents explosion (too high) and collapse (too low).
+    """
     return {
-        "log_eta": jnp.maximum(dual_params["log_eta"], -18.0),
-        "log_alpha_mean": jnp.maximum(dual_params["log_alpha_mean"], -18.0),
-        "log_alpha_std": jnp.maximum(dual_params["log_alpha_std"], -18.0),
+        "log_eta": jnp.clip(dual_params["log_eta"], -18.0, 10.0),
+        "log_alpha_mean": jnp.clip(dual_params["log_alpha_mean"], -18.0, 10.0),
+        "log_alpha_std": jnp.clip(dual_params["log_alpha_std"], -18.0, 10.0),
     }
+
+
+def _tanh_log_prob_correction(pre_tanh_actions: jax.Array) -> jax.Array:
+    """Log-absolute-determinant of the tanh Jacobian (summed over action dims).
+
+    For ``a = tanh(x)`` the change-of-variables term is::
+
+        log|d a / d x| = sum_i log(1 - tanh(x_i)^2)
+
+    A numerically stable form is used::
+
+        log(1 - tanh(x)^2) = 2 * (log(2) - x - softplus(-2*x))
+
+    Returns shape ``(batch, K)`` — the correction summed over the action
+    dimension so it can be subtracted from ``log_prob`` directly.
+    """
+    return 2.0 * (jnp.log(2.0) - pre_tanh_actions
+                  - jax.nn.softplus(-2.0 * pre_tanh_actions)).sum(axis=-1)
 
 
 def _kl_diag_per_dim(dist_old: distrax.MultivariateNormalDiag,
@@ -195,6 +215,9 @@ class MPOLearner:
         )
 
         log_probs = dist_expanded.log_prob(sampled_actions)
+        # Apply tanh change-of-variables correction: the policy is evaluated
+        # on pre-tanh samples but actions are squashed via tanh in the env.
+        log_probs = log_probs - _tanh_log_prob_correction(sampled_actions)
         loss_policy = -jnp.mean(jnp.sum(weights * log_probs, axis=1))
 
         dist_fixed_stddev = distrax.MultivariateNormalDiag(
@@ -251,16 +274,53 @@ class MPOLearner:
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, state: TrainingState, batch):
-        """Performs one full learner step with sgd_steps_per_learner_step gradient updates."""
-        # MPO requires the distribution to be fixed over all sgd sub-steps
-        dist_old = self.actor_net.apply(state.params_actor, batch["state"])
+        """Performs one full learner step.
 
+        The E-step (sample actions from target policy, evaluate Q with
+        target critic, compute weights and dual loss for eta) is executed
+        **once** at the beginning.  The M-step (update policy and KL
+        multipliers) is repeated ``sgd_steps_per_learner_step`` times via
+        ``jax.lax.scan``, reusing the fixed E-step weights and sampled
+        actions.  The KL constraint is measured against the **target**
+        policy (the E-step distribution), not the per-sub-step policy.
+
+        The critic is also updated inside each sub-step (standard practice
+        in Acme), but the E-step weights are computed from the **target**
+        critic so they remain stable across sub-steps.
+        """
+
+        # ================================================================
+        # E-step: compute weights ONCE using target networks.
+        # ================================================================
+        key_e, key_critic_sample = jax.random.split(state.random_key, 2)
+        dist_target = self.actor_net.apply(state.target_params_actor, batch["state"])
+        eta = jnp.exp(state.dual_params["log_eta"])
+
+        (log_weights, max_q, sampled_actions,
+         q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state,
+         entropy, max_weight) = self._compute_weights(
+            state.target_params_critic, dist_target, batch, eta, key_critic_sample
+        )
+
+        # E-step metrics (constant across sub-steps)
+        e_step_metrics = {
+            "entropy": entropy,
+            "q_mean": q_mean,
+            "q_std": q_std,
+            "q_range": q_range,
+            "mean_q_std_per_state": mean_q_std_per_state,
+            "mean_q_range_per_state": mean_q_range_per_state,
+            "max_weight": max_weight,
+        }
+
+        # ================================================================
+        # M-step: repeated SGD updates with fixed E-step quantities.
+        # ================================================================
         def sgd_step(carry, _):
             state = carry
-            key, key_critic, key_sample = jax.random.split(state.random_key, 3)
+            key, key_critic = jax.random.split(state.random_key, 2)
 
-            dist_sample = self.actor_net.apply(state.target_params_actor, batch["state"])
-
+            # --- Critic update (uses target networks for bootstrap) ---
             def critic_loss_fn(p):
                 return self._critic_loss(
                     p,
@@ -274,16 +334,10 @@ class MPOLearner:
             updates_c, opt_state_c = self.opt_critic.update(grads_critic, state.opt_state_critic)
             params_critic = optax.apply_updates(state.params_critic, updates_c)
 
-            eta = jnp.exp(state.dual_params["log_eta"])
-            (log_weights, max_q, sampled_actions,
-             q_mean, q_std, q_range, mean_q_std_per_state, mean_q_range_per_state,
-             entropy, max_weight) = self._compute_weights(
-                params_critic, dist_sample, batch, eta, key_sample
-            )
-
+            # --- Actor + dual update (M-step with fixed E-step weights) ---
             def actor_dual_loss_fn(p_actor, p_dual):
                 total_loss, aux = self._policy_and_dual_loss(
-                    p_actor, p_dual, dist_old, batch,
+                    p_actor, p_dual, dist_target, batch,
                     log_weights, max_q, sampled_actions,
                 )
                 return total_loss, aux
@@ -336,7 +390,10 @@ class MPOLearner:
             sgd_step, state, None, length=self.config["sgd_steps_per_learner_step"]
         )
 
+        # Report last sub-step's actor/dual metrics, but E-step metrics
+        # are constant (computed once above).
         metrics = jax.tree_util.tree_map(lambda x: x[-1], metrics_history)
+        metrics.update(e_step_metrics)
 
         period = self.config["target_update_period"]
         steps = state.steps + 1
@@ -352,6 +409,7 @@ class MPOLearner:
             target_params_actor=target_params_actor,
             target_params_critic=target_params_critic,
             steps=steps,
+            random_key=key_e,
         )
 
         return new_state, metrics

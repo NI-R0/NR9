@@ -8,6 +8,7 @@ from src.cli import parse_args
 from src.collector import StatsCollector
 from src.train import train
 from src.test import test
+from src.serve import serve
 
 
 def _nvidia_gpu_available() -> bool:
@@ -15,9 +16,11 @@ def _nvidia_gpu_available() -> bool:
     if not any(os.path.exists(f"/dev/nvidia{i}") for i in range(4)):
         return False
     try:
-        return subprocess.run(
-            ["nvidia-smi"], capture_output=True, timeout=5
-        ).returncode == 0
+        return (
+            subprocess.run(
+                ["nvidia-smi"], capture_output=True, timeout=5
+            ).returncode == 0
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
 
@@ -37,8 +40,15 @@ else:
 @logger.catch
 def main():
     args = parse_args()
+
+    # serve mode needs no StatsCollector, no output directories, no
+    # TensorBoard — just the checkpoint file path and an HTTP server.
+    if args["task"] == "serve":
+        return serve(args)
+
     np.random.seed(args["seed"])
     stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
+    stats.set_profile(args["profile"])
 
     profiler = None
     try:
@@ -46,7 +56,11 @@ def main():
             profiler = cProfile.Profile()
             profiler.enable()
 
-        train(args, stats) if args["task"] == "train" else test(args, stats)
+        if args["task"] == "train":
+            train(args, stats)
+        else:
+            test(args, stats)
+
     except KeyboardInterrupt:
         logger.warning("Shutting down training!")
     except Exception as e:
@@ -63,6 +77,7 @@ def main():
             logger.info("Top 30 functions by cumulative time:")
             summary.print_stats(30)
 
+        stats.log_io_summary()
         stats.close()
 
 

@@ -10,23 +10,105 @@ from dm_control.viewer import application
 from src.collector import StatsCollector
 from src.environment import Environment
 from src.learner import MPOLearner
-from src.agent import MPOAgent
+from src.agent import SoccerAgent
 from src.buffer import NStepTransitionBuffer
 from src.networks import ActorNetwork, CriticNetwork
-from src.runner import run_episode, run_episode_with_respawn
+from src.train import run_episode
 from src.serve import RemoteCheckpointReloader
+
+
+def run_episode_with_respawn(
+    env: Environment,
+    agent: SoccerAgent,
+    args: dict,
+    visualize: bool = False,
+):
+    """Run a test episode with the same termination/respawn logic as training.
+
+    Unlike ``run_episode``, which stops at the first termination, this
+    function keeps stepping until ``max_steps`` is reached.  When the env
+    terminates (done=True) it is reset and the episode continues —
+    mirroring the auto-reset behaviour of ``run_vectorized_episode``
+    during training.
+
+    All completed sub-episodes are tracked individually so you can see
+    how many terminations/respawns occur and what reward/length each
+    sub-episode achieves.
+
+    Returns ``(all_rewards, all_lengths, frames)``.
+    """
+    max_steps = args["steps"]
+    state = env.reset()
+    ep_reward = 0.0
+    ep_length = 0
+    all_rewards: list[float] = []
+    all_lengths: list[int] = []
+    frames = [] if visualize else None
+
+    for step in range(max_steps):
+        if visualize:
+            frame = env.render()
+            frames.append(frame)
+
+        action = agent.select_action(state, explore=False)
+        next_state, reward, done, info = env.step(action)
+
+        ep_reward += reward
+        ep_length += 1
+
+        if done:
+            all_rewards.append(ep_reward)
+            all_lengths.append(ep_length)
+            logger.info(
+                f"  Sub-episode terminated at step {step + 1}/{max_steps} | "
+                f"Reward: {ep_reward:.2f} | Length: {ep_length} -> respawning"
+            )
+            ep_reward = 0.0
+            ep_length = 0
+            next_state = env.reset()
+
+        state = next_state
+
+    # Collect any in-flight (not-yet-terminated) sub-episode.
+    if ep_length > 0:
+        all_rewards.append(ep_reward)
+        all_lengths.append(ep_length)
+        logger.info(
+            f"  Final sub-episode (no termination) | "
+            f"Reward: {ep_reward:.2f} | Length: {ep_length}"
+        )
+
+    return all_rewards, all_lengths, frames
+
+
+def save_video(frames: list, path: str, fps: int = 30):
+    try:
+        imageio.mimwrite(path, frames, fps=fps)
+        return path
+    except Exception as e:
+        gif_path = os.path.splitext(path)[0] + ".gif"
+        logger.warning(f"Could not write mp4: {e}. Falling back to '{gif_path}'.")
+        try:
+            imageio.mimsave(gif_path, frames, fps=fps)
+            return gif_path
+        except Exception as e2:
+            logger.warning(f"Could not write GIF recording, skipping video export: {e2}")
+            return None
 
 
 class _AutoResetWrapper:
     """Wraps a raw dm_control Environment for the interactive viewer.
+
     When ``--respawn`` is active, the wrapper intercepts every
     ``step()`` call.  If the underlying environment signals termination
     (either via its own time-limit or via the task's ``should_terminate``
     method), the wrapper resets the environment immediately and returns
     a **MID** ``TimeStep`` with the *new* observation and a zero reward.
+
     This keeps the dm_control viewer running indefinitely — every
     termination is followed by an invisible respawn instead of the
     default "EPISODE TERMINATED" freeze.
+
     When respawn is disabled the wrapper is transparent and delegates
     every call directly to the underlying environment.
     """
@@ -94,6 +176,7 @@ class _AutoResetWrapper:
 
 class _CheckpointReloader:
     """Polls a checkpoint file for changes and reloads the agent state.
+
     Thread-safe: callers from the viewer/env loop invoke
     :meth:`maybe_reload` which checks the file's mtime and, if changed,
     loads the new state into ``agent.learner.state``.
@@ -102,7 +185,7 @@ class _CheckpointReloader:
     def __init__(
         self,
         checkpoint_path: str,
-        agent: MPOAgent,
+        agent: SoccerAgent,
         poll_interval: float,
     ):
         self._path = checkpoint_path
@@ -117,6 +200,7 @@ class _CheckpointReloader:
 
     def maybe_reload(self):
         """Check if the checkpoint file changed and reload if so.
+
         Uses ``_poll_interval`` to avoid stat-ing the file too
         frequently.  Safe to call on every step.
         """
@@ -161,24 +245,9 @@ def _format_title(episode, reward):
     return " | ".join(parts)
 
 
-def save_video(frames: list, path: str, fps: int = 30):
-    try:
-        imageio.mimwrite(path, frames, fps=fps)
-        return path
-    except Exception as e:
-        gif_path = os.path.splitext(path)[0] + ".gif"
-        logger.warning(f"Could not write mp4: {e}. Falling back to '{gif_path}'.")
-        try:
-            imageio.mimsave(gif_path, frames, fps=fps)
-            return gif_path
-        except Exception as e2:
-            logger.warning(f"Could not write GIF recording, skipping video export: {e2}")
-            return None
-
-
 def run_live(
     env: Environment,
-    agent: MPOAgent,
+    agent: SoccerAgent,
     respawn: bool = False,
     checkpoint_path: str | None = None,
     poll_interval: float = 0.0,
@@ -295,7 +364,7 @@ def test(args: dict, stats: StatsCollector):
         gamma=args.get("gamma", 0.99),
     )
 
-    agent = MPOAgent(
+    agent = SoccerAgent(
         observation_shape=env.state_dim,
         action_shape=env.action_dim,
         actor_net=actor_net,
@@ -325,7 +394,7 @@ def test(args: dict, stats: StatsCollector):
     use_respawn = args.get("respawn", False)
 
     if args.get("live", False):
-        return run_live(
+        run_live(
             env,
             agent,
             respawn=use_respawn,
@@ -334,6 +403,7 @@ def test(args: dict, stats: StatsCollector):
             stream_url=args.get("stream"),
             reloader=reloader,
         )
+        return
 
     logger.info(
         f"Running {args['num_eval_episodes']} test episode(s) on "

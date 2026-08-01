@@ -26,16 +26,13 @@
 # submitted.  Otherwise a new job is automatically scheduled.
 #
 # Convergence parameters (override via --export):
-#   CONV_CONVERGENCE_EPISODES=2000 - episodes to check for convergence
+#   CONV_CONVERGENCE_EPISODES=10 - episodes to check for convergence
 #   CONV_THRESHOLD=10.0         - max smoothed improvement to consider converged
-#   CONV_MIN_REWARD=100.0       - don't converge below this reward
-#   CONV_STAGNATION_WINDOW=20   - evals to check for stagnation
-#   CONV_STAGNATION_THRESHOLD=1.0 - improvement below this over stagnation_window = stagnant
+#   CONV_MIN_REWARD=600.0       - don't converge below this reward
 #
 # Exit codes from check_convergence.py:
 #   0 = converged  (stop, success)
 #   1 = continue   (reschedule)
-#   2 = stagnant   (stop, likely bug - no reschedule)
 #
 # Usage:
 #   1st run (fresh):  sbatch --export=FRESH=1 scripts/sbatch/train_walker_3D_ball_run_short.sbatch
@@ -63,11 +60,9 @@ CPUS=${SLURM_CPUS_PER_TASK:-16}
 NUM_ENVS=$((CPUS * 3))
 echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
-CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-2000}"
+CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-10}"
 CONV_THRESHOLD="${CONV_THRESHOLD:-10.0}"
-CONV_MIN_REWARD="${CONV_MIN_REWARD:-100.0}"
-CONV_STAGNATION_WINDOW="${CONV_STAGNATION_WINDOW:-20}"
-CONV_STAGNATION_THRESHOLD="${CONV_STAGNATION_THRESHOLD:-1.0}"
+CONV_MIN_REWARD="${CONV_MIN_REWARD:-600.0}"
 
 RESUME_ARGS=""
 ACTIVE_RUN=""
@@ -104,12 +99,14 @@ uv run python main.py \
   --env_domain walker_3D_ball --env_task walk \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
-  --eval_frequency "$NUM_ENVS" \
-  --capacity 1000000 \
+  --eval_frequency 5 \
+  --num_eval_episodes "$CPUS" \
+  --capacity 5000000 \
+  --lr 3e-4 \
+  --dual_lr 1e-4 \
+  --epsilon_std 1e-4 \
+  --target_update_period 100 \
   --duration 25 \
-  --curriculum \
-  --phase1_threshold 600.0 \
-  --phase2_threshold 600.0 \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?
@@ -134,27 +131,21 @@ fi
 
 echo "Active run directory: $ACTIVE_RUN"
 
-echo "Running convergence check (convergence_episodes=$CONV_CONVERGENCE_EPISODES, threshold=$CONV_THRESHOLD, min_reward=$CONV_MIN_REWARD, stagnation_window=$CONV_STAGNATION_WINDOW, stagnation_threshold=$CONV_STAGNATION_THRESHOLD)..."
+echo "Running convergence check (convergence_episodes=$CONV_CONVERGENCE_EPISODES, threshold=$CONV_THRESHOLD, min_reward=$CONV_MIN_REWARD)..."
 uv run python scripts/check_convergence.py \
   --run_dir "$ACTIVE_RUN" \
   --convergence_episodes "$CONV_CONVERGENCE_EPISODES" \
   --threshold "$CONV_THRESHOLD" \
-  --min_reward "$CONV_MIN_REWARD" \
-  --stagnation_window "$CONV_STAGNATION_WINDOW" \
-  --stagnation_threshold "$CONV_STAGNATION_THRESHOLD"
+  --min_reward "$CONV_MIN_REWARD"
 
 CONV_EXIT=$?
 
 if [ $CONV_EXIT -eq 0 ]; then
     echo "Training has converged. No new job will be scheduled."
     echo "Best model is in $ACTIVE_RUN/checkpoints/best_ckpt.pkl"
-elif [ $CONV_EXIT -eq 2 ]; then
-    echo "Training has STAGNATED (possible bug or fundamental issue). No new job will be scheduled."
-    echo "Check logs in $ACTIVE_RUN/logs/ for details."
-    echo "Best model so far is in $ACTIVE_RUN/checkpoints/best_ckpt.pkl"
 else
     echo "Training has NOT converged - scheduling next job..."
-    NEW_JOB=$(sbatch --export=RUN_DIR="$ACTIVE_RUN",CONV_CONVERGENCE_EPISODES="$CONV_CONVERGENCE_EPISODES",CONV_THRESHOLD="$CONV_THRESHOLD",CONV_MIN_REWARD="$CONV_MIN_REWARD",CONV_STAGNATION_WINDOW="$CONV_STAGNATION_WINDOW",CONV_STAGNATION_THRESHOLD="$CONV_STAGNATION_THRESHOLD" \
+    NEW_JOB=$(sbatch --export=RUN_DIR="$ACTIVE_RUN",CONV_CONVERGENCE_EPISODES="$CONV_CONVERGENCE_EPISODES",CONV_THRESHOLD="$CONV_THRESHOLD",CONV_MIN_REWARD="$CONV_MIN_REWARD" \
         scripts/sbatch/train_walker_3D_ball_run_short.sbatch)
     echo "Submitted: $NEW_JOB"
 fi

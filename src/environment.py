@@ -63,15 +63,23 @@ class Environment:
         reward = timestep.reward if timestep.reward is not None else 0.0
         done = timestep.last()
 
-        return state, reward, done, {}
+        # Check custom early-termination (e.g. agent fell).
+        # Only active if the task implements should_terminate and the
+        # timestep is not already terminated by the time limit.
+        if not done:
+            task = getattr(self.env, 'task', None)
+            if task is not None and hasattr(task, 'should_terminate'):
+                if task.should_terminate(self.env.physics):
+                    done = True
+
+        info = {}
+        task = getattr(self.env, 'task', None)
+        if task is not None and hasattr(task, '_reward_components'):
+            info['reward_components'] = dict(task._reward_components)
+
+        return state, reward, done, info
 
     def render(self, height: int = 240, width: int = 320, camera_id: Union[str, int] = None):
         """Returns the current frame as an (H, W, 3) uint8 RGB array."""
         cam = camera_id if camera_id is not None else self._preferred_camera
         return self.env.physics.render(height=height, width=width, camera_id=cam)
-
-    def set_phase(self, phase: int):
-        """Propagate curriculum phase to the underlying task, if supported."""
-        task = getattr(self.env, 'task', None)
-        if task is not None and hasattr(task, 'set_phase'):
-            task.set_phase(phase)

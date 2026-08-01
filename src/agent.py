@@ -1,10 +1,7 @@
-import numpy as np
 import jax
-import jax.numpy as jnp
 from src.learner import MPOLearner
 from src.actor import MPOActor
 from src.buffer import NStepTransitionBuffer
-from jax.random import PRNGKey
 
 
 class MPOAgent:
@@ -61,7 +58,8 @@ class MPOAgent:
         self._step_count += 1
 
         if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
-            batch = self.buffer.next(self.random_key, self.batch_size)
+            self.random_key, sample_key = jax.random.split(self.random_key)
+            batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
             return metrics
         return {}
@@ -80,7 +78,8 @@ class MPOAgent:
         should_update = (self._step_count // self.update_every) > (previous_count // self.update_every)
 
         if len(self.buffer) > self.warmup and should_update:
-            batch = self.buffer.next(self.random_key, self.batch_size)
+            self.random_key, sample_key = jax.random.split(self.random_key)
+            batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
             return metrics
         return {}
