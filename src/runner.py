@@ -12,11 +12,12 @@ from src.vector_env import ParallelVectorEnv
 def run_episode(
     env: Environment,
     agent: MPOAgent,
+    args: dict = None,
     explore: bool = True,
     visualize: bool = False,
     profile: bool = False,
 ):
-    """Run a single episode and return (reward, steps, avg_metrics, frames)."""
+    """Run a single episode and return (reward, steps, avg_metrics, frames, reward_components)."""
     state = env.reset()
     episode_reward = 0.0
     done = False
@@ -24,6 +25,7 @@ def run_episode(
 
     episode_metrics: dict = {}
     updates_count = 0
+    reward_components_sum: dict[str, float] = {}
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
     frames = [] if visualize else None
@@ -37,8 +39,12 @@ def run_episode(
             action.block_until_ready()
         t1 = time.perf_counter()
 
-        next_state, reward, done, _ = env.step(action)
+        next_state, reward, done, info = env.step(action)
         t2 = time.perf_counter()
+
+        if "reward_components" in info:
+            for k, v in info["reward_components"].items():
+                reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v
 
         if explore:
             metrics = agent.update(state, action, reward, next_state, done)
@@ -78,7 +84,7 @@ def run_episode(
             f"({timing['update']/step*1000:.1f}ms/step)"
         )
 
-    return episode_reward, step, avg_metrics, frames
+    return episode_reward, step, avg_metrics, frames, reward_components_sum
 
 
 def run_vectorized_episode(
@@ -106,6 +112,7 @@ def run_vectorized_episode(
 
     episode_metrics: dict = {}
     updates_count = 0
+    reward_components_sum: dict[str, float] = {}
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
     for step in range(max_steps):
@@ -141,6 +148,9 @@ def run_vectorized_episode(
                 episode_metrics[k] = episode_metrics.get(k, 0.0) + v
 
         for i in range(num_envs):
+            if "reward_components" in infos[i]:
+                for k, v in infos[i]["reward_components"].items():
+                    reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v / num_envs
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
             if dones[i] and not finished[i]:
@@ -174,7 +184,7 @@ def run_vectorized_episode(
             f"({timing['update']/(step+1)*1000:.1f}ms/step)"
         )
 
-    return finished_stats, avg_metrics
+    return finished_stats, avg_metrics, reward_components_sum
 
 
 def run_episode_with_respawn(

@@ -41,28 +41,54 @@ def _propagate_phase(phase: int, train_env, eval_env):
     logger.info(f"Curriculum phase set to {phase} for all environments.")
 
 
-def _run_eval(episode: int, eval_env: Environment, agent: MPOAgent,
-              args: dict, stats: StatsCollector, buffer: NStepTransitionBuffer) -> float:
+def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
+              args: dict, stats: StatsCollector) -> float:
     """Run evaluation episodes, checkpoint, and log.  Returns mean eval reward."""
     logger.info(f"Starting evaluation at episode {episode}.")
-    eval_rewards = []
-    for eval_ep in range(1, args["num_eval_episodes"] + 1):
-        eval_reward, _, _, _ = run_episode(
-            eval_env, agent,
-            explore=False,
-            visualize=args["visualize"] and (eval_ep == 1),
-        )
-        eval_rewards.append(eval_reward)
+    num_eval = args["num_eval_episodes"]
+
+    if eval_venv is not None:
+        states = eval_venv.reset()
+        ep_rewards_arr = np.zeros(eval_venv.num_envs, dtype=np.float32)
+        finished = [False] * eval_venv.num_envs
+        finished_rewards: list[float | None] = [None] * eval_venv.num_envs
+        for _ in range(args["steps"]):
+            actions = agent.select_actions(states, explore=False)
+            actions_np = np.asarray(actions, dtype=np.float32)
+            next_states, rewards, dones, _ = eval_venv.step(actions_np)
+            for i in range(eval_venv.num_envs):
+                if finished[i]:
+                    continue
+                ep_rewards_arr[i] += rewards[i]
+                if dones[i]:
+                    finished[i] = True
+                    finished_rewards[i] = float(ep_rewards_arr[i])
+            states = next_states
+            if all(finished):
+                break
+        eval_rewards = [
+            r if r is not None else float(ep_rewards_arr[i])
+            for i, r in enumerate(finished_rewards)
+        ]
+    else:
+        eval_rewards = []
+        for eval_ep in range(1, num_eval + 1):
+            eval_reward, _, _, _, _ = run_episode(
+                eval_env, agent,
+                explore=False,
+                visualize=args["visualize"] and (eval_ep == 1),
+            )
+            eval_rewards.append(eval_reward)
 
     mean_eval_reward = float(np.mean(eval_rewards))
-    stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward})
-    logger.info(f"Mean evaluation reward over {args['num_eval_episodes']} episodes: {mean_eval_reward:.2f}")
+    std_eval_reward = float(np.std(eval_rewards))
+    stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward, "Eval_Reward_Std": std_eval_reward})
+    logger.info(f"Mean evaluation reward over {num_eval} episodes: {mean_eval_reward:.2f} ± {std_eval_reward:.2f}")
 
-    stats.save_train_state(episode, agent.learner.state, buffer, stats)
-    stats.flush_stats_to_disk()
     stats.save_checkpoint(agent.learner.state, "latest")
     if stats.update_best_checkpoint(mean_eval_reward, agent.learner.state):
         logger.info(f"New best mean eval reward: {stats.best_eval_reward:.2f} - checkpoint saved.")
+    stats._write_training_meta(episode, agent._step_count)
 
     return mean_eval_reward
 
@@ -89,6 +115,17 @@ def train(args: dict, stats: StatsCollector):
 
     eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
 
+    num_eval = args["num_eval_episodes"]
+    eval_venv = None
+    if use_vectorized and num_eval > 1:
+        eval_venv = ParallelVectorEnv(
+            domain_name=args["env_domain"],
+            task_name=args["env_task"],
+            max_steps=args["steps"],
+            num_envs=num_eval,
+            seed=args.get("seed", 42) + 10000,
+        )
+
     actor_net = ActorNetwork(action_dim)
     critic_net = CriticNetwork()
 
@@ -104,16 +141,20 @@ def train(args: dict, stats: StatsCollector):
 
     learner_state = None
     episode = 0
+    loaded_step_count = 0
 
     if args["resume"] and os.path.exists(args["resume"]):
         logger.info(f"Found existing state at {args['resume']}. Resuming...")
-        episode, learner_state, buffer, loaded_stats = stats.load_train_state(args["resume"])
+        episode, learner_state, buffer, loaded_stats, loaded_step_count = stats.load_train_state(args["resume"])
 
         # Restore serializable collector fields (loaded_stats is a dict:
         # {"stats": ..., "best_eval_reward": ...})
         stats.stats = loaded_stats["stats"]
         stats.best_eval_reward = loaded_stats["best_eval_reward"]
-        logger.success(f"Successfully resumed from episode {episode}")
+        # Ensure loaded buffer's parallel-env config matches the current run.
+        if use_vectorized:
+            buffer.set_num_envs(num_envs)
+        logger.success(f"Successfully resumed from episode {episode} (step_count={loaded_step_count})")
 
     agent = MPOAgent(
         observation_shape=state_dim,
@@ -126,6 +167,9 @@ def train(args: dict, stats: StatsCollector):
 
     if learner_state is not None:
         agent.learner.state = learner_state
+    if loaded_step_count > 0:
+        agent._step_count = loaded_step_count
+        logger.info(f"Restored agent step count to {loaded_step_count}.")
 
     logger.info("Setup complete.")
 
@@ -189,83 +233,71 @@ def train(args: dict, stats: StatsCollector):
 
     try:
         while True:
+            episode += 1
+            if episode > max_episodes:
+                break
+            if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+                logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
+                break
+
             if use_vectorized:
-                finished_stats, metrics = run_vectorized_episode(venv, agent, args["steps"], profile=profile)
-                for ep_reward, ep_length in finished_stats:
-                    episode += 1
-                    if episode > max_episodes:
-                        break
-                    ep_stats = {
-                        "Episode_Reward": ep_reward,
-                        "Episode_Length": ep_length,
-                        "Buffer_Size": len(buffer),
-                        **metrics,
-                    }
-                    stats.log_stats_to_tb(episode, ep_stats)
-                    total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
-                    stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
-
-                    if episode % args["eval_frequency"] == 0:
-                        mean_eval_reward = _run_eval(episode, eval_env, agent, args, stats, buffer)
-                        if use_curriculum:
-                            new_phase = _check_phase_advancement(
-                                current_phase, mean_eval_reward,
-                                phase1_threshold, phase2_threshold)
-                            if new_phase != current_phase:
-                                current_phase = new_phase
-                                _propagate_phase(current_phase, venv if use_vectorized else env, eval_env)
-
-                    if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                        logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
-                        break
-
-                if episode > max_episodes:
-                    break
-                if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                    break
-                if shutdown_requested:
-                    break
+                finished_stats, metrics, reward_comp = run_vectorized_episode(venv, agent, args["steps"], profile=profile)
+                rewards = [r for r, _ in finished_stats]
+                lengths = [l for _, l in finished_stats]
+                ep_stats = {
+                    "Episode_Reward": float(np.mean(rewards)),
+                    "Episode_Reward_Std": float(np.std(rewards)),
+                    "Episode_Length": float(np.mean(lengths)),
+                    "Episode_Length_Std": float(np.std(lengths)),
+                    "Buffer_Size": len(buffer),
+                    **metrics,
+                    **{f"Reward_{k}": v for k, v in reward_comp.items()},
+                }
             else:
-                episode += 1
-                if episode > max_episodes:
-                    break
-                if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
-                    logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode - 1} episodes.")
-                    break
-                ep_reward, ep_length, metrics, _ = run_episode(env, agent, profile=profile)
+                ep_reward, ep_length, metrics, _, reward_comp = run_episode(env, agent, profile=profile)
                 ep_stats = {
                     "Episode_Reward": ep_reward,
                     "Episode_Length": ep_length,
                     "Buffer_Size": len(buffer),
-                    **metrics
+                    **metrics,
+                    **{f"Reward_{k}": v for k, v in reward_comp.items()},
                 }
 
-                stats.log_stats_to_tb(episode, ep_stats)
+            stats.log_stats_to_tb(episode, ep_stats)
+            total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
+            stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
 
-                total_label = f"{duration_min:.1f}min" if use_duration else str(max_episodes)
-                stats.log_progress(episode, total_label, ep_stats, {"Loss": metrics.get("loss_critic", 0.0)})
+            if episode % args["eval_frequency"] == 0:
+                mean_eval_reward = _run_eval(episode, eval_env, eval_venv, agent, args, stats)
+                if use_curriculum:
+                    new_phase = _check_phase_advancement(
+                        current_phase, mean_eval_reward,
+                        phase1_threshold, phase2_threshold)
+                    if new_phase != current_phase:
+                        current_phase = new_phase
+                        _propagate_phase(current_phase, venv if use_vectorized else env, eval_env)
 
-                if episode % args["eval_frequency"] == 0:
-                    mean_eval_reward = _run_eval(episode, eval_env, agent, args, stats, buffer)
-                    if use_curriculum:
-                        new_phase = _check_phase_advancement(
-                            current_phase, mean_eval_reward,
-                            phase1_threshold, phase2_threshold)
-                        if new_phase != current_phase:
-                            current_phase = new_phase
-                            _propagate_phase(current_phase, venv if use_vectorized else env, eval_env)
-
-                if shutdown_requested:
-                    break
+            if use_duration and (time.perf_counter() - train_start) >= time_limit_sec:
+                logger.info(f"Time limit ({duration_min:.1f} min) reached. Stopping after {episode} episodes.")
+                break
+            if shutdown_requested:
+                break
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
 
+        try:
+            stats.save_train_state(episode, agent.learner.state, buffer, stats,
+                                   agent_step_count=agent._step_count)
+            stats.flush_stats_to_disk()
+            stats.save_checkpoint(agent.learner.state, "final")
+            logger.info(f"Dumped training statistics to {stats.stats_file}.")
+        except Exception:
+            logger.exception("Failed to save final training state.")
+
         if use_vectorized:
             venv.close()
+        if eval_venv is not None:
+            eval_venv.close()
 
-    stats.save_train_state(episode, agent.learner.state, buffer, stats)
-    stats.flush_stats_to_disk()
-    stats.save_checkpoint(agent.learner.state, "final")
-    logger.info(f"Dumped training statistics to {stats.stats_file}.")
     logger.success("Training completed successfully!")

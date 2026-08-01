@@ -13,7 +13,7 @@ from src.learner import MPOLearner
 from src.agent import MPOAgent
 from src.buffer import NStepTransitionBuffer
 from src.networks import ActorNetwork, CriticNetwork
-from src.runner import run_episode, run_episode_with_respawn, run_live
+from src.runner import run_episode, run_episode_with_respawn
 from src.serve import RemoteCheckpointReloader
 
 
