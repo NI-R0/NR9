@@ -1,10 +1,7 @@
-import numpy as np
 import jax
-import jax.numpy as jnp
 from src.learner import MPOLearner
 from src.actor import MPOActor
 from src.buffer import NStepTransitionBuffer
-from jax.random import PRNGKey
 
 
 class MPOAgent:
