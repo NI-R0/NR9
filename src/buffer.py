@@ -118,7 +118,7 @@ class NStepTransitionBuffer:
         simple host→device copies that are cheaper than concatenating on
         CPU and then slicing on GPU.
         """
-        indices = np.random.randint(0, self._size, size=batch_size)
+        indices = jax.random.randint(key, (batch_size,), 0, self._size).tolist()
 
         return {
             "state": jnp.asarray(self._states[indices]),
