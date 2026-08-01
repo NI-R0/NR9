@@ -338,6 +338,7 @@ def test(args: dict, stats: StatsCollector):
     logger.info(
         f"Running {args['num_eval_episodes']} test episode(s) on "
         f"{args['env_domain']}/{args['env_task']}."
+        + (" (respawn mode)" if use_respawn else "")
     )
 
     visualize = args["visualize"]
