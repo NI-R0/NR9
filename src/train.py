@@ -227,6 +227,7 @@ def train(args: dict, stats: StatsCollector):
                 break
             if shutdown_requested:
                 break
+        success = True
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
