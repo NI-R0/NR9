@@ -15,6 +15,7 @@ observation in ``info["terminal_obs"]`` so the caller can store it in
 the replay buffer before using the new observation for the next step.
 """
 
+import atexit
 import numpy as np
 import multiprocessing as mp
 from multiprocessing import shared_memory
@@ -183,6 +184,9 @@ class ParallelVectorEnv:
         self.action_min = None
         self.action_max = None
 
+        self._closed = False
+        atexit.register(self.close)
+
         logger.debug(
             f"ParallelVectorEnv initialized: num_envs={num_envs}, "
             f"state_dim={self.state_dim}, action_dim={self.action_dim}"
@@ -231,6 +235,9 @@ class ParallelVectorEnv:
         return next_states, rewards, dones, infos
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         for remote in self.remotes:
             try:
                 remote.send(("close", None))
