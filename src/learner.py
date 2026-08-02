@@ -375,7 +375,7 @@ class MPOLearner:
                 _all_finite(new_state.dual_params)
             )
             new_state = jax.tree_util.tree_map(
-                lambda new, old: jnp.where(is_finite, new, old), new_state, state
+                lambda new, old: jnp.where(jnp.isfinite(new), new, old), new_state, state
             )
 
             metrics = {
