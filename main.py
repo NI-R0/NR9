@@ -37,7 +37,7 @@ else:
     )
 
 
-@logger.catch
+@logger.catch(reraise=True)
 def main():
     args = parse_args()
 

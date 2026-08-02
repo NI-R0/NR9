@@ -7,6 +7,11 @@ from functools import partial
 from src.networks import ActorNetwork, CriticNetwork
 
 
+def _all_finite(tree) -> jax.Array:
+    leaves = jax.tree_util.tree_leaves(tree)
+    return jnp.all(jnp.array([jnp.all(jnp.isfinite(l)) for l in leaves]))
+
+
 class TrainingState(typing.NamedTuple):
     params_actor: optax.Params
     params_critic: optax.Params
@@ -362,6 +367,15 @@ class MPOLearner:
                 opt_state_critic=opt_state_c,
                 opt_state_dual=opt_state_d,
                 random_key=key,
+            )
+
+            if_finite = (
+                _all_finite(new_state.params_actor) &
+                _all_finite(new_state.params_critic) &
+                _all_finite(new_state.dual_params)
+            )
+            new_state = jax.tree_util.tree_map(
+                lambda new, old: jnp.where(is_finite, new, old), new_state, state
             )
 
             metrics = {

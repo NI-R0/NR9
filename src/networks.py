@@ -38,7 +38,7 @@ class ActorNetwork(nn.Module):
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.constant(initial_log_std),
         )(x)
-        scale = jnp.clip(jax.nn.softplus(log_std), 1e-4, 1.0)
+        scale = jnp.clip(jax.nn.softplus(log_std), 1e-2, 1.0)
 
         return distrax.MultivariateNormalDiag(loc=mu, scale_diag=scale)
 
