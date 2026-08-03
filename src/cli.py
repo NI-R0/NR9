@@ -1,3 +1,4 @@
+import os
 import argparse
 
 
@@ -205,4 +206,8 @@ def parse_args() -> dict:
         "--checkpoint_poll_interval to set the poll frequency.",
     )
 
-    return vars(parser.parse_args())
+    args = vars(parser.parse_args())
+    for key in ("resume", "load_dir"):
+        if args.get(key):
+            args[key] = os.path.expanduser(args[key])
+    return args

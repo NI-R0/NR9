@@ -164,7 +164,8 @@ def train(args: dict, stats: StatsCollector):
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
-    stats.log_hparams(args)
+    if not args.get("resume"):
+        stats.log_hparams(args)
 
     profile = args.get("profile", False)
     train_start = time.perf_counter()
