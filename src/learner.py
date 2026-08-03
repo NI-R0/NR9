@@ -391,17 +391,10 @@ class MPOLearner:
 
             return new_state, metrics
 
+        pre_scan_state = state
         state, metrics_history = jax.lax.scan(
             sgd_step, state, None, length=self.config["sgd_steps_per_learner_step"]
         )
-        # is_finite = (
-        #     _all_finite(new_state.params_actor) &
-        #     _all_finite(new_state.params_critic) &
-        #     _all_finite(new_state.dual_params)
-        # )
-        # new_state = jax.tree_util.tree_map(
-        #     lambda new, old: jnp.where(is_finite, new, old), new_state, state
-        # )
 
         # Report last sub-step's actor/dual metrics, but E-step metrics
         # are constant (computed once above).
@@ -423,6 +416,17 @@ class MPOLearner:
             target_params_critic=target_params_critic,
             steps=steps,
             random_key=key_e,
+        )
+
+        # Roll back to pre-scan state if any parameter went non-finite.
+        is_finite = (
+            _all_finite(new_state.params_actor)
+            & _all_finite(new_state.params_critic)
+            & _all_finite(new_state.dual_params)
+        )
+        new_state = jax.tree_util.tree_map(
+            lambda new, old: jnp.where(is_finite, new, old),
+            new_state, pre_scan_state,
         )
 
         return new_state, metrics
