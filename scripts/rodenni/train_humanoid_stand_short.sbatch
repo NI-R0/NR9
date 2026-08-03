@@ -60,14 +60,14 @@ fi
 uv run python main.py \
     --env_domain humanoid_custom \
     --env_task stand \
-    --episodes 10000 \
+    --episodes 50000 \
     --num_envs "$NUM_ENVS" \
-    --eval_frequency 5 \
+    --eval_frequency 50 \
     --num_eval_episodes 8 \
-    --sgd_steps_per_learner_step 8 \
-    --target_update_period 25 \
-    --epsilon_std 1e-3 \
-    --dual_lr 0.001 \
+    --batch_size 512 \
+    --capacity 500000 \
+    --sgd_steps_per_learner_step 4 \
+    --target_update_period 50 \
     --duration 27 \
     $RESUME_ARGS
 
