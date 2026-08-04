@@ -48,6 +48,8 @@ METRICS = [
     "Mean_upright",
     "Mean_stand_reward",
     "Mean_small_control",
+    "contact_penalty",
+    "num_penalty_contacts",
     "Mean_reward",
 ]
 
@@ -153,9 +155,9 @@ def print_eval_summary(rows):
     )
 
 
-def print_evaluation_table(rows, spacing=500):
+def print_evaluation_table(rows, spacing=500, start_episode=0):
     evaluations = [
-        row for row in rows
+        row for row in rows[start_episode:]
         if "Mean_Eval_Reward" in row
     ]
 
@@ -196,7 +198,7 @@ def print_evaluation_table(rows, spacing=500):
     print(
         "episode | eval_reward | train_reward | critic_loss | "
         "q_mean | q_range | entropy | max_weight | policy_std | "
-        "head_h | upright | stand_r"
+        "head_h | upright | stand_r | contact_penalty | num_penalty_contacts"
     )
 
     for row in selected:
@@ -214,7 +216,9 @@ def print_evaluation_table(rows, spacing=500):
             f"{fmt(value_at_or_before(rows, episode, 'policy_std')):>10} | "
             f"{fmt(value_at_or_before(rows, episode, 'Mean_head_height')):>6} | "
             f"{fmt(value_at_or_before(rows, episode, 'Mean_torso_upright')):>6} | "
-            f"{fmt(value_at_or_before(rows, episode, 'Mean_stand_reward')):>7}"
+            f"{fmt(value_at_or_before(rows, episode, 'Mean_stand_reward')):>7} | "
+            f"{fmt(value_at_or_before(rows, episode, 'contact_penalty')):>6} | "
+            f"{fmt(value_at_or_before(rows, episode, 'num_penalty_contacts')):>6} | "
         )
 
 
@@ -343,9 +347,16 @@ def main():
     parser.add_argument(
         "--eval-spacing",
         type=int,
-        default=500,
+        default=200,
         help="Approximate episode spacing between printed evaluations.",
     )
+
+    parser.add_argument(
+            "--start-episode",
+            type=int,
+            default=0,
+            help="Episode to start summary from.",
+        )
 
     args = parser.parse_args()
 
@@ -364,7 +375,7 @@ def main():
 
     print_reward_summary(rows, args.window)
     print_eval_summary(rows)
-    print_evaluation_table(rows, args.eval_spacing)
+    print_evaluation_table(rows, args.eval_spacing, args.start_episode)
     print_diagnostic_points(rows, args.points)
     print_final_values(rows)
 
