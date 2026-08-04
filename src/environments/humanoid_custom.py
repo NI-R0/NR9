@@ -29,7 +29,10 @@ import os
 
 _DEFAULT_TIME_LIMIT = 10
 _CONTROL_TIMESTEP = .005
-_STAND_HEIGHT = 1.4
+
+_RANDOM_INIT = True
+
+# Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
 _RUN_SPEED = 10
 FILE = 'humanoid_custom.xml'
@@ -43,6 +46,7 @@ def get_model_and_assets():
   xml_path = os.path.join(os.path.dirname(__file__), FILE)
   with open(xml_path, 'r') as f:
     xml_string = f.read()
+  # Map the common includes to the actual assets from dm_control
   assets = {f"./common/{k}": v for k, v in common.ASSETS.items()}
   return xml_string, assets
 
@@ -121,7 +125,7 @@ class Physics(mujoco.Physics):
 
   def joint_angles(self):
     """Returns the state without global orientation or position."""
-    return self.data.qpos[7:].copy()
+    return self.data.qpos[7:].copy()  # Skip the 7 DoFs of the free root joint.
 
   def extremities(self):
     """Returns end effector positions in egocentric frame."""
@@ -176,14 +180,30 @@ class Humanoid(base.Task):
       physics: An instance of `Physics`.
 
     """
-    physics.reset() 
-    qpos = physics.data.qpos.copy()
-    qpos[7:] += self.random.uniform(-0.2, 0.2, size=len(qpos[7:]))
-    physics.data.qpos[:] = qpos
-    physics.data.qpos[2] = 1.3
-    
-    physics.after_reset()
-    super().initialize_episode(physics)
+    if _RANDOM_INIT:
+      # Find a collision-free random initial configuration.
+      penetrating = True
+      while penetrating:
+          randomizers.randomize_limited_and_rotational_joints(physics, self.random)
+          # Check for collisions.
+          physics.after_reset()
+          penetrating = physics.data.ncon > 0
+      super().initialize_episode(physics)
+
+    else:
+      # Set to default 'standing' pose defined in XML
+      physics.reset() 
+      
+      # Add tiny bit of noise to joint positions
+      qpos = physics.data.qpos.copy()
+      qpos[7:] += self.random.uniform(-0.01, 0.01, size=len(qpos[7:]))
+      physics.data.qpos[:] = qpos
+      
+      # Lift slightly off the ground to prevent clipping
+      physics.data.qpos[2] = 1.3
+      
+      physics.after_reset()
+      super().initialize_episode(physics)
 
   def get_observation(self, physics):
     """Returns either the pure state or a set of egocentric features."""
@@ -204,19 +224,31 @@ class Humanoid(base.Task):
     return self.last_reward_components.copy()
 
   def get_reward(self, physics):
-    head_h = physics.true_head_height()
-    standing = rewards.tolerance(head_h,
-                                 bounds=(1.4, float('inf')),
-                                 margin=0.6) 
+      # Posture & Height
+      # Head height (~1.5m if standing)
+      head_h = physics.true_head_height()
+      standing = rewards.tolerance(head_h,
+                                  bounds=(1.4, float('inf')),
+                                  margin=1.4,
+                                  sigmoid="linear") 
+      
+      # Torso alignment
+      upright = rewards.tolerance(physics.torso_upright(),
+                                  bounds=(0.9, float('inf')), 
+                                  margin=1.9,
+                                  sigmoid='linear')
 
-    upright = rewards.tolerance(physics.torso_upright(),
-                                bounds=(0.9, float('inf')), 
-                                margin=0.4)
-    stand_reward = standing * upright
-    
-    small_control = rewards.tolerance(physics.control(), margin=1,
-                                      value_at_margin=0,
-                                      sigmoid='quadratic').mean()
+      # Pelvis height
+      pelvis_h = physics.named.data.xpos["pelvis", "z"]
+      pelvis_reward = rewards.tolerance(
+          pelvis_h,
+          bounds=(0.9, float("inf")),
+          margin=0.9,
+      )
+      
+      # Base stand reward combining the above
+      stand_reward = standing * (0.5 + 0.5 * upright)
+      stand_reward *= (0.5 + 0.5 * pelvis_reward)
 
       # Flat feet reward
       left_foot_mat = physics.named.data.xmat["left_foot"]
