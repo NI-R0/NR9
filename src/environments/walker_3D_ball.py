@@ -440,40 +440,34 @@ class Physics(mujoco.Physics):
 
     @staticmethod
     def _flatness_curve(x: float) -> float:
-        """Shaped flatness curve: ~0 when far from flat, steep rise to 0.5,
-        full 1.0 only when completely flat.
+        """Linear flatness curve: 0 at vertical, 0.5 at horizontal.
 
         ``x`` is a [0, 1] flatness measure (1 = perfectly flat).
-        Returns a value in [0, 1] with the shape:
-          - x ≈ 0   → ~0 (not flat, almost no reward)
-          - x ≈ 0.8 → ~0.2 (approaching flat, steep rise begins)
-          - x ≈ 0.95→ ~0.5 (nearly flat, capped at 0.5)
-          - x = 1.0 → 1.0 (completely flat, full reward)
+        Returns ``0.5 * x``:
+          - x = 0.0 (vertical / on toes) → 0
+          - x = 0.7 (≈45°)              → 0.35
+          - x = 1.0 (horizontal sole)   → 0.5
 
-        Implemented as ``0.5 * x^4 + 0.5 * x^32``:
-        the x^4 term provides a moderate gradient, the x^32 term adds a
-        sharp bonus only when very close to perfectly flat.
+        The remaining 0.5 → 1.0 gap is bridged by the heel+toe shortcut
+        in :meth:`flat_foot_contact` (both sensors in contact → 1.0).
         """
         x = max(0.0, min(1.0, x))
-        return float(0.5 * x**2)
+        return float(0.5 * x)
 
     def flat_foot_contact(self):
         """Returns the flatness [0, 1] of the *best* foot touching the ground.
 
-        Combines two flatness measures via multiplication:
-        1. **Sole tilt** — cos(tilt) from the foot's rotation-matrix zz
-           component (1.0 = sole parallel to ground, 0.0 = vertical).
-        2. **Ankle-roll angle** — 1.0 when ankle_roll is at 0° (flat),
-           decaying to 0 at the joint's range limit (±30°).
+        Two paths:
+        1. **Heel+toe shortcut** — if both heel and toe sensors are in contact
+           for either foot, returns 1.0 immediately (foot is fully flat).
+        2. **Partial contact** — combines sole-tilt (xmat zz) and ankle-roll
+           flatness via multiplication.  Both measures are passed through
+           the linear :meth:`_flatness_curve` (0.5 * x), so even a partially
+           flat foot gets a meaningful gradient toward flatness.
 
-        Both are passed through :meth:`_flatness_curve` so the reward
-        stays near 0 unless the foot is close to flat, rises steeply to
-        0.5, and reaches 1.0 only when perfectly flat.
-
-        ``max(right, left)`` is returned so that one fully-flat foot
-        already gives the full standing reward — the agent is not
-        penalised for lifting the other foot (prerequisite for walking).
-        Feet with no ground contact contribute 0.0.
+        ``max(right, left)`` is returned so that one flat foot already gives
+        the full standing reward — the agent is not penalised for lifting
+        the other foot (prerequisite for walking).
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
