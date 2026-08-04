@@ -30,8 +30,7 @@ import os
 _DEFAULT_TIME_LIMIT = 10
 _CONTROL_TIMESTEP = .005
 
-# Height of head above which stand reward is 1.
-_STAND_HEIGHT = 1.4
+_RANDOM_INIT = True
 
 # Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
@@ -139,6 +138,19 @@ class Physics(mujoco.Physics):
         positions.append(torso_to_limb.dot(torso_frame))
     return np.hstack(positions)
 
+  def geom_touching_ground(self, geom_name):
+    floor_id = self.model.geom("floor").id
+    geom_id = self.model.geom(geom_name).id
+
+    for i in range(self.data.ncon):
+        contact = self.data.contact[i]
+
+        if ((contact.geom1 == floor_id and contact.geom2 == geom_id) or
+            (contact.geom2 == floor_id and contact.geom1 == geom_id)):
+            return True
+
+    return False
+
 
 class Humanoid(base.Task):
   """A humanoid task."""
@@ -168,28 +180,30 @@ class Humanoid(base.Task):
       physics: An instance of `Physics`.
 
     """
-    # # Find a collision-free random initial configuration.
-    # penetrating = True
-    # while penetrating:
-    #   randomizers.randomize_limited_and_rotational_joints(physics, self.random)
-    #   # Check for collisions.
-    #   physics.after_reset()
-    #   penetrating = physics.data.ncon > 0
-    # super().initialize_episode(physics)
+    if _RANDOM_INIT:
+      # Find a collision-free random initial configuration.
+      penetrating = True
+      while penetrating:
+          randomizers.randomize_limited_and_rotational_joints(physics, self.random)
+          # Check for collisions.
+          physics.after_reset()
+          penetrating = physics.data.ncon > 0
+      super().initialize_episode(physics)
 
-    # Set to default 'standing' pose defined in XML
-    physics.reset() 
-    
-    # Add only a TINY bit of noise to joint positions
-    qpos = physics.data.qpos.copy()
-    qpos[7:] += self.random.uniform(-0.01, 0.01, size=len(qpos[7:]))
-    physics.data.qpos[:] = qpos
-    
-    # Lift him slightly off the ground so he doesn't clip
-    physics.data.qpos[2] = 1.3
-    
-    physics.after_reset()
-    super().initialize_episode(physics)
+    else:
+      # Set to default 'standing' pose defined in XML
+      physics.reset() 
+      
+      # Add tiny bit of noise to joint positions
+      qpos = physics.data.qpos.copy()
+      qpos[7:] += self.random.uniform(-0.01, 0.01, size=len(qpos[7:]))
+      physics.data.qpos[:] = qpos
+      
+      # Lift slightly off the ground to prevent clipping
+      physics.data.qpos[2] = 1.3
+      
+      physics.after_reset()
+      super().initialize_episode(physics)
 
   def get_observation(self, physics):
     """Returns either the pure state or a set of egocentric features."""
@@ -210,41 +224,128 @@ class Humanoid(base.Task):
     return self.last_reward_components.copy()
 
   def get_reward(self, physics):
-    # Now head_height() will return ~1.5m if standing
-    head_h = physics.true_head_height()
-    
-    # Standing: Full reward at 1.4m, starts giving points at 0.8m
-    standing = rewards.tolerance(head_h,
-                                 bounds=(1.4, float('inf')),
-                                 margin=1.4) 
-    
-    # Upright: Torso must be vertical
-    upright = rewards.tolerance(physics.torso_upright(),
-                                bounds=(0.9, float('inf')), 
-                                margin=1.9,
-                                sigmoid='linear')
-    
-    # Multiplicative: must have both to get points
-    stand_reward = standing * upright
+      # Posture & Height
+      # Head height (~1.5m if standing)
+      head_h = physics.true_head_height()
+      standing = rewards.tolerance(head_h,
+                                  bounds=(1.4, float('inf')),
+                                  margin=1.4,
+                                  sigmoid="linear") 
+      
+      # Torso alignment
+      upright = rewards.tolerance(physics.torso_upright(),
+                                  bounds=(0.9, float('inf')), 
+                                  margin=1.9,
+                                  sigmoid='linear')
 
-    # Control penalty: Encourages efficiency
-    small_control = rewards.tolerance(physics.control(), margin=1,
-                                      value_at_margin=0,
-                                      sigmoid='quadratic').mean()
+      # Pelvis height
+      pelvis_h = physics.named.data.xpos["pelvis", "z"]
+      pelvis_reward = rewards.tolerance(
+          pelvis_h,
+          bounds=(0.9, float("inf")),
+          margin=0.9,
+      )
+      
+      # Base stand reward combining the above
+      stand_reward = standing * (0.5 + 0.5 * upright)
+      stand_reward *= (0.5 + 0.5 * pelvis_reward)
 
-    reward = max(
-        stand_reward * (0.5 + 0.5 * small_control),
-        1e-8
+      # Flat feet reward
+      left_foot_mat = physics.named.data.xmat["left_foot"]
+      right_foot_mat = physics.named.data.xmat["right_foot"]
+      left_foot_upright = left_foot_mat[8]
+      right_foot_upright = right_foot_mat[8]
+      
+      left_flat = rewards.tolerance(left_foot_upright, bounds=(0.98, 1.0), margin=0.15, sigmoid='linear')
+      right_flat = rewards.tolerance(right_foot_upright, bounds=(0.98, 1.0), margin=0.15, sigmoid='linear')
+      
+      # Check actual contact with the ground geom
+      left_touching = float(
+        physics.geom_touching_ground("left_left_foot") or 
+        physics.geom_touching_ground("right_left_foot")
     )
+      right_touching = float(
+          physics.geom_touching_ground("left_right_foot") or 
+          physics.geom_touching_ground("right_right_foot")
+      )
+      
+      # Only reward flatness if the foot is touching floor
+      left_flat_gated = left_flat * left_touching
+      right_flat_gated = right_flat * right_touching
+      feet_flat_reward = 0.5 * (left_flat_gated + right_flat_gated)
 
-    self.last_reward_components = {
-        "head_height": float(head_h),
-        "torso_upright": float(physics.torso_upright()),
-        "standing": float(standing),
-        "upright": float(upright),
-        "stand_reward": float(stand_reward),
-        "small_control": float(small_control),
-        "reward": float(reward),
-    }
+      # Combine flat feet and stand rewards
+      gated_stand_reward = stand_reward * (0.4 + 0.6 * feet_flat_reward)
 
-    return reward
+      # Velocity penalties 
+      # Center of mass (0.0 to 0.05 m/s is acceptable)
+      torso_vel_xy = physics.data.qvel[0:2] 
+      torso_speed_xy = np.linalg.norm(torso_vel_xy)
+      stillness_reward = rewards.tolerance(
+          torso_speed_xy,
+          bounds=(0, 0.05),
+          margin=0.5,
+          sigmoid='quadratic'
+      )
+
+      # Foot linear velocity to stop shuffle
+      left_foot_vel = physics.named.data.cvel['left_foot'][3:6]
+      right_foot_vel = physics.named.data.cvel['right_foot'][3:6]
+      left_foot_speed = np.linalg.norm(left_foot_vel)
+      right_foot_speed = np.linalg.norm(right_foot_vel)
+
+      left_foot_still = rewards.tolerance(left_foot_speed, bounds=(0, 0.02), margin=0.3, sigmoid='quadratic')
+      right_foot_still = rewards.tolerance(right_foot_speed, bounds=(0, 0.02), margin=0.3, sigmoid='quadratic')
+      feet_still_reward = 0.5 * (left_foot_still + right_foot_still)
+
+      # Combine stillness terms
+      stability_factor = 0.5 * stillness_reward + 0.5 * feet_still_reward
+
+      # Blend by scaling velocity based on pelvis height
+      vel_blend = (1.0 - pelvis_reward) + (pelvis_reward * stability_factor)
+      gated_stand_reward *= vel_blend
+
+      # Control Efficiency & Contact Penalties
+      small_control = rewards.tolerance(physics.control(), margin=1,
+                                        value_at_margin=0,
+                                        sigmoid='quadratic').mean()
+
+      contact_penalty = 1.0
+      num_penalty_contacts = 0
+      penalties = {
+          "left_shin": 0.8,
+          "right_shin": 0.8,
+          "left_thigh": 0.8,
+          "right_thigh": 0.8,
+          "lower_waist": 0.6,
+          "upper_waist": 0.6,
+          "butt": 0.5,
+          "torso": 0.3,
+      }
+
+      for geom, factor in penalties.items():
+          if physics.geom_touching_ground(geom):
+              contact_penalty *= factor
+              num_penalty_contacts += 1
+
+      # Final composition
+      reward = gated_stand_reward * (0.5 + 0.5 * small_control)
+      reward = max(reward * contact_penalty, 1e-8)
+
+      # Logging
+      self.last_reward_components = {
+          "head_height": float(head_h),
+          "torso_upright": float(physics.torso_upright()),
+          "standing": float(standing),
+          "upright": float(upright),
+          "pelvis_reward": float(pelvis_reward),
+          "feet_flat_reward": float(feet_flat_reward),
+          "stillness_reward": float(stillness_reward),
+          "feet_still_reward": float(feet_still_reward),
+          "vel_blend_multiplier": float(vel_blend),
+          "small_control": float(small_control),
+          "contact_penalty": float(contact_penalty),
+          "reward": float(reward),
+      }
+
+      return reward
