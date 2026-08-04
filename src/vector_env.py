@@ -15,10 +15,10 @@ observation in ``info["terminal_obs"]`` so the caller can store it in
 the replay buffer before using the new observation for the next step.
 """
 
-import atexit
 import numpy as np
 import multiprocessing as mp
 from multiprocessing import shared_memory
+from multiprocessing.connection import wait, Connection
 from loguru import logger
 
 
@@ -165,6 +165,7 @@ class ParallelVectorEnv:
             buffer=self._shm_segments["terminal_obs"].buf
         )
 
+        self._remote_to_idx: dict[Connection, int] = {}
         for i in range(num_envs):
             parent_remote, child_remote = ctx.Pipe()
             p = ctx.Process(
@@ -177,15 +178,13 @@ class ParallelVectorEnv:
             p.start()
             child_remote.close()
             self.remotes.append(parent_remote)
+            self._remote_to_idx[parent_remote] = i
             self.processes.append(p)
 
         self.state_dim = (state_dim,)
         self.action_dim = (action_dim,)
         self.action_min = None
         self.action_max = None
-
-        self._closed = False
-        atexit.register(self.close)
 
         logger.debug(
             f"ParallelVectorEnv initialized: num_envs={num_envs}, "
@@ -196,6 +195,7 @@ class ParallelVectorEnv:
         """Reset all environments and return stacked observations."""
         for remote in self.remotes:
             remote.send(("reset", None))
+        wait([r for r in self.remotes])
         for remote in self.remotes:
             remote.recv()  # ("reset_done", None)
         return self._next_state_buf.copy()
@@ -204,7 +204,7 @@ class ParallelVectorEnv:
         """Step all environments with the given batched actions.
 
         Writes actions into the shared action buffer, signals all workers
-        to step, then collects results from shared memory.
+        to step in parallel, then collects results from shared memory.
 
         Returns:
             next_states: (N, state_dim) - observation for the *next* step
@@ -215,13 +215,20 @@ class ParallelVectorEnv:
         """
         self._action_buf[:] = actions
 
+        # Fire all step commands in parallel
         for remote in self.remotes:
             remote.send(("step", None))
 
-        infos = []
-        for remote in self.remotes:
-            _, info = remote.recv()
-            infos.append(info)
+        # Collect responses in parallel using wait(), then map back to env index
+        infos: list[dict] = [None] * self.num_envs  # type: ignore[assignment]
+        remaining = list(self.remotes)
+        while remaining:
+            ready = wait(remaining, timeout=None)
+            for remote in ready:
+                _, info = remote.recv()
+                idx = self._remote_to_idx[remote]
+                infos[idx] = info
+                remaining.remove(remote)
 
         next_states = self._next_state_buf.copy()
         rewards = self._reward_buf.copy()
@@ -235,9 +242,6 @@ class ParallelVectorEnv:
         return next_states, rewards, dones, infos
 
     def close(self):
-        if self._closed:
-            return
-        self._closed = True
         for remote in self.remotes:
             try:
                 remote.send(("close", None))

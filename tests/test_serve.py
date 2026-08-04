@@ -38,7 +38,7 @@ def _make_fake_checkpoint(path: str, value: int):
 
 
 class _FakeAgent:
-    """Minimal stand-in for SoccerAgent with a learner.state attribute."""
+    """Minimal stand-in for MPOAgent with a learner.state attribute."""
 
     class _Learner:
         state = None

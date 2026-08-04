@@ -99,12 +99,12 @@ _TARGET_HIT_BONUS = 5.0  # flat bonus added to reward when ball reaches target
 # Early-termination thresholds
 # ---------------------------------------------------------------------------
 # The episode terminates immediately when the agent "falls": either the
-# torso drops below a safe height or non-foot body parts touch the ground
-# firmly.  A short grace period after reset prevents spurious terminations
-# from initial randomization.
+# torso drops below a safe height, non-foot body parts touch the ground
+# firmly, or both knees hit the ground (agent collapsed on knees).
 _TERMINATE_HEIGHT = 0.5       # Torso height (m) below which episode ends
 _TERMINATE_NON_FOOT = 0     # Sum of tanh(non-foot touch) that triggers end
 _TERMINATE_GRACE_STEPS = 10  # Steps after reset before termination is active (0.25s)
+_TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on ground"
 
 # ---------------------------------------------------------------------------
 # Reward design – cascading gates, single set of weights
@@ -719,6 +719,18 @@ class Physics(mujoco.Physics):
             self.data.xpos[self._bid_left_foot, 2],
         ])
 
+    def knee_heights(self):
+        """Returns [right_knee_z, left_knee_z] world-z heights of the knee joints.
+
+        Uses the world position of the right_leg / left_leg body (the knee joint
+        sits at the origin of these bodies in the kinematic tree).
+        """
+        self._ensure_indices()
+        return np.array([
+            self.data.xpos[self._bid_right_leg, 2],
+            self.data.xpos[self._bid_left_leg, 2],
+        ])
+
     def joint_positions(self):
         """Returns all non-root joint angles as a 1-D array (12 joints).
 
@@ -1005,6 +1017,8 @@ class Walker3DBall(base.Task):
         1. **Torso too low** — ``torso_height() < _TERMINATE_HEIGHT`` (fallen down).
         2. **Non-foot contact** — any non-foot body part touches the ground
            firmly (summed tanh touch > ``_TERMINATE_NON_FOOT``).
+        3. **Both knees on ground** — both knee z-positions below
+           ``_TERMINATE_KNEE_HEIGHT`` (agent collapsed on knees).
 
         The time-limit termination (1000 steps) is handled by the
         ``control.Environment`` itself via ``time_limit``.
@@ -1015,6 +1029,9 @@ class Walker3DBall(base.Task):
         if physics.torso_height() < _TERMINATE_HEIGHT:
             return True
         if physics.non_foot_touch() > _TERMINATE_NON_FOOT:
+            return True
+        knee_z = physics.knee_heights()
+        if knee_z[0] < _TERMINATE_KNEE_HEIGHT or knee_z[1] < _TERMINATE_KNEE_HEIGHT:
             return True
         return False
 
