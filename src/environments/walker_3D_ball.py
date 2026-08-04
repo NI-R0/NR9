@@ -76,11 +76,14 @@ from dm_control.suite import base
 from dm_control.suite import common
 from dm_control.utils import containers
 from dm_control.utils import rewards
+from loguru import logger
 import numpy as np
 
 
 _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = 0.025
+_STUCK_CHECK_STEPS = 25
+_STUCK_EPSILON = 1e-3
 _GATE_SMOOTHING = 10   # Rolling window size for gate cascade smoothing
 _STAND_HEIGHT = 1.2  # below fully-upright; allows forward lean when running
 _WALK_SPEED = 1
@@ -475,8 +478,8 @@ class Physics(mujoco.Physics):
         if ((touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD) or (touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD)):
             return 1
 
-        r_touching = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD or touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
-        l_touching = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD or touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
+        r_touching = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
+        l_touching = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
 
         # Sole tilt flatness via xmat zz-component
         r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8])) if r_touching else 0.0
@@ -1027,6 +1030,9 @@ class Walker3DBall(base.Task):
         knee_z = physics.knee_heights()
         if knee_z[0] < _TERMINATE_KNEE_HEIGHT or knee_z[1] < _TERMINATE_KNEE_HEIGHT:
             return True
+        if getattr(self, '_stuck_count', 0) >= _STUCK_CHECK_STEPS:
+            logger.warning("Episode terminated: agent stuck (no obs/act change for 10 steps)")
+            return True
         return False
 
     def get_reward(self, physics):
@@ -1330,5 +1336,27 @@ class Walker3DBall(base.Task):
             "leg_spread": _W_LEG_SPREAD * leg_spread * stand_penalty_fade,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
+        # --- Stuck detection (input/output similarity) ---
+        current_obs = self.get_observation(physics)
+        flat_obs = np.concatenate([v.ravel() for v in current_obs.values()])
+        current_act = ctrl.copy()
+
+        last_obs = getattr(self, '_last_obs', None)
+        last_act = getattr(self, '_last_action', None)
+        stuck_count = getattr(self, '_stuck_count', 0)
+
+        if last_obs is not None:
+            if np.max(np.abs(flat_obs - last_obs)) < _STUCK_EPSILON and \
+               np.max(np.abs(current_act - last_act)) < _STUCK_EPSILON:
+                stuck_count += 1
+            else:
+                stuck_count = 0
+        else:
+            stuck_count = 0
+
+        self._stuck_count = stuck_count
+        self._last_obs = flat_obs
+        self._last_action = current_act
+
         self._prev_action = ctrl.copy()
         return float(reward)
