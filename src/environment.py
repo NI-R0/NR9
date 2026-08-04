@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Union
 import src.environments.suite as suite
 from dm_control import suite as dm_suite
 from loguru import logger
@@ -8,22 +9,40 @@ import sys
 class Environment:
     def __init__(self, domain_name: str = "cartpole", task_name: str = "balance", max_steps: int = 1000):
         """Standard dm_control wrapper. Flattens dict observations into 1D arrays."""
+        self._preferred_camera: Union[str, int] = 0
         self.env = self._load_control_env(domain_name, task_name)
 
         self.action_spec = self.env.action_spec()
         self.action_dim = self.action_spec.shape
 
-        # Determine state dimensions by running dummy timestep
         first_timestep = self.env.reset()
         self.state_dim = self._flatten_observation(first_timestep.observation).shape
 
         self.ep_max_steps = max_steps
+        self._setup_camera()
+
+    def _setup_camera(self):
+        """Pick the best available named camera, falling back to camera 0."""
+        physics = self.env.physics
+
+        def camera_exists(name: str) -> bool:
+            try:
+                physics.model.name2id(name, 'camera')
+                return True
+            except (KeyError, ValueError):
+                return False
+
+        for cam in ('side', 'back', 'lookatcart', 'fixed'):
+            if camera_exists(cam):
+                self._preferred_camera = cam
+                return
+        self._preferred_camera = 0
 
     def _load_control_env(self, domain_name: str, task_name: str):
         try:
             return dm_suite.load(domain_name=domain_name, task_name=task_name)
         except ValueError:
-            pass  # if we reach this error, we try to load a custom env
+            pass
         try:
             return suite.load(domain_name=domain_name, task_name=task_name)
         except Exception as e:
@@ -31,7 +50,6 @@ class Environment:
             sys.exit(1)
 
     def _flatten_observation(self, obs_dict: dict) -> np.ndarray:
-        # Concatenates position, velocity, etc. into a flat vector for the MLPs
         return np.concatenate([np.asarray(val).ravel() for val in obs_dict.values()]).astype(np.float32)
 
     def _get_reward_components(self):
@@ -49,29 +67,30 @@ class Environment:
         return self._flatten_observation(self.env.reset().observation)
 
     def step(self, action: np.ndarray):
-        # Clip action to physics bounds to prevent MuJoCo integration crashes
-        action = np.clip(
-            action,
-            self.action_spec.minimum,
-            self.action_spec.maximum
-        )
+        action = np.clip(action, self.action_spec.minimum, self.action_spec.maximum)
         timestep = self.env.step(action)
 
         state = self._flatten_observation(timestep.observation)
         reward = timestep.reward if timestep.reward is not None else 0.0
         done = timestep.last()
 
-        info = self._get_reward_components()
+        # Check custom early-termination (e.g. agent fell).
+        # Only active if the task implements should_terminate and the
+        # timestep is not already terminated by the time limit.
+        if not done:
+            task = getattr(self.env, 'task', None)
+            if task is not None and hasattr(task, 'should_terminate'):
+                if task.should_terminate(self.env.physics):
+                    done = True
+
+        info = {}
+        task = getattr(self.env, 'task', None)
+        if task is not None and hasattr(task, '_reward_components'):
+            info['reward_components'] = dict(task._reward_components)
 
         return state, reward, done, info
 
-    def render(self, height: int = 240, width: int = 320, camera_id: int = 0):
-        """Returns the current frame as an (H, W, 3) uint8 RGB array.
-
-        Requires a configured MuJoCo GL backend (env var MUJOCO_GL=egl or
-        osmesa for headless offscreen rendering, glfw if a real display is
-        available), set before dm_control is imported.
-
-        Author's Note: Rendering process designed by Claude. 
-        """
-        return self.env.physics.render(height=height, width=width, camera_id=camera_id)
+    def render(self, height: int = 240, width: int = 320, camera_id: Union[str, int] = None):
+        """Returns the current frame as an (H, W, 3) uint8 RGB array."""
+        cam = camera_id if camera_id is not None else self._preferred_camera
+        return self.env.physics.render(height=height, width=width, camera_id=cam)

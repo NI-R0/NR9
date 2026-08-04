@@ -11,9 +11,7 @@
 # Fallback to gpu_a100_short if gpu_h100_short is unavailable:
 #   sbatch --partition=gpu_a100_short scripts/train_humanoid_stand.sbatch
 
-# Load uv into PATH
 export PATH="$HOME/.local/bin:$PATH"
-
 cd "$HOME/NR9"
 mkdir -p logs
 
@@ -27,4 +25,4 @@ export OPENBLAS_NUM_THREADS=1
 uv sync --frozen
 
 # Run training with 72 parallel environments (3 envs per CPU)
-uv run python main.py --env_domain humanoid_custom --env_task stand --episodes 20000 --num_envs 24 --eval_frequency 24 --sgd_steps_per_learner_step 24 --epsilon_std 1e-4 --epsilon_mean 0.1 --lr 5e-4
+uv run python main.py --env_domain humanoid_custom --env_task stand --episodes 10000 --num_envs 24 --eval_frequency 2 --num_eval_episodes 8 --sgd_steps_per_learner_step 24

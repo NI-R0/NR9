@@ -16,12 +16,16 @@
 """A collection of MuJoCo-based Reinforcement Learning environments."""
 
 import collections
+import importlib
 import inspect
 import itertools
+import pkgutil
 from dm_control.rl import control
 import src.environments as _envs
 
-# Find all domains imported in the environments package.
+for _finder, _name, _ in pkgutil.iter_modules(_envs.__path__):
+    importlib.import_module(f"{_envs.__name__}.{_name}")
+
 _DOMAINS = {name: mod for name, mod in inspect.getmembers(_envs, inspect.ismodule)
             if hasattr(mod, 'SUITE')}
 
@@ -55,18 +59,13 @@ def _get_tasks_by_domain(tasks):
     return {k: tuple(v) for k, v in result.items()}
 
 
-# A sequence containing all (domain name, task name) pairs.
 ALL_TASKS = _get_tasks(tag=None)
-
-# Subsets of ALL_TASKS, generated via the tag mechanism.
 BENCHMARKING = _get_tasks('benchmarking')
 EASY = _get_tasks('easy')
 HARD = _get_tasks('hard')
 EXTRA = tuple(sorted(set(ALL_TASKS) - set(BENCHMARKING)))
 NO_REWARD_VIZ = _get_tasks('no_reward_visualization')
 REWARD_VIZ = tuple(sorted(set(ALL_TASKS) - set(NO_REWARD_VIZ)))
-
-# A mapping from each domain name to a sequence of its task names.
 TASKS_BY_DOMAIN = _get_tasks_by_domain(ALL_TASKS)
 
 

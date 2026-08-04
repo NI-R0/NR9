@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 
+
 class MPOActor:
     def __init__(self, actor_net):
         self.actor_net = actor_net
@@ -12,13 +13,13 @@ class MPOActor:
 
         def sampled():
             return dist.sample(seed=subkey)
+
         def deterministic():
             return dist.mode()
 
         action = jax.lax.cond(explore, sampled, deterministic)
-
         action = jnp.tanh(action)
-        
+        action = jnp.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0)
         return action, key
 
     def select_action(self, params, observation, key, explore=True):
@@ -33,7 +34,7 @@ class MPOActor:
         """Select actions for a batch of observations (vectorized envs).
 
         Args:
-            observations: (N, obs_dim) array — always 2-D.
+            observations: (N, obs_dim) array - always 2-D.
 
         Returns:
             actions: (N, action_dim) array.
