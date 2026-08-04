@@ -30,6 +30,9 @@ class NStepTransitionBuffer:
         self._size = 0
         self._pos = 0
 
+        # Precompute gamma powers for discounted reward aggregation.
+        self._gamma_powers = np.power(gamma, np.arange(n_step + 1), dtype=np.float32)
+
         self._states = np.zeros((capacity, *self._state_shape), dtype=np.float32)
         self._next_states = np.zeros((capacity, *self._state_shape), dtype=np.float32)
         self._actions = np.zeros((capacity, *self._action_shape), dtype=np.float32)
@@ -81,9 +84,22 @@ class NStepTransitionBuffer:
         ``dones`` may be True for some envs and False for others; each
         env's n-step window is tracked independently.
         """
+        # Fast path: append to all windows in one pass, then commit where possible
         for i in range(self._num_envs):
-            self.add(states[i], actions[i], rewards[i], next_states[i],
-                     dones[i], env_id=i)
+            self._windows[i].append({
+                "state": np.asarray(states[i], dtype=np.float32),
+                "action": np.asarray(actions[i], dtype=np.float32),
+                "reward": float(rewards[i]),
+                "next_state": np.asarray(next_states[i], dtype=np.float32),
+                "done": float(dones[i]),
+            })
+            window = self._windows[i]
+            if len(window) >= self._n_step:
+                self._commit_nstep(window)
+            if dones[i]:
+                while len(window) > 0:
+                    self._commit_nstep(window)
+                window.clear()
 
     def _commit_nstep(self, window):
         """Commit the oldest n-step (or shorter if flushing) transition."""
@@ -91,11 +107,12 @@ class NStepTransitionBuffer:
         first = window[0]
         last = window[-1]
 
-        discounted_reward = 0.0
-        for i, trans in enumerate(window):
-            discounted_reward += (self._gamma ** i) * trans["reward"]
+        discounted_reward = np.dot(
+            self._gamma_powers[:n],
+            np.array([t["reward"] for t in window], dtype=np.float32),
+        )
 
-        discount = self._gamma ** n
+        discount = self._gamma_powers[n]
         done = last["done"]
 
         self._states[self._pos] = first["state"]
