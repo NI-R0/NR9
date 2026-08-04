@@ -181,7 +181,6 @@ def train(args: dict, stats: StatsCollector):
     for sig in (signal.SIGTERM, signal.SIGINT):
         previous_handlers[sig] = signal.signal(sig, _signal_handler)
 
-    success = False
     try:
         while True:
             episode += 1
@@ -227,22 +226,18 @@ def train(args: dict, stats: StatsCollector):
                 break
             if shutdown_requested:
                 break
-        success = True
     finally:
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
 
-        if success:
-            try:
-                stats.save_train_state(episode, agent.learner.state, buffer, stats,
-                                       agent_step_count=agent._step_count)
-                stats.flush_stats_to_disk()
-                stats.save_checkpoint(agent.learner.state, "final")
-                logger.info(f"Dumped training statistics to {stats.stats_file}.")
-            except Exception:
-                logger.exception("Failed to save final training state.")
-        else:
-            logger.error("Training loop exited via exception!")
+        try:
+            stats.save_train_state(episode, agent.learner.state, buffer, stats,
+                                   agent_step_count=agent._step_count)
+            stats.flush_stats_to_disk()
+            stats.save_checkpoint(agent.learner.state, "final")
+            logger.info(f"Dumped training statistics to {stats.stats_file}.")
+        except Exception:
+            logger.exception("Failed to save final training state.")
 
         if use_vectorized:
             venv.close()
