@@ -321,7 +321,7 @@ class ParallelVectorEnv:
                 failed_workers = np.where(failed_mask)[0].tolist()
                 error_details = []
                 for w in failed_workers:
-                    log_path = os.path.join(self._worker_log_dir, f"worker_{w}.log")
+                    log_path = os.path.join(self._worker_log_dir, f"worker_{w}_init_error.log")
                     try:
                         with open(log_path) as f:
                             error_details.append(f"Worker {w}: {f.read().strip()}")
