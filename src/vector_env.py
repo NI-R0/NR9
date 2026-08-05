@@ -5,18 +5,19 @@ Communication uses **pure shared memory** — no pipes for per-step data:
 
 - **Shared-memory NumPy arrays** carry actions, observations, rewards,
   dones, terminal observations, AND command/status signals.
-- Workers poll their command slot; master sets ``CMD_STEP`` and waits
-  for all workers to set ``ready``.  No pickling, no pipe I/O per step.
+- Workers **block on an Event** until the master sets their command,
+  then execute and set a ready-flag. No sleep-polling.
 - A fixed-size reward-components buffer stores per-step reward breakdowns
   directly in shared memory.  Keys are communicated once during init.
 
-This eliminates ~2.6M pipe send/recv calls per 5-min run (72 envs ×
-18k steps × 2), reducing IPC overhead from ~164s to ~5-10s.
+This eliminates ~2.6M pipe send/recv calls per 5-min run (72 envs x
+18k steps x 2), reducing IPC overhead from ~164s to ~5-10s.
+The sleep-polling overhead (~100s per 25-min run) is eliminated by
+using Event-based signaling instead of busy-wait polling.
 """
 
 import json
 import os
-import struct
 import numpy as np
 import multiprocessing as mp
 from multiprocessing import shared_memory
@@ -41,13 +42,13 @@ def _worker_fn(
     num_envs: int,
     num_reward_keys: int,
     log_dir: str,
+    command_event,  # multiprocessing.Event — set by master when command is ready
 ):
-    """Worker process: owns one Environment, polls shared-memory command slot.
+    """Worker process: owns one Environment, blocks on Event for commands.
 
-    No pipes — the worker reads its command from ``command_buf[env_idx]``,
-    performs the action, writes results to shared memory, and sets
-    ``ready_buf[env_idx] = True``.  The master clears the ready flag
-    before issuing the next command.
+    No pipes, no polling. The worker waits on ``command_event`` until
+    the master sets a command, then executes and writes results to shared
+    memory.  The master polls the ready-flag once.
     """
     import sys
     import os as _os
@@ -112,7 +113,7 @@ def _worker_fn(
         ready_buf[env_idx] = 1
 
     except Exception:
-        # Worker init failed — write error to log file
+        # Worker init failed -- write error to log file
         err_msg = (
             f"Worker {env_idx} failed to initialise: "
             f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}\n"
@@ -129,25 +130,21 @@ def _worker_fn(
         sys.exit(1)
 
     try:
-        import time as _time
-
         while True:
-            # ── Phase 1: Wait for a non-IDLE command ──────────────────
-            # Re-read command from shared memory every iteration so we
-            # don't spin on a stale local copy.
+            # ── Phase 1: Block until master signals a new command ────
+            command_event.wait()
+            command_event.clear()
+
             cmd = command_buf[env_idx]
-            if cmd == _CMD_IDLE:
-                _time.sleep(0.00001)  # 0.01ms yield — fast enough to reduce latency
-                continue
             if cmd == _CMD_CLOSE:
                 break
 
-            # ── Phase 2: Execute command ──────────────────────────────
+            # ── Phase 2: Execute command ─────────────────────────────
             if cmd == _CMD_STEP:
                 action = action_buf[env_idx].copy()
                 state, reward, done, info = env.step(action)
 
-                # Reward components → shared memory
+                # Reward components -- shared memory
                 if "reward_components" in info and actual_num_keys > 0:
                     rc = info["reward_components"]
                     for ki, key in enumerate(reward_keys):
@@ -168,20 +165,12 @@ def _worker_fn(
                 state = env.reset()
                 next_state_buf[env_idx] = state
                 ready_buf[env_idx] = 1
-            else:
-                continue  # Unknown command, re-poll
-
-            # ── Phase 3: Wait for master to acknowledge (IDLE) ───────
-            # Master reads data, sets command back to IDLE.  This
-            # prevents the worker from re-executing the same command.
-            while command_buf[env_idx] != _CMD_IDLE:
-                pass  # Tight spin — master resets IDLE quickly
-            ready_buf[env_idx] = 0
+            # else: spurious wake-up, re-block
 
     except KeyboardInterrupt:
         pass
     except Exception:
-        # Runtime crash — log it so the master can diagnose timeouts
+        # Runtime crash -- log it so the master can diagnose timeouts
         err_msg = (
             f"Worker {env_idx} runtime crash: "
             f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}\n"
@@ -206,8 +195,9 @@ def _worker_fn(
 class ParallelVectorEnv:
     """Runs ``num_envs`` dm_control environments in separate processes.
 
-    Pure shared-memory communication: commands, status flags, and all
-    data arrays live in shared memory.  No per-step pipe I/O.
+    Pure shared-memory communication with **Event-based synchronization**.
+    Workers block on an Event instead of polling with sleep, eliminating
+    the ~100s sleep-overhead per 25-min run.
     """
 
     # Upper bound on reward-component keys per environment.
@@ -291,6 +281,11 @@ class ParallelVectorEnv:
         # Read reward keys (written by worker 0 during init).
         self._reward_keys: list[str] = []
 
+        # ── Per-worker Events (one per worker for command signaling) ──
+        # Each worker blocks on its event; master sets it before issuing a
+        # batched command.  This replaces the sleep-polling loop entirely.
+        self._command_events: list[mp.Event] = [ctx.Event() for _ in range(num_envs)]
+
         # ── Spawn worker processes ─────────────────────────────────────
         self.processes: list[mp.Process] = []
 
@@ -314,6 +309,7 @@ class ParallelVectorEnv:
                     num_envs,
                     self.MAX_REWARD_KEYS,
                     self._worker_log_dir,
+                    self._command_events[i],
                 ),
                 daemon=True,
             )
@@ -391,19 +387,28 @@ class ParallelVectorEnv:
 
     # ── Synchronisation helpers ────────────────────────────────────────
 
-    def _wait_all_ready(self, timeout: float = 60.0) -> None:
-        """Busy-wait until all workers set their ready flag.
+    def _signal_all(self) -> None:
+        """Wake all workers by setting their command Events."""
+        for e in self._command_events:
+            e.set()
 
-        Uses a tight loop with a short sleep to avoid wasting CPU, but
-        checks frequently enough for low latency.
+    def _wait_all_ready(self, timeout: float = 60.0) -> None:
+        """Wait until all workers set their ready flag.
+
+        Uses a lightweight busy-loop (no sleep) since workers should
+        respond quickly after being woken by the Event.
         """
         import time
-        import traceback as _tb
         deadline = time.monotonic() + timeout
+        ready_count = 0
         while time.monotonic() < deadline:
             if np.all(self._ready_buf[: self.num_envs]):
                 return
-            time.sleep(0.0001)  # 0.1ms — tight enough for responsiveness
+            # Only sleep if NO progress has been made for a while
+            new_ready = int(np.sum(self._ready_buf[: self.num_envs]))
+            if new_ready == ready_count:
+                time.sleep(0.001)  # 1ms yield only when stuck
+            ready_count = new_ready
         not_ready = np.where(self._ready_buf[: self.num_envs] == 0)[0]
 
         # Diagnose: check process states for hung workers
@@ -417,8 +422,8 @@ class ParallelVectorEnv:
             )
 
         # Check for worker error logs (runtime crashes)
-        runtime_errors = []
         import glob as _glob
+        runtime_errors = []
         for logfile in _glob.glob(
             os.path.join(self._worker_log_dir, "worker_*_error.log")
         ):
@@ -438,11 +443,7 @@ class ParallelVectorEnv:
         )
 
     def _clear_ready(self) -> None:
-        """Clear ready flags and reset commands to IDLE for all envs.
-
-        Must set command to IDLE *before* clearing ready, so that workers
-        blocked in Phase 3 (waiting for IDLE after step/reset) can proceed.
-        """
+        """Clear ready flags and reset commands to IDLE for all envs."""
         self._command_buf[: self.num_envs] = _CMD_IDLE
         self._ready_buf[: self.num_envs] = 0
 
@@ -451,6 +452,7 @@ class ParallelVectorEnv:
     def reset(self) -> np.ndarray:
         """Reset all environments and return stacked observations."""
         self._command_buf[: self.num_envs] = _CMD_RESET
+        self._signal_all()
         self._wait_all_ready()
         self._command_buf[: self.num_envs] = _CMD_IDLE  # Acknowledge workers
         return self._next_state_buf.copy()
@@ -461,13 +463,14 @@ class ParallelVectorEnv:
         Returns:
             next_states: (N, state_dim)
             rewards: (N,)
-            dones: (N,)  — bool array
-            infos: list[dict]  — reward_components + terminal_obs
+            dones: (N,)  -- bool array
+            infos: list[dict]  -- reward_components + terminal_obs
         """
         self._action_buf[:] = actions
         self._command_buf[: self.num_envs] = _CMD_STEP
-        self._wait_all_ready()
-        self._clear_ready()
+        self._signal_all()          # wake all workers
+        self._wait_all_ready()      # block until all done
+        self._clear_ready()         # clear for next step
 
         next_states = self._next_state_buf.copy()
         rewards = self._reward_buf.copy()
@@ -495,6 +498,7 @@ class ParallelVectorEnv:
     def close(self) -> None:
         """Signal all workers to shut down and join them."""
         self._command_buf[: self.num_envs] = _CMD_CLOSE
+        self._signal_all()
         for p in self.processes:
             p.join(timeout=5)
             if p.is_alive():
