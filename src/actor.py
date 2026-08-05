@@ -18,8 +18,7 @@ class MPOActor:
             return dist.mode()
 
         action = jax.lax.cond(explore, sampled, deterministic)
-        action = jnp.tanh(action)
-        action = jnp.nan_to_num(action, nan=0.0, posinf=1.0, neginf=-1.0)
+        
         return action, key
 
     def select_action(self, params, observation, key, explore=True):

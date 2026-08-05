@@ -28,9 +28,11 @@ import numpy as np
 import os
 
 _DEFAULT_TIME_LIMIT = 10
-_CONTROL_TIMESTEP = .005
+_CONTROL_TIMESTEP = .025
 
 _RANDOM_INIT = True
+PHASE2_ENABLED = False
+PHASE3_ENABLED = False
 
 # Horizontal speeds above which move reward is 1.
 _WALK_SPEED = 1
@@ -170,7 +172,7 @@ class Humanoid(base.Task):
     """
     self._move_speed = move_speed
     self._pure_state = pure_state
-    self.last_reward_components = {}
+    self._reward_components = {}
     super().__init__(random=random)
 
   def initialize_episode(self, physics):
@@ -221,131 +223,132 @@ class Humanoid(base.Task):
     return obs
   
   def get_reward_components(self):
-    return self.last_reward_components.copy()
+    return self._reward_components.copy()
 
   def get_reward(self, physics):
-      # Posture & Height
-      # Head height (~1.5m if standing)
-      head_h = physics.true_head_height()
-      standing = rewards.tolerance(head_h,
-                                  bounds=(1.4, float('inf')),
-                                  margin=1.4,
-                                  sigmoid="linear") 
-      
-      # Torso alignment
-      upright = rewards.tolerance(physics.torso_upright(),
-                                  bounds=(0.9, float('inf')), 
-                                  margin=1.9,
-                                  sigmoid='linear')
+    # ================================================================
+    # PHASE 1: Core standing + stillness (always active)
+    # ================================================================
 
-      # Pelvis height
-      pelvis_h = physics.named.data.xpos["pelvis", "z"]
-      pelvis_reward = rewards.tolerance(
-          pelvis_h,
-          bounds=(0.9, float("inf")),
-          margin=0.9,
-      )
-      
-      # Base stand reward combining the above
-      stand_reward = standing * (0.5 + 0.5 * upright)
-      stand_reward *= (0.5 + 0.5 * pelvis_reward)
+    # --- Standing objective ---
+    head_h = physics.true_head_height()
+    standing = rewards.tolerance(head_h, bounds=(1.4, float('inf')),
+                                 margin=1.4, sigmoid="linear")
 
-      # Flat feet reward
-      left_foot_mat = physics.named.data.xmat["left_foot"]
-      right_foot_mat = physics.named.data.xmat["right_foot"]
-      left_foot_upright = left_foot_mat[8]
-      right_foot_upright = right_foot_mat[8]
-      
-      left_flat = rewards.tolerance(left_foot_upright, bounds=(0.98, 1.0), margin=0.15, sigmoid='linear')
-      right_flat = rewards.tolerance(right_foot_upright, bounds=(0.98, 1.0), margin=0.15, sigmoid='linear')
-      
-      # Check actual contact with the ground geom
-      left_touching = float(
-        physics.geom_touching_ground("left_left_foot") or 
-        physics.geom_touching_ground("right_left_foot")
-    )
-      right_touching = float(
-          physics.geom_touching_ground("left_right_foot") or 
-          physics.geom_touching_ground("right_right_foot")
-      )
-      
-      # Only reward flatness if the foot is touching floor
-      left_flat_gated = left_flat * left_touching
-      right_flat_gated = right_flat * right_touching
-      feet_flat_reward = 0.5 * (left_flat_gated + right_flat_gated)
+    upright = rewards.tolerance(physics.torso_upright(),
+                                bounds=(0.9, float('inf')),
+                                margin=1.9, sigmoid='linear')
 
-      # Combine flat feet and stand rewards
-      gated_stand_reward = stand_reward * (0.4 + 0.6 * feet_flat_reward)
+    stand_reward = 0.5 * standing + 0.5 * upright
 
-      # Velocity penalties 
-      # Center of mass (0.0 to 0.05 m/s is acceptable)
-      torso_vel_xy = physics.data.qvel[0:2] 
-      torso_speed_xy = np.linalg.norm(torso_vel_xy)
-      stillness_reward = rewards.tolerance(
-          torso_speed_xy,
-          bounds=(0, 0.05),
-          margin=0.5,
-          sigmoid='quadratic'
-      )
+    # --- Stillness (curriculum-gated by pelvis height) ---
+    pelvis_h = physics.named.data.xpos["pelvis", "z"]
+    pelvis_reward = rewards.tolerance(pelvis_h, bounds=(0.9, float('inf')),
+                                      margin=0.9)
 
-      # Foot linear velocity to stop shuffle
-      left_foot_vel = physics.named.data.cvel['left_foot'][3:6]
-      right_foot_vel = physics.named.data.cvel['right_foot'][3:6]
-      left_foot_speed = np.linalg.norm(left_foot_vel)
-      right_foot_speed = np.linalg.norm(right_foot_vel)
+    torso_speed_xy = np.linalg.norm(physics.data.qvel[0:2])
+    stillness = rewards.tolerance(torso_speed_xy, bounds=(0, 0.05),
+                                  margin=0.5, sigmoid='quadratic')
 
-      left_foot_still = rewards.tolerance(left_foot_speed, bounds=(0, 0.02), margin=0.3, sigmoid='quadratic')
-      right_foot_still = rewards.tolerance(right_foot_speed, bounds=(0, 0.02), margin=0.3, sigmoid='quadratic')
-      feet_still_reward = 0.5 * (left_foot_still + right_foot_still)
+    vel_blend = (1.0 - pelvis_reward) + pelvis_reward * stillness
+    reward = stand_reward * vel_blend  # [0, 1]
 
-      # Combine stillness terms
-      stability_factor = 0.5 * stillness_reward + 0.5 * feet_still_reward
+    # ================================================================
+    # PHASE 2: Flat feet reward (toggle: PHASE2_ENABLED)
+    # ================================================================
+    feet_flat_reward = 0.0
 
-      # Blend by scaling velocity based on pelvis height
-      vel_blend = (1.0 - pelvis_reward) + (pelvis_reward * stability_factor)
-      gated_stand_reward *= vel_blend
+    if PHASE2_ENABLED:
+        left_foot_mat = physics.named.data.xmat["left_foot"]
+        right_foot_mat = physics.named.data.xmat["right_foot"]
+        left_foot_upright = left_foot_mat[8]
+        right_foot_upright = right_foot_mat[8]
 
-      # Control Efficiency & Contact Penalties
-      small_control = rewards.tolerance(physics.control(), margin=1,
-                                        value_at_margin=0,
-                                        sigmoid='quadratic').mean()
+        left_flat = rewards.tolerance(left_foot_upright, bounds=(0.98, 1.0),
+                                      margin=0.15, sigmoid='linear')
+        right_flat = rewards.tolerance(right_foot_upright, bounds=(0.98, 1.0),
+                                       margin=0.15, sigmoid='linear')
 
-      contact_penalty = 1.0
-      num_penalty_contacts = 0
-      penalties = {
-          "left_shin": 0.8,
-          "right_shin": 0.8,
-          "left_thigh": 0.8,
-          "right_thigh": 0.8,
-          "lower_waist": 0.6,
-          "upper_waist": 0.6,
-          "butt": 0.5,
-          "torso": 0.3,
-      }
+        # Only reward flatness if the foot is actually touching floor
+        left_touching = float(
+            physics.geom_touching_ground("left_left_foot") or
+            physics.geom_touching_ground("right_left_foot")
+        )
+        right_touching = float(
+            physics.geom_touching_ground("left_right_foot") or
+            physics.geom_touching_ground("right_right_foot")
+        )
 
-      for geom, factor in penalties.items():
-          if physics.geom_touching_ground(geom):
-              contact_penalty *= factor
-              num_penalty_contacts += 1
+        left_flat_gated = left_flat * left_touching
+        right_flat_gated = right_flat * right_touching
+        feet_flat_reward = 0.5 * (left_flat_gated + right_flat_gated)
 
-      # Final composition
-      reward = gated_stand_reward * (0.5 + 0.5 * small_control)
-      reward = max(reward * contact_penalty, 1e-8)
+        # Blend in: 90% stand, 10% feet flat
+        reward = 0.9 * reward + 0.1 * feet_flat_reward
 
-      # Logging
-      self.last_reward_components = {
-          "head_height": float(head_h),
-          "torso_upright": float(physics.torso_upright()),
-          "standing": float(standing),
-          "upright": float(upright),
-          "pelvis_reward": float(pelvis_reward),
-          "feet_flat_reward": float(feet_flat_reward),
-          "stillness_reward": float(stillness_reward),
-          "feet_still_reward": float(feet_still_reward),
-          "vel_blend_multiplier": float(vel_blend),
-          "small_control": float(small_control),
-          "contact_penalty": float(contact_penalty),
-          "reward": float(reward),
-      }
+    # ================================================================
+    # PHASE 3: Foot velocity penalty (toggle: PHASE3_ENABLED)
+    # ================================================================
+    feet_still_reward = 1.0  # default: no effect
 
-      return reward
+    if PHASE3_ENABLED:
+        left_foot_vel = physics.named.data.cvel['left_foot'][3:6]
+        right_foot_vel = physics.named.data.cvel['right_foot'][3:6]
+        left_foot_speed = np.linalg.norm(left_foot_vel)
+        right_foot_speed = np.linalg.norm(right_foot_vel)
+
+        # Looser bounds than original: 0.1 m/s instead of 0.02
+        left_foot_still = rewards.tolerance(left_foot_speed, bounds=(0, 0.1),
+                                            margin=0.3, sigmoid='quadratic')
+        right_foot_still = rewards.tolerance(right_foot_speed, bounds=(0, 0.1),
+                                             margin=0.3, sigmoid='quadratic')
+        feet_still_reward = 0.5 * (left_foot_still + right_foot_still)
+
+        # Multiplicative gate: shrinks reward by up to 10% when feet move
+        reward *= (0.9 + 0.1 * feet_still_reward)
+
+    # ================================================================
+    # ALWAYS ON: Control efficiency + contact penalty
+    # ================================================================
+
+    # --- Control efficiency: gentle multiplicative gate ---
+    small_control = rewards.tolerance(physics.control(), margin=1,
+                                      value_at_margin=0,
+                                      sigmoid='quadratic').mean()
+    reward *= (0.95 + 0.05 * small_control)
+
+    # --- Contact penalty: non-compounding, count-based ---
+    penalty_geoms = ["left_shin", "right_shin", "left_thigh", "right_thigh",
+                     "lower_waist", "upper_waist", "butt", "torso"]
+    num_bad_contacts = 0
+    for geom in penalty_geoms:
+        if physics.geom_touching_ground(geom):
+            num_bad_contacts += 1
+
+    contact_factor = max(1.0 - 0.15 * num_bad_contacts, 0.1)
+    reward *= contact_factor
+
+    # --- Final clamp ---
+    reward = float(np.clip(reward, 0.0, 1.0))
+
+    # --- Logging ---
+    self._reward_components = {
+        # Phase 1
+        "standing": float(standing),
+        "upright": float(upright),
+        "pelvis_reward": float(pelvis_reward),
+        "stillness": float(stillness),
+        "vel_blend": float(vel_blend),
+        # Phase 2
+        "phase2_enabled": getattr(self, 'phase2_enabled', False),
+        "feet_flat_reward": float(feet_flat_reward),
+        # Phase 3
+        "phase3_enabled": getattr(self, 'phase3_enabled', False),
+        "feet_still_reward": float(feet_still_reward),
+        # Always on
+        "small_control": float(small_control),
+        "num_bad_contacts": float(num_bad_contacts),
+        "contact_factor": float(contact_factor),
+        "reward": reward,
+    }
+    return reward

@@ -30,9 +30,9 @@ def _clip_log_dual_params(dual_params: dict) -> dict:
     Prevents explosion (too high) and collapse (too low).
     """
     return {
-        "log_eta": jnp.clip(dual_params["log_eta"], -18.0, 10.0),
-        "log_alpha_mean": jnp.clip(dual_params["log_alpha_mean"], -18.0, 10.0),
-        "log_alpha_std": jnp.clip(dual_params["log_alpha_std"], -18.0, 10.0),
+        "log_eta": jnp.clip(dual_params["log_eta"], -5.0, 10.0),
+        "log_alpha_mean": jnp.clip(dual_params["log_alpha_mean"], -5.0, 10.0),
+        "log_alpha_std": jnp.clip(dual_params["log_alpha_std"], -5.0, 10.0),
     }
 
 
@@ -111,8 +111,8 @@ class MPOLearner:
         action_dim = action_shape[0]
         dual_params = {
             "log_eta": jnp.array(jnp.log(10.0)),
-            "log_alpha_mean": jnp.full((action_dim,), jnp.log(10.0)),
-            "log_alpha_std": jnp.full((action_dim,), jnp.log(1000.0)),
+            "log_alpha_mean": jnp.full((action_dim,), jnp.log(1.0)),
+            "log_alpha_std": jnp.full((action_dim,), jnp.log(1.0)),
         }
 
         self.opt_actor = optax.chain(
@@ -149,16 +149,14 @@ class MPOLearner:
                      key):
 
         distribution_next = self.actor_net.apply(target_params_actor, batch["next_state"])
-        next_actions = jnp.tanh(
-            distribution_next.sample(seed=key)
-        )
+        next_actions = distribution_next.sample(seed=key)
+        next_actions_clipped = jnp.clip(next_actions, -1.0, 1.0)
 
-        next_q = self.critic_net.apply(target_params_critic, batch["next_state"], next_actions)
-        next_q = jnp.clip(next_q, -100.0, 100.0)
+        next_q = self.critic_net.apply(target_params_critic, batch["next_state"], next_actions_clipped)
 
         target_q = batch["reward"] + batch["discount"] * (1.0 - batch["done"]) * next_q
-        target_q = jnp.clip(target_q, -200.0, 200.0)
-        current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
+        action_clipped = jnp.clip(batch["action"], -1.0, 1.0)
+        current_q = self.critic_net.apply(params_critic, batch["state"], action_clipped)
 
         return jnp.mean(jnp.square(current_q - jax.lax.stop_gradient(target_q)))
 
@@ -167,10 +165,10 @@ class MPOLearner:
         k = self.config["sample_k"]
 
         sampled_actions = dist_target.sample(seed=key, sample_shape=(k,))
-        sampled_actions_for_critic = jnp.tanh(sampled_actions)
+        sampled_actions_clipped = jnp.clip(sampled_actions, -1.0, 1.0)
 
         vmapped_critic = jax.vmap(self.critic_net.apply, in_axes=(None, None, 0))
-        q_values = vmapped_critic(params_critic, states, sampled_actions_for_critic)
+        q_values = vmapped_critic(params_critic, states, sampled_actions_clipped)
         q_values = q_values.T  # (batch, K)
         q_values = jax.lax.stop_gradient(q_values)
 
@@ -220,9 +218,9 @@ class MPOLearner:
         )
 
         log_probs = dist_expanded.log_prob(sampled_actions)
-        # Apply tanh change-of-variables correction: the policy is evaluated
-        # on pre-tanh samples but actions are squashed via tanh in the env.
-        log_probs = log_probs - _tanh_log_prob_correction(sampled_actions)
+        # # Apply tanh change-of-variables correction: the policy is evaluated
+        # # on pre-tanh samples but actions are squashed via tanh in the env.
+        # log_probs = log_probs - _tanh_log_prob_correction(sampled_actions)
         loss_policy = -jnp.mean(jnp.sum(weights * log_probs, axis=1))
 
         dist_fixed_stddev = distrax.MultivariateNormalDiag(
