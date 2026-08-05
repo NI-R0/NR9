@@ -34,7 +34,7 @@ uv run python main.py \
     --capacity 500000 \
     --duration 27 \
 ```
-See `src/cli.py` for all CLI options.
+See `src/cli.py` for all CLI options and default hyperparameter values.
 
 ---
 
