@@ -121,11 +121,6 @@ class _CheckpointHandler(http.server.BaseHTTPRequestHandler):
 
 def serve(args: dict, stats=None):
     """Start the headless checkpoint server.
-
-    ``stats`` is accepted for signature compatibility with ``main.py``
-    but is not used — serve mode creates no output directories.
-
-    Relevant ``args`` keys: ``load_dir``, ``checkpoint``, ``serve_port``.
     """
     if not args["load_dir"]:
         logger.error("Serve mode requires --load_dir to be set.")
@@ -163,16 +158,7 @@ def serve(args: dict, stats=None):
 # ---------------------------------------------------------------------------
 
 class RemoteCheckpointReloader:
-    """Polls a remote checkpoint server and hot-swaps agent weights.
-
-    All network I/O (polling ``/check`` and downloading ``/checkpoint``)
-    happens in a **background thread** so the simulation/viewer never
-    stalls.  The main thread only calls :meth:`maybe_reload` which, if a
-    new state has finished downloading, performs a near-instantant
-    reference swap (``agent.learner.state = new_state``).
-
-    Used by :func:`src.test.run_live` when ``--stream`` is set.
-    """
+    """Polls a remote checkpoint server in a background thread and hot-swaps agent weights."""
 
     def __init__(
         self,
@@ -204,12 +190,8 @@ class RemoteCheckpointReloader:
 
     @staticmethod
     def normalize_stream_url(raw: str) -> str:
-        """Normalise the ``--stream`` value into a full ``http://`` URL.
-
-        Accepts:
-        - ``http://localhost:2324``
-        - ``localhost:2324``
-        - ``2324`` (host defaults to ``localhost``)
+        """
+        Normalize --stream to a full http:// URL (accepts full URL, host:port, or bare port)
         """
         raw = raw.strip()
         if raw.startswith("http://") or raw.startswith("https://"):
@@ -219,12 +201,7 @@ class RemoteCheckpointReloader:
         return f"http://localhost:{raw}".rstrip("/")
 
     def fetch_initial(self):
-        """Synchronously fetch the first checkpoint from the server.
-
-        Blocks until the checkpoint is downloaded.  Use once at startup
-        to populate the agent before the viewer begins.  Returns the
-        deserialised state, or ``None`` on failure.
-        """
+        """Synchronously fetch the first checkpoint from the server."""
         try:
             with urllib.request.urlopen(
                 f"{self._url}/checkpoint", timeout=30
@@ -320,12 +297,7 @@ class RemoteCheckpointReloader:
                 )
 
     def maybe_reload(self):
-        """Non-blocking: swap in pending state if the background thread
-        has finished downloading a newer checkpoint.
-
-        Safe to call on every simulation step — this is just a lock + a
-        reference assignment, so it adds negligible latency.
-        """
+        """Non-blocking swap of pending state if the background thread has a newer checkpoint."""
         if self._pending_state is None:
             return
 

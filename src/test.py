@@ -118,7 +118,7 @@ def test(args: dict, stats: StatsCollector):
                 )
         else:
             ep_reward, ep_length, _, ep_frames, _ = run_episode(
-                env, agent, args, explore=False, visualize=visualize
+                env, agent, explore=False, visualize=visualize
             )
             episode_rewards.append(ep_reward)
             logger.info(

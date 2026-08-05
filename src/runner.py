@@ -1,5 +1,3 @@
-"""Episode runner functions shared between training and testing."""
-
 import time
 import numpy as np
 from loguru import logger
@@ -12,7 +10,6 @@ from src.vector_env import ParallelVectorEnv
 def run_episode(
     env: Environment,
     agent: MPOAgent,
-    args: dict = None,
     explore: bool = True,
     visualize: bool = False,
     profile: bool = False,
@@ -93,14 +90,9 @@ def run_vectorized_episode(
     max_steps: int,
     profile: bool = False,
 ):
-    """Run one meta-episode across all parallel environments.
-
-    All envs step simultaneously until every env has completed at least one
-    episode.  When an env finishes it auto-resets (inside
-    ``ParallelVectorEnv.step``) and the terminal observation is used for the
-    buffer before the new observation is carried forward.
-
-    Returns a list of (reward, length) tuples - one per env, in order.
+    """
+    Run one meta-episode across all parallel environments until each finishes at least once.
+    Terminal observations are passed to the buffer before the auto-reset obs is used.
     """
     num_envs = venv.num_envs
     states = venv.reset()
@@ -193,16 +185,8 @@ def run_episode_with_respawn(
     args: dict,
     visualize: bool = False,
 ):
-    """Run a test episode with the same termination/respawn logic as training.
-    Unlike ``run_episode``, which stops at the first termination, this
-    function keeps stepping until ``max_steps`` is reached.  When the env
-    terminates (done=True) it is reset and the episode continues —
-    mirroring the auto-reset behaviour of ``run_vectorized_episode``
-    during training.
-    All completed sub-episodes are tracked individually so you can see
-    how many terminations/respawns occur and what reward/length each
-    sub-episode achieves.
-    Returns ``(all_rewards, all_lengths, frames)``.
+    """
+    Like run_episode but auto-resets on each termination until max_steps.
     """
     max_steps = args["steps"]
     state = env.reset()
