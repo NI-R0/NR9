@@ -137,7 +137,7 @@ def _worker_fn(
             # don't spin on a stale local copy.
             cmd = command_buf[env_idx]
             if cmd == _CMD_IDLE:
-                _time.sleep(0.0001)  # 0.1ms yield — prevents 100% CPU spin
+                _time.sleep(0.00001)  # 0.01ms yield — fast enough to reduce latency
                 continue
             if cmd == _CMD_CLOSE:
                 break
@@ -180,6 +180,21 @@ def _worker_fn(
 
     except KeyboardInterrupt:
         pass
+    except Exception:
+        # Runtime crash — log it so the master can diagnose timeouts
+        err_msg = (
+            f"Worker {env_idx} runtime crash: "
+            f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}\n"
+            f"{''.join(_tb.format_exception(*sys.exc_info()))}"
+        )
+        err_file = _os.path.join(log_dir, f"worker_{env_idx}_error.log")
+        try:
+            with open(err_file, "w") as f:
+                f.write(err_msg)
+        except Exception:
+            pass
+        print(err_msg, file=sys.stderr, flush=True)
+        raise
     finally:
         for shm in shm_objects.values():
             try:
@@ -383,15 +398,43 @@ class ParallelVectorEnv:
         checks frequently enough for low latency.
         """
         import time
+        import traceback as _tb
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if np.all(self._ready_buf[: self.num_envs]):
                 return
             time.sleep(0.0001)  # 0.1ms — tight enough for responsiveness
         not_ready = np.where(self._ready_buf[: self.num_envs] == 0)[0]
+
+        # Diagnose: check process states for hung workers
+        diag_parts = []
+        for idx in not_ready:
+            p = self.processes[idx]
+            exit_code = p.exit_code
+            alive = p.is_alive()
+            diag_parts.append(
+                f"Worker[{idx}]: alive={alive}, exit_code={exit_code}, pid={p.pid}"
+            )
+
+        # Check for worker error logs (runtime crashes)
+        runtime_errors = []
+        import glob as _glob
+        for logfile in _glob.glob(
+            os.path.join(self._worker_log_dir, "worker_*_error.log")
+        ):
+            try:
+                with open(logfile) as f:
+                    runtime_errors.append(f.read().strip())
+            except Exception:
+                pass
+
+        detail = "; ".join(diag_parts)
+        if runtime_errors:
+            detail += "\nWorker error logs:\n" + "\n".join(runtime_errors)
+
         raise TimeoutError(
             f"Workers {not_ready.tolist()} did not become ready "
-            f"within {timeout:.1f}s"
+            f"within {timeout:.1f}s. Diagnostics: {detail}"
         )
 
     def _clear_ready(self) -> None:
