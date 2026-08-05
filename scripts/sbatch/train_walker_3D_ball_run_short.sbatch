@@ -96,7 +96,7 @@ else
 fi
 
 uv run python main.py \
-  --env_domain walker_3D_ball --env_task walk \
+  --env_domain walker_3D_ball --env_task kick \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
   --eval_frequency 5 \
@@ -107,6 +107,7 @@ uv run python main.py \
   --epsilon_std 1e-4 \
   --target_update_period 100 \
   --duration 25 \
+  --profile \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?

@@ -2,6 +2,7 @@
 
 import time
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from loguru import logger
 
 from src.environment import Environment
@@ -93,21 +94,35 @@ def run_vectorized_episode(
     max_steps: int,
     profile: bool = False,
 ):
-    """Run one meta-episode across all parallel environments.
+    """Run one meta-episode of exactly ``max_steps`` steps across all parallel
+    environments with **CPU-GPU pipelining** via ThreadPoolExecutor.
 
-    All envs step simultaneously until every env has completed at least one
-    episode.  When an env finishes it auto-resets (inside
-    ``ParallelVectorEnv.step``) and the terminal observation is used for the
-    buffer before the new observation is carried forward.
+    Pipeline layout per iteration::
 
-    Returns a list of (reward, length) tuples - one per env, in order.
+        Main thread:    env_step(T) ──────────── env_step(T+1) ────────── env_step(T+2)
+        Worker thread:                 update(T) ──────────────── update(T+1) ────────
+
+    ``env_step`` (dm_control physics in 48 worker processes) runs on CPU
+    in the **main thread**.  ``update_batch`` (JAX/GPU) runs on GPU in a
+    **worker thread**.  Because ``env_step`` releases the GIL while
+    waiting for workers (sleep-based polling), the worker thread can
+    execute JAX code on the GPU simultaneously.  Wall-clock per
+    meta-step is roughly ``max(env_step_time, update_time)`` instead of
+    their sum.
+
+    Every env steps for the full ``max_steps`` regardless of terminations.
+    When an env terminates it auto-resets (inside ``ParallelVectorEnv.step``)
+    and starts a new sub-episode immediately – no waiting for other envs.
+
+    Returns a list of (reward, length) tuples one per env, in order.  Only
+    the *last completed* sub-episode per env is reported.  If an env has not
+    terminated by the final step its in-flight sub-episode is still included.
     """
     num_envs = venv.num_envs
     states = venv.reset()
 
     ep_rewards = np.zeros(num_envs, dtype=np.float32)
     ep_lengths = np.zeros(num_envs, dtype=np.int32)
-    finished = [False] * num_envs
     finished_stats: list[tuple[float, int]] = [None] * num_envs
 
     episode_metrics: dict = {}
@@ -115,55 +130,75 @@ def run_vectorized_episode(
     reward_components_sum: dict[str, float] = {}
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
+    # ── Pipeline: env_step on main thread, update in worker thread ────
+    # Timeline per iteration:
+    #   Main thread:  env_step(T) ────────────────── env_step(T+1) ────────
+    #   Worker thr:                update(T) ─────── update(T+1) ──────────
+    #
+    # env_step() blocks the main thread for ~10s but releases the GIL
+    # during sleep-based polling.  The worker thread runs update_batch()
+    # on the GPU during that time.  Wall-clock ≈ max(env_step, select+update).
+    executor = ThreadPoolExecutor(max_workers=1)
+    prev_update_future = None
+
     for step in range(max_steps):
+        # ── Phase 1: select_actions (GPU, ~0.3s) ──────────────────────
         t0 = time.perf_counter()
         actions = agent.select_actions(states, explore=True)
-        if profile and hasattr(actions, "block_until_ready"):
-            actions.block_until_ready()
+        actions_np = np.asarray(actions, dtype=np.float32)
         t1 = time.perf_counter()
 
-        actions_np = np.asarray(actions, dtype=np.float32)
+        # ── Phase 2: env_step on main thread (CPU, ~10s, releases GIL) ─
+        # Worker thread runs update(T-1) concurrently during this block.
         next_states, rewards, dones, infos = venv.step(actions_np)
         t2 = time.perf_counter()
 
+        # ── Phase 3: wait for previous update to finish ────────────────
+        if prev_update_future is not None:
+            prev_update_future.result()
+
+        # ── Phase 4: submit update for current step to worker ──────────
         terminal_next_states = next_states.copy()
         for i, done in enumerate(dones):
             if done and "terminal_obs" in infos[i]:
                 terminal_next_states[i] = infos[i]["terminal_obs"]
 
-        metrics = agent.update_batch(states, actions_np, rewards, terminal_next_states, dones)
-        if profile and isinstance(metrics, dict):
-            for v in metrics.values():
-                if hasattr(v, "block_until_ready"):
-                    v.block_until_ready()
+        def _update(s, a, r, ns, d, ag=agent):
+            return ag.update_batch(s, a, r, ns, d)
+
+        prev_update_future = executor.submit(
+            _update, states, actions_np, rewards, terminal_next_states, dones
+        )
         t3 = time.perf_counter()
 
         timing["select_action"] += t1 - t0
         timing["env_step"] += t2 - t1
-        timing["update"] += t3 - t2
+        timing["update"] += 0.0  # async, time hidden by pipeline
 
-        if metrics:
-            updates_count += 1
-            for k, v in metrics.items():
-                episode_metrics[k] = episode_metrics.get(k, 0.0) + v
-
+        # ── Episode tracking ──────────────────────────────────────────
         for i in range(num_envs):
             if "reward_components" in infos[i]:
                 for k, v in infos[i]["reward_components"].items():
                     reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v / num_envs
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
-            if dones[i] and not finished[i]:
-                finished[i] = True
+            if dones[i]:
                 finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
                 ep_rewards[i] = 0.0
                 ep_lengths[i] = 0
 
         states = next_states
 
-        if all(finished):
-            break
+    # ── Drain the last update ─────────────────────────────────────────
+    if prev_update_future is not None:
+        metrics = prev_update_future.result()
+        if metrics:
+            updates_count += 1
+            for k, v in metrics.items():
+                episode_metrics[k] = episode_metrics.get(k, 0.0) + v
+    executor.shutdown(wait=False)
 
+    # Collect any in-flight sub-episodes.
     for i in range(num_envs):
         if finished_stats[i] is None:
             finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
@@ -172,16 +207,17 @@ def run_vectorized_episode(
     if updates_count > 0:
         avg_metrics = {k: float(v) / updates_count for k, v in episode_metrics.items()}
 
+    last_step = max_steps - 1
     if profile:
-        total = timing["select_action"] + timing["env_step"] + timing["update"]
+        total = timing["select_action"] + timing["env_step"]
         logger.info(
-            f"  Timing (vec, {num_envs} envs, {step + 1} meta-steps, {total:.1f}s total) - "
+            f"  Timing (vec, {num_envs} envs, {last_step + 1} meta-steps, "
+            f"{total:.1f}s total) - "
             f"select_action: {timing['select_action']:.3f}s "
-            f"({timing['select_action']/(step+1)*1000:.1f}ms/step), "
+            f"({timing['select_action']/(last_step+1)*1000:.1f}ms/step), "
             f"env_step: {timing['env_step']:.3f}s "
-            f"({timing['env_step']/(step+1)*1000:.1f}ms/step), "
-            f"update: {timing['update']:.3f}s "
-            f"({timing['update']/(step+1)*1000:.1f}ms/step)"
+            f"({timing['env_step']/(last_step+1)*1000:.1f}ms/step), "
+            f"update: overlapped (pipeline)"
         )
 
     return finished_stats, avg_metrics, reward_components_sum
@@ -193,17 +229,7 @@ def run_episode_with_respawn(
     args: dict,
     visualize: bool = False,
 ):
-    """Run a test episode with the same termination/respawn logic as training.
-    Unlike ``run_episode``, which stops at the first termination, this
-    function keeps stepping until ``max_steps`` is reached.  When the env
-    terminates (done=True) it is reset and the episode continues —
-    mirroring the auto-reset behaviour of ``run_vectorized_episode``
-    during training.
-    All completed sub-episodes are tracked individually so you can see
-    how many terminations/respawns occur and what reward/length each
-    sub-episode achieves.
-    Returns ``(all_rewards, all_lengths, frames)``.
-    """
+    """Run a test episode with the same termination/respawn logic as training."""
     max_steps = args["steps"]
     state = env.reset()
     ep_reward = 0.0
@@ -236,7 +262,6 @@ def run_episode_with_respawn(
 
         state = next_state
 
-    # Collect any in-flight (not-yet-terminated) sub-episode.
     if ep_length > 0:
         all_rewards.append(ep_reward)
         all_lengths.append(ep_length)

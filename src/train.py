@@ -26,14 +26,19 @@ def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
         ep_rewards_arr = np.zeros(eval_venv.num_envs, dtype=np.float32)
         finished = [False] * eval_venv.num_envs
         finished_rewards: list[float | None] = [None] * eval_venv.num_envs
+        # Accumulate reward components across all eval steps for logging.
+        eval_reward_comp: dict[str, float] = {}
         for _ in range(args["steps"]):
             actions = agent.select_actions(states, explore=False)
             actions_np = np.asarray(actions, dtype=np.float32)
-            next_states, rewards, dones, _ = eval_venv.step(actions_np)
+            next_states, rewards, dones, infos = eval_venv.step(actions_np)
             for i in range(eval_venv.num_envs):
                 if finished[i]:
                     continue
                 ep_rewards_arr[i] += rewards[i]
+                if "reward_components" in infos[i]:
+                    for k, v in infos[i]["reward_components"].items():
+                        eval_reward_comp[k] = eval_reward_comp.get(k, 0.0) + v
                 if dones[i]:
                     finished[i] = True
                     finished_rewards[i] = float(ep_rewards_arr[i])
@@ -46,17 +51,33 @@ def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
         ]
     else:
         eval_rewards = []
+        eval_reward_comp: dict[str, float] = {}
         for eval_ep in range(1, num_eval + 1):
-            eval_reward, _, _, _, _ = run_episode(
+            eval_reward, _, _, _, reward_comp = run_episode(
                 eval_env, agent,
                 explore=False,
                 visualize=args["visualize"] and (eval_ep == 1),
             )
             eval_rewards.append(eval_reward)
+            for k, v in reward_comp.items():
+                eval_reward_comp[k] = eval_reward_comp.get(k, 0.0) + v
 
     mean_eval_reward = float(np.mean(eval_rewards))
     std_eval_reward = float(np.std(eval_rewards))
     stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward, "Eval_Reward_Std": std_eval_reward})
+    # Log reward component breakdown (mean per episode + percentage share).
+    if eval_reward_comp:
+        num_eval_eps = len(eval_rewards) if eval_rewards else 1
+        total_comp_sum = sum(eval_reward_comp.values())
+        comp_stats = {}
+        for k, v in eval_reward_comp.items():
+            mean_val = v / num_eval_eps
+            comp_stats[f"Eval_RewardMean_{k}"] = float(mean_val)
+            if total_comp_sum != 0:
+                comp_stats[f"Eval_RewardPct_{k}"] = float(mean_val / abs(total_comp_sum / num_eval_eps) * 100.0)
+            else:
+                comp_stats[f"Eval_RewardPct_{k}"] = 0.0
+        stats.log_stats_to_tb(episode, comp_stats)
     logger.info(f"Mean evaluation reward over {num_eval} episodes: {mean_eval_reward:.2f} ± {std_eval_reward:.2f}")
 
     stats.save_checkpoint(agent.learner.state, "latest")
@@ -163,8 +184,6 @@ def train(args: dict, stats: StatsCollector):
         )
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
-
-    stats.log_hparams(args)
 
     profile = args.get("profile", False)
     train_start = time.perf_counter()
