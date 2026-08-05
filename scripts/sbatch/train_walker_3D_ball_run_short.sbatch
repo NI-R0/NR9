@@ -107,6 +107,7 @@ uv run python main.py \
   --epsilon_std 1e-4 \
   --target_update_period 100 \
   --duration 25 \
+  --profile \
   $RESUME_ARGS
 
 TRAIN_EXIT=$?
