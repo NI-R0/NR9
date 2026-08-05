@@ -15,6 +15,7 @@ This eliminates ~2.6M pipe send/recv calls per 5-min run (72 envs ×
 """
 
 import json
+import os
 import struct
 import numpy as np
 import multiprocessing as mp
@@ -277,7 +278,17 @@ class ParallelVectorEnv:
 
         # ── Spawn worker processes ─────────────────────────────────────
         self.processes: list[mp.Process] = []
+
+        # Collect stderr output from workers to detect init failures.
+        self._worker_log_dir = f"/tmp/vector_env_logs_{os.getpid()}"
+        os.makedirs(self._worker_log_dir, exist_ok=True)
+
         for i in range(num_envs):
+            log_file = open(
+                os.path.join(self._worker_log_dir, f"worker_{i}.log"),
+                "w",
+                buffering=1,  # Line buffered
+            )
             p = ctx.Process(
                 target=_worker_fn,
                 args=(
@@ -293,8 +304,11 @@ class ParallelVectorEnv:
                     self.MAX_REWARD_KEYS,
                 ),
                 daemon=True,
+                stdout=log_file,
+                stderr=log_file,
             )
             p.start()
+            log_file.close()  # Close in parent, worker has its own fd
             self.processes.append(p)
 
         # Wait for ALL workers to initialise (they set ready_buf[env_idx] = 1
@@ -303,10 +317,29 @@ class ParallelVectorEnv:
         import time
         deadline = time.monotonic() + 120.0  # 2 min for 48 workers
         while time.monotonic() < deadline:
-            if np.all(self._ready_buf[: self.num_envs]):
+            ready_mask = self._ready_buf[: self.num_envs] == 1
+            if np.all(ready_mask):
                 break
+            failed_mask = self._ready_buf[: self.num_envs] == -1
+            failed_count = int(np.sum(failed_mask))
+            if failed_count > 0:
+                # Read error logs from failed workers
+                failed_workers = np.where(failed_mask)[0].tolist()
+                error_details = []
+                for w in failed_workers:
+                    log_path = os.path.join(self._worker_log_dir, f"worker_{w}.log")
+                    try:
+                        with open(log_path) as f:
+                            error_details.append(f"Worker {w}: {f.read().strip()}")
+                    except Exception:
+                        error_details.append(f"Worker {w}: (no log found)")
+                msg = (
+                    f"{failed_count} worker(s) failed to initialise: "
+                    + "; ".join(error_details)
+                )
+                raise RuntimeError(msg) from None
             elapsed = time.monotonic() - (deadline - 120.0)
-            ready_count = int(np.sum(self._ready_buf[: self.num_envs]))
+            ready_count = int(np.sum(ready_mask))
             if int(elapsed) % 5 == 0:
                 logger.info(
                     f"Waiting for workers to initialise: {ready_count}/{num_envs} ready "
@@ -314,7 +347,7 @@ class ParallelVectorEnv:
                 )
             time.sleep(0.05)
         else:
-            not_ready = np.where(self._ready_buf[: self.num_envs] == 0)[0]
+            not_ready = np.where(self._ready_buf[: self.num_envs] != 1)[0]
             raise TimeoutError(
                 f"Workers {not_ready.tolist()} did not become ready within 120.0s. "
                 f"Check that dm_control and the environment can be loaded."
