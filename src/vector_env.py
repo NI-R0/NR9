@@ -40,6 +40,7 @@ def _worker_fn(
     action_dim: int,
     num_envs: int,
     num_reward_keys: int,
+    log_dir: str,
 ):
     """Worker process: owns one Environment, polls shared-memory command slot.
 
@@ -49,6 +50,7 @@ def _worker_fn(
     before issuing the next command.
     """
     import sys
+    import os as _os
     import traceback as _tb
 
     # ── Attach to shared memory FIRST so we can signal errors ──
@@ -110,15 +112,13 @@ def _worker_fn(
         ready_buf[env_idx] = 1
 
     except Exception:
-        # Worker init failed — write error info to stderr so it shows up
-        # in the job log, then exit to let master detect us as dead.
+        # Worker init failed — write error to log file
         err_msg = (
             f"Worker {env_idx} failed to initialise: "
             f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}\n"
             f"{''.join(_tb.format_exception(*sys.exc_info()))}"
         )
-        # Write to a file so master can read it if needed.
-        err_file = f"/tmp/worker_{env_idx}_init_error.log"
+        err_file = _os.path.join(log_dir, f"worker_{env_idx}_init_error.log")
         try:
             with open(err_file, "w") as f:
                 f.write(err_msg)
@@ -279,16 +279,12 @@ class ParallelVectorEnv:
         # ── Spawn worker processes ─────────────────────────────────────
         self.processes: list[mp.Process] = []
 
-        # Collect stderr output from workers to detect init failures.
+        # Log directory for worker init errors (spawn context doesn't support
+        # stdout/stderr redirection, so workers write to files directly).
         self._worker_log_dir = f"/tmp/vector_env_logs_{os.getpid()}"
         os.makedirs(self._worker_log_dir, exist_ok=True)
 
         for i in range(num_envs):
-            log_file = open(
-                os.path.join(self._worker_log_dir, f"worker_{i}.log"),
-                "w",
-                buffering=1,  # Line buffered
-            )
             p = ctx.Process(
                 target=_worker_fn,
                 args=(
@@ -302,13 +298,11 @@ class ParallelVectorEnv:
                     action_dim,
                     num_envs,
                     self.MAX_REWARD_KEYS,
+                    self._worker_log_dir,
                 ),
                 daemon=True,
-                stdout=log_file,
-                stderr=log_file,
             )
             p.start()
-            log_file.close()  # Close in parent, worker has its own fd
             self.processes.append(p)
 
         # Wait for ALL workers to initialise (they set ready_buf[env_idx] = 1
