@@ -164,8 +164,6 @@ def train(args: dict, stats: StatsCollector):
     else:
         logger.info(f"Starting training loop for {max_episodes} episodes. Visualization: {args['visualize']}")
 
-    stats.log_hparams(args)
-
     profile = args.get("profile", False)
     train_start = time.perf_counter()
     time_limit_sec = duration_min * 60.0 if use_duration else None
