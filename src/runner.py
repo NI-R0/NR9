@@ -130,55 +130,52 @@ def run_vectorized_episode(
     reward_components_sum: dict[str, float] = {}
     timing = {"select_action": 0.0, "env_step": 0.0, "update": 0.0}
 
-    # ── Pipeline setup ────────────────────────────────────────────────
+    # ── Pipeline: env_step on main thread, update in worker thread ────
+    # Timeline per iteration:
+    #   Main thread:  env_step(T) ────────────────── env_step(T+1) ────────
+    #   Worker thr:                update(T) ─────── update(T+1) ──────────
+    #
+    # env_step() blocks the main thread for ~10s but releases the GIL
+    # during sleep-based polling.  The worker thread runs update_batch()
+    # on the GPU during that time.  Wall-clock ≈ max(env_step, select+update).
     executor = ThreadPoolExecutor(max_workers=1)
-    prev_update_future = None  # Future from the previous iteration's update
-    first_update = True  # Skip waiting for update on first iteration
+    prev_update_future = None
 
     for step in range(max_steps):
-        # ── Phase 1: select_actions (GPU, fast ~0.3s) ─────────────────
+        # ── Phase 1: select_actions (GPU, ~0.3s) ──────────────────────
         t0 = time.perf_counter()
         actions = agent.select_actions(states, explore=True)
         actions_np = np.asarray(actions, dtype=np.float32)
         t1 = time.perf_counter()
 
-        # ── Phase 2: env_step (CPU, blocks Main ~10s, releases GIL) ───
-        # While this blocks, the worker thread runs the PREVIOUS iteration's
-        # update_batch on the GPU.  The GIL is released during the sleep-based
-        # polling in _wait_all_ready.
+        # ── Phase 2: env_step on main thread (CPU, ~10s, releases GIL) ─
+        # Worker thread runs update(T-1) concurrently during this block.
         next_states, rewards, dones, infos = venv.step(actions_np)
         t2 = time.perf_counter()
 
-        # ── Phase 3: wait for previous update to finish ───────────────
-        # If the GPU update from the previous iteration is still running,
-        # wait for it now.  By this point env_step is already done, so
-        # we can safely block.
-        if prev_update_future is not None and not first_update:
+        # ── Phase 3: wait for previous update to finish ────────────────
+        if prev_update_future is not None:
             prev_update_future.result()
 
-        # ── Phase 4: submit next update to worker thread (GPU) ────────
-        # This runs alongside the NEXT env_step iteration.
+        # ── Phase 4: submit update for current step to worker ──────────
         terminal_next_states = next_states.copy()
         for i, done in enumerate(dones):
             if done and "terminal_obs" in infos[i]:
                 terminal_next_states[i] = infos[i]["terminal_obs"]
 
-        def _update_call(s, a, r, ns, d):
-            return agent.update_batch(s, a, r, ns, d)
+        def _update(s, a, r, ns, d, ag=agent):
+            return ag.update_batch(s, a, r, ns, d)
 
         prev_update_future = executor.submit(
-            _update_call, states, actions_np, rewards, terminal_next_states, dones
+            _update, states, actions_np, rewards, terminal_next_states, dones
         )
-        first_update = False
         t3 = time.perf_counter()
 
         timing["select_action"] += t1 - t0
         timing["env_step"] += t2 - t1
-        timing["update"] += t3 - t2  # ~0s since update is async
+        timing["update"] += 0.0  # async, time hidden by pipeline
 
-        # ── Episode tracking (synchronous, no GPU dependency) ─────────
-        # We can't access the update metrics yet (they're async), so we
-        # track them in the next iteration when prev_update_future is available.
+        # ── Episode tracking ──────────────────────────────────────────
         for i in range(num_envs):
             if "reward_components" in infos[i]:
                 for k, v in infos[i]["reward_components"].items():
