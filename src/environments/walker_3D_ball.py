@@ -988,10 +988,12 @@ class Walker3DBall(base.Task):
         # --- Self-collision penalty [-1, 0]: interpenetration of non-adjacent bodies ---
         self_collision = physics.self_collision_penalty()
 
-        # --- Standing [0, 1]: height + upright orientation ---
+        # --- Standing [0, 1]: height AND upright orientation (multiplicative).
+        # Multiplication forces the agent to satisfy both: a prone agent with
+        # decent torso height but low upright value gets near-zero reward.
         standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
         upright = float((1 + physics.torso_upright()) / 2)
-        stand_reward = (3 * standing + upright) / 4  # in [0, 1]
+        stand_reward = standing * upright
 
         # --- Hip alignment penalty [-1, 0] ---
         hip_yaw = physics.hip_yaw_angles()
