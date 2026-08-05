@@ -15,24 +15,11 @@ from src.serve import RemoteCheckpointReloader
 
 
 class _AutoResetWrapper:
-    """Wraps a raw dm_control Environment for the interactive viewer.
-    When ``--respawn`` is active, the wrapper intercepts every
-    ``step()`` call.  If the underlying environment signals termination
-    (either via its own time-limit or via the task's ``should_terminate``
-    method), the wrapper resets the environment immediately and returns
-    a **MID** ``TimeStep`` with the *new* observation and a zero reward.
-    This keeps the dm_control viewer running indefinitely — every
-    termination is followed by an invisible respawn instead of the
-    default "EPISODE TERMINATED" freeze.
-    When respawn is disabled the wrapper is transparent and delegates
-    every call directly to the underlying environment.
-    """
+    """Wraps a raw dm_control Environment for the interactive viewer."""
 
     def __init__(self, raw_env, respawn: bool):
         self._env = raw_env
         self._respawn = respawn
-
-    # --- dm_control viewer interface ---
 
     @property
     def physics(self):
@@ -51,10 +38,7 @@ class _AutoResetWrapper:
             return timestep
 
         # Determine whether the episode should end.  The raw dm_control
-        # env only signals ``last()`` via its own time-limit.  Custom
-        # early-termination (``should_terminate``, e.g. fall detection)
-        # is NOT checked by the raw env — so we check it ourselves here,
-        # mirroring the logic in ``Environment.step``.
+        # env only signals last() via its own time-limit.
         done = timestep.last()
         if not done:
             task = getattr(self._env, "task", None)
@@ -70,7 +54,6 @@ class _AutoResetWrapper:
         if not done:
             return timestep
 
-        # --- Respawn path: reset and return a MID timestep ---
         logger.info(
             f"Respawn: sub-episode ended (last={timestep.last()}) -> resetting."
         )
@@ -90,12 +73,6 @@ class _AutoResetWrapper:
 
 
 class _CheckpointReloader:
-    """Polls a checkpoint file for changes and reloads the agent state.
-    Thread-safe: callers from the viewer/env loop invoke
-    :meth:`maybe_reload` which checks the file's mtime and, if changed,
-    loads the new state into ``agent.learner.state``.
-    """
-
     def __init__(
         self,
         checkpoint_path: str,
@@ -114,8 +91,6 @@ class _CheckpointReloader:
 
     def maybe_reload(self):
         """Check if the checkpoint file changed and reload if so.
-        Uses ``_poll_interval`` to avoid stat-ing the file too
-        frequently.  Safe to call on every step.
         """
         if self._poll_interval <= 0:
             return
@@ -183,26 +158,8 @@ def run_live(
     reloader: RemoteCheckpointReloader | None = None,
 ):
     """Launch the interactive dm_control viewer with the trained agent.
-
-    The viewer calls the policy function on each timestep. We flatten the
-    observation for the agent and convert its JAX output back to numpy.
-
-    When ``respawn`` is ``True``, the environment auto-resets on every
-    termination (fall or time-limit) so the viewer runs continuously.
-
-    **Hot-swap modes** (mutually exclusive):
-
-    - *Local file*: when ``poll_interval > 0`` and ``checkpoint_path`` is
-      given, the local checkpoint file is polled and weights are
-      hot-swapped when it changes.
-    - *Remote server*: when ``stream_url`` is given, a
-      :class:`RemoteCheckpointReloader` polls the remote checkpoint
-      server (e.g. on a cluster, accessed via port forwarding) in a
-      background thread and hot-swaps weights when a newer checkpoint is
-      available.  The window title is updated to show the checkpoint's
-      source episode and best reward.
     """
-    # We use Application directly (instead of viewer.launch) so we can
+    # Use Application directly (instead of viewer.launch) so we can
     # update the window title dynamically via set_title.
     initial_ep = reloader.checkpoint_episode if reloader else None
     initial_rw = reloader.checkpoint_reward if reloader else None

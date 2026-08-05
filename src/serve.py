@@ -1,36 +1,3 @@
-"""Headless checkpoint server for remote hot-swap.
-
-Runs on the cluster (or any machine with the latest checkpoint) and
-serves checkpoint state over a minimal HTTP API so that a local machine
-running ``--task test --live --stream`` can poll for new weights and
-hot-swap them into the agent without restarting the viewer.
-
-Endpoints
----------
-
-``GET /check``
-    Returns JSON ``{"mtime": <float>, "episode": <int>, "best_eval_reward": <float>}`` —
-    the modification time of the checkpoint file (Unix timestamp), plus
-    training metadata read from ``training_meta.json``.  ``mtime`` is
-    ``null`` if no checkpoint exists yet.
-
-``GET /checkpoint``
-    Returns the raw ``cloudpickle`` bytes of the checkpoint
-    ``TrainingState``.  The client deserialises with
-    :func:`StatsCollector.load_checkpoint_file`.
-
-``GET /health``
-    Returns JSON ``{"status": "ok"}`` — useful for verifying the port
-    forward is working.
-
-Usage (on the cluster)::
-
-    uv run python main.py --task serve \
-        --load_dir runs/run_20260730_102646 --checkpoint latest \
-        --serve_port 2324 \
-        --env_domain walker_3D_ball --env_task run
-"""
-
 import http.server
 import json
 import os
