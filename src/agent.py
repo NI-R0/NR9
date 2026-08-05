@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich
+"""
+
 import jax
 from src.learner import MPOLearner
 from src.actor import MPOActor

@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Leon Manthey
+"""
+
 import os
 import sys
 import json
@@ -211,6 +216,8 @@ Evaluation Configuration:
 
         Must be called once at the start of training before any metrics are logged.
         The final metric (Mean_Eval_Reward) is used as the HParams metric.
+
+        Author: Leon Manthey
         """
         hparam_keys = [
             "env_domain",

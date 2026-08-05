@@ -1,3 +1,7 @@
+"""
+Implemented by: Niklas Rodenbüsch, Jason Dietrich
+"""
+
 import flax.linen as nn
 import jax
 import jax.numpy as jnp

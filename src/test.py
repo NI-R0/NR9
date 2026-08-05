@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich (live testing / streaming)
+"""
+
 import os
 import numpy as np
 from loguru import logger
@@ -100,6 +105,7 @@ def test(args: dict, stats: StatsCollector):
     episode_rewards = []
     frames = [] if visualize else None
     for episode in range(1, args["num_eval_episodes"] + 1):
+        env.reseed(args["seed"] + episode)
         if use_respawn:
             sub_rewards, sub_lengths, ep_frames = run_episode_with_respawn(
                 env, agent, args, visualize=visualize

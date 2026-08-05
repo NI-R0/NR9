@@ -1,3 +1,8 @@
+"""
+Implemented by: Jason Dietrich
+Note: Implemented with the help of Claude!
+"""
+
 import numpy as np
 import multiprocessing as mp
 from multiprocessing import shared_memory

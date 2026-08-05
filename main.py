@@ -1,3 +1,7 @@
+"""
+Implemented by: Niklas Rodenbüsch
+"""
+
 import os
 import subprocess
 import cProfile

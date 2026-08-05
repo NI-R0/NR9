@@ -1,3 +1,7 @@
+"""
+Implemented by: See each function individually
+"""
+
 import time
 import numpy as np
 from loguru import logger
@@ -14,7 +18,11 @@ def run_episode(
     visualize: bool = False,
     profile: bool = False,
 ):
-    """Run a single episode and return (reward, steps, avg_metrics, frames, reward_components)."""
+    """
+    Run a single episode and return (reward, steps, avg_metrics, frames, reward_components).
+
+    Implemented by: Niklas Rodenbüsch
+    """
     state = env.reset()
     episode_reward = 0.0
     done = False
@@ -93,6 +101,8 @@ def run_vectorized_episode(
     """
     Run one meta-episode across all parallel environments until each finishes at least once.
     Terminal observations are passed to the buffer before the auto-reset obs is used.
+
+    Implemented by: Jason Dietrich
     """
     num_envs = venv.num_envs
     states = venv.reset()
@@ -187,6 +197,8 @@ def run_episode_with_respawn(
 ):
     """
     Like run_episode but auto-resets on each termination until max_steps.
+
+    Implemented by: Jason Dietrich
     """
     max_steps = args["steps"]
     state = env.reset()

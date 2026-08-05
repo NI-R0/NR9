@@ -1,3 +1,8 @@
+"""
+Implemented by: Jason Dietrich
+Note: Implemented with the help of Claude!
+"""
+
 import http.server
 import json
 import os
@@ -14,9 +19,6 @@ def _checkpoint_path(load_dir: str, checkpoint_name: str) -> str:
 
 def _load_training_meta(load_dir: str) -> dict:
     """Read training_meta.json next to the checkpoints, if it exists.
-
-    Returns a dict with keys like ``episode`` and ``best_eval_reward``,
-    or an empty dict if the file is missing / unreadable.
     """
     meta_path = os.path.join(load_dir, "checkpoints", "training_meta.json")
     if not os.path.isfile(meta_path):

@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich (distributed training)
+"""
+
 import os
 import signal
 import time
@@ -14,7 +19,9 @@ from src.runner import run_episode, run_vectorized_episode
 
 def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
               args: dict, stats: StatsCollector) -> float:
-    """Run evaluation episodes, checkpoint, and log.  Returns mean eval reward."""
+    """
+    Run evaluation episodes, checkpoint, and log.  Returns mean eval reward.
+    """
     logger.info(f"Starting evaluation at episode {episode}.")
     num_eval = args["num_eval_episodes"]
 

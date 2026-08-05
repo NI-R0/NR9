@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich
+"""
+
 import numpy as np
 from typing import Union
 import src.environments.suite as suite

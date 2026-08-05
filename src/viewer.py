@@ -1,3 +1,7 @@
+"""
+Implemented by: Jason Dietrich
+"""
+
 import os
 import time
 import threading

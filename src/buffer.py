@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich
+"""
+
 import numpy as np
 import jax
 import jax.numpy as jnp
