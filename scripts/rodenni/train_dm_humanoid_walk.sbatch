@@ -78,8 +78,11 @@ uv run python main.py \
     --num_eval_episodes 8 \
     --batch_size 512 \
     --capacity 1000000 \
-    --sgd_steps_per_learner_step 4 \
-    --target_update_period 50 \
+    --warmup 5000 \
+    --sgd_steps_per_learner_step 16 \
+    --target_update_period 12 \
+    --epsilon_std 1e-4 \
+    --dual_lr 3e-4 \
     --duration 27 \
     $RESUME_ARGS \
 
