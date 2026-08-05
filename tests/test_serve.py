@@ -1,11 +1,7 @@
-"""Tests for the checkpoint server and remote reloader protocol.
-
-These tests start the HTTP checkpoint server on a random port, write a
-fake checkpoint file, and verify that ``RemoteCheckpointReloader``
-correctly detects and fetches new versions — all in background threads
-without blocking the caller.
 """
-
+Implemented by: Jason Dietrich
+Note: Implemented with the help of Claude!
+"""
 import cloudpickle
 import http.server
 import json
@@ -18,10 +14,7 @@ from src.serve import _CheckpointHandler, RemoteCheckpointReloader
 
 
 def _start_server(checkpoint_path: str, load_dir: str = "", port: int = 0) -> tuple[http.server.HTTPServer, int, threading.Thread]:
-    """Start the checkpoint server in a background thread.
-
-    Returns ``(server, actual_port, thread)``.
-    """
+    """Start the checkpoint server in a background thread."""
     _CheckpointHandler._checkpoint_path = checkpoint_path
     _CheckpointHandler._load_dir = load_dir
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _CheckpointHandler)
@@ -32,7 +25,7 @@ def _start_server(checkpoint_path: str, load_dir: str = "", port: int = 0) -> tu
 
 
 def _make_fake_checkpoint(path: str, value: int):
-    """Write a pickled object to *path*."""
+    """Write a pickled object to path."""
     with open(path, "wb") as f:
         cloudpickle.dump({"value": value}, f)
 
