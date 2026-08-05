@@ -93,21 +93,24 @@ def run_vectorized_episode(
     max_steps: int,
     profile: bool = False,
 ):
-    """Run one meta-episode across all parallel environments.
+    """Run one meta-episode of exactly ``max_steps`` steps across all parallel
+    environments.
 
-    All envs step simultaneously until every env has completed at least one
-    episode.  When an env finishes it auto-resets (inside
-    ``ParallelVectorEnv.step``) and the terminal observation is used for the
-    buffer before the new observation is carried forward.
+    Every env steps for the full ``max_steps`` regardless of terminations.
+    When an env terminates it auto-resets (inside ``ParallelVectorEnv.step``)
+    and starts a new sub-episode immediately – no waiting for other envs.
+    This guarantees that each meta-episode always consumes the same number of
+    steps, making episodes comparable.
 
-    Returns a list of (reward, length) tuples - one per env, in order.
+    Returns a list of (reward, length) tuples one per env, in order.  Only
+    the *last completed* sub-episode per env is reported.  If an env has not
+    terminated by the final step its in-flight sub-episode is still included.
     """
     num_envs = venv.num_envs
     states = venv.reset()
 
     ep_rewards = np.zeros(num_envs, dtype=np.float32)
     ep_lengths = np.zeros(num_envs, dtype=np.int32)
-    finished = [False] * num_envs
     finished_stats: list[tuple[float, int]] = [None] * num_envs
 
     episode_metrics: dict = {}
@@ -153,16 +156,12 @@ def run_vectorized_episode(
                     reward_components_sum[k] = reward_components_sum.get(k, 0.0) + v / num_envs
             ep_rewards[i] += rewards[i]
             ep_lengths[i] += 1
-            if dones[i] and not finished[i]:
-                finished[i] = True
+            if dones[i]:
                 finished_stats[i] = (float(ep_rewards[i]), int(ep_lengths[i]))
                 ep_rewards[i] = 0.0
                 ep_lengths[i] = 0
 
         states = next_states
-
-        if all(finished):
-            break
 
     for i in range(num_envs):
         if finished_stats[i] is None:
