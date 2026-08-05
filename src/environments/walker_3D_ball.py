@@ -70,8 +70,6 @@ _CONTROL_TIMESTEP = 0.025
 _STUCK_CHECK_STEPS = 25
 _STUCK_EPSILON = 1e-3
 _STAND_HEIGHT = 1.2  # below fully-upright; allows forward lean when running
-_WALK_SPEED = 1
-_RUN_SPEED = 8
 _BALL_RADIUS = 0.2
 _APPROACH_OFFSET = 0.3  # m behind ball (away from target) for approach point
 _TARGET_MIN_DIST = 2.0
@@ -201,9 +199,9 @@ def get_model_and_assets():
     return xml_string, assets
 
 
-def _make_task(move_speed, time_limit, random, environment_kwargs):
+def _make_task(time_limit, random, environment_kwargs):
     physics = Physics.from_xml_string(*get_model_and_assets())
-    task = Walker3DBall(move_speed=move_speed, random=random)
+    task = Walker3DBall(random=random)
     environment_kwargs = environment_kwargs or {}
     return control.Environment(
         physics,
@@ -215,21 +213,9 @@ def _make_task(move_speed, time_limit, random, environment_kwargs):
 
 
 @SUITE.add("benchmarking")
-def stand(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
-    """Returns the Stand+Kick task (move_speed=0 → focus on standing first)."""
-    return _make_task(0, time_limit, random, environment_kwargs)
-
-
-@SUITE.add("benchmarking")
-def walk(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
-    """Returns the Walk+Kick task."""
-    return _make_task(_WALK_SPEED, time_limit, random, environment_kwargs)
-
-
-@SUITE.add("benchmarking")
-def run(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
-    """Returns the Run+Kick task."""
-    return _make_task(_RUN_SPEED, time_limit, random, environment_kwargs)
+def kick(time_limit=_DEFAULT_TIME_LIMIT, random=None, environment_kwargs=None):
+    """Returns the Kick task: walk to the ball, kick it into the target."""
+    return _make_task(time_limit, random, environment_kwargs)
 
 
 class Physics(mujoco.Physics):
@@ -829,17 +815,14 @@ class Walker3DBall(base.Task):
     resets the consecutive-success counter.
     """
 
-    def __init__(self, move_speed, random=None):
+    def __init__(self, random=None):
         """Initializes an instance of `Walker3DBall`.
 
         Args:
-          move_speed: A float. If zero, the stand reward dominates. Otherwise this
-            specifies a target horizontal velocity for the approach reward.
           random: Optional, either a `numpy.random.RandomState` instance, an
             integer seed for creating a new `RandomState`, or None to select a
             seed automatically (default).
         """
-        self._move_speed = move_speed
         self._target_size = _TARGET_SIZE_MAX
         self._consecutive_successes = 0
         self._target_pos = None
@@ -1139,7 +1122,7 @@ class Walker3DBall(base.Task):
 
         approach_point = ball_xy - dir_ball_to_target * _APPROACH_OFFSET
         dist_to_approach = np.linalg.norm(approach_point - torso_xy)
-        approach = float(
+        approach_reward = float(
             rewards.tolerance(
                 dist_to_approach,
                 bounds=(0, _BALL_RADIUS),
@@ -1148,19 +1131,6 @@ class Walker3DBall(base.Task):
                 sigmoid="linear",
             )
         )
-        if self._move_speed > 0:
-            move_reward = float(
-                rewards.tolerance(
-                    physics.horizontal_velocity(),
-                    bounds=(self._move_speed, float("inf")),
-                    margin=self._move_speed / 2,
-                    value_at_margin=0.5,
-                    sigmoid="linear",
-                )
-            )
-            approach_reward = approach * (5 * move_reward + 1) / 6
-        else:
-            approach_reward = approach
 
         h_vel = physics.horizontal_velocity()
         gait_gate = float(np.clip(h_vel / _GAIT_MIN_VELOCITY, 0.0, 1.0))

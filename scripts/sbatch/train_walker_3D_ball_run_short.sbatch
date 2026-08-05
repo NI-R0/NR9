@@ -96,7 +96,7 @@ else
 fi
 
 uv run python main.py \
-  --env_domain walker_3D_ball --env_task walk \
+  --env_domain walker_3D_ball --env_task kick \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
   --eval_frequency 5 \
