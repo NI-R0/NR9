@@ -106,7 +106,7 @@ def _worker_fn(
         keys_json = json.dumps(reward_keys)
         key_array = np.ndarray(key_shm.size, dtype=np.uint8, buffer=key_shm.buf)
         encoded = keys_json.encode("utf-8")
-        key_array[: len(encoded)] = encoded
+        key_array[: len(encoded)] = np.frombuffer(encoded, dtype=np.uint8)
 
         # Signal to master that this worker is fully initialized and ready.
         ready_buf[env_idx] = 1
