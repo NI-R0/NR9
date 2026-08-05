@@ -1145,15 +1145,20 @@ class Walker3DBall(base.Task):
         torso_vel_norm = np.linalg.norm(torso_vel_xy)
         approach_dir = approach_point - torso_xy
         approach_dir_norm = np.linalg.norm(approach_dir)
+        # Compute normalized approach direction once, reused below.
+        if approach_dir_norm > 1e-6:
+            dir_approach = approach_dir / approach_dir_norm
+        else:
+            dir_approach = np.array([0.0, 0.0])
+
         if torso_vel_norm > 1e-6 and approach_dir_norm > 1e-6:
             dir_torso_vel = torso_vel_xy / torso_vel_norm
-            dir_approach = approach_dir / approach_dir_norm
             vel_toward = float(max(0.0, np.dot(dir_torso_vel, dir_approach)))
         elif approach_dir_norm <= 1e-6:
             vel_toward = 1.0  # already at approach point
         else:
             vel_toward = 0.0
-        # Forward bonus: reward torso facing toward ball (x-axis of xmat).
+        # Forward bonus: reward torso facing toward approach point (x-axis of xmat).
         # Forces the agent to rotate and walk forward, not sideways/backward.
         bid = physics._bid_torso
         torso_fwd = physics.data.xmat[bid, :2]  # x-axis (forward) of torso in world xy
