@@ -1,3 +1,7 @@
+"""
+Implemented by: Niklas Rodenbüsch & Jason Dietrich
+"""
+
 import jax
 import jax.numpy as jnp
 
@@ -27,18 +31,8 @@ class MPOActor:
             observation = observation[None, :]
 
         action, new_key = self._jit_select_action(params, observation, key, explore)
-
         return jnp.squeeze(action, axis=0), new_key
 
     def select_actions(self, params, observations, key, explore=True):
-        """Select actions for a batch of observations (vectorized envs).
-
-        Args:
-            observations: (N, obs_dim) array - always 2-D.
-
-        Returns:
-            actions: (N, action_dim) array.
-            new_key: updated JAX PRNG key.
-        """
         action, new_key = self._jit_select_action(params, observations, key, explore)
         return action, new_key

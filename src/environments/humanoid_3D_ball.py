@@ -1,3 +1,7 @@
+"""
+Implemented by: Leon Manthey
+"""
+
 # ============================================================================
 # Copyright 2017 The dm_control Authors.
 #
@@ -25,16 +29,15 @@ as walker_3D_ball but adjusted for the humanoid's joint names, sensor
 names, and body structure.
 """
 
-import collections
 import os
-
+import collections
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
 from dm_control.suite import common
 from dm_control.utils import containers
-from dm_control.utils import rewards
 import numpy as np
+from dm_control.utils import rewards
 
 
 _DEFAULT_TIME_LIMIT = 25

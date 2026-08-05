@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich
+"""
+
 import jax
 from src.learner import MPOLearner
 from src.actor import MPOActor
@@ -33,18 +38,16 @@ class MPOAgent:
         self._step_count = 0
 
     def select_action(self, observation, explore=True):
-
         action, self.random_key = self.actor.select_action(
             params=self.learner.state.params_actor,
             observation=observation,
             key=self.random_key,
             explore=explore
         )
-
         return action
 
     def select_actions(self, observations, explore=True):
-        """Select actions for a batch of observations (vectorized envs)."""
+        """Select actions for a batch of observations (parallel envs)."""
         actions, self.random_key = self.actor.select_actions(
             params=self.learner.state.params_actor,
             observations=observations,
@@ -53,33 +56,27 @@ class MPOAgent:
         )
         return actions
 
+    def _run_learner_step(self):
+        if len(self.buffer) <= self.warmup:
+            return {}
+        self.random_key, sample_key = jax.random.split(self.random_key)
+        batch = self.buffer.next(sample_key, self.batch_size)
+        self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
+        return metrics
+
     def update(self, state, action, reward, next_state, done):
         self.buffer.add(state, action, reward, next_state, done)
         self._step_count += 1
-
-        if len(self.buffer) > self.warmup and (self._step_count % self.update_every == 0):
-            self.random_key, sample_key = jax.random.split(self.random_key)
-            batch = self.buffer.next(sample_key, self.batch_size)
-            self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
-            return metrics
+        if self._step_count % self.update_every == 0:
+            return self._run_learner_step()
         return {}
 
     def update_batch(self, states, actions, rewards, next_states, dones):
-        """Add transitions from all parallel envs and optionally run a learner step.
-
-        Each env contributes one transition.  ``self._step_count`` is
-        incremented by ``num_envs`` so that ``update_every`` still refers
-        to total environment steps (not meta-steps).
-        """
+        """Add transitions from all parallel envs and optionally run a learner step."""
         self.buffer.add_many(states, actions, rewards, next_states, dones)
         previous_count = self._step_count
+        # Increment step_count by num_envs so update_every refers to total env steps
         self._step_count += self.buffer._num_envs
-
-        should_update = (self._step_count // self.update_every) > (previous_count // self.update_every)
-
-        if len(self.buffer) > self.warmup and should_update:
-            self.random_key, sample_key = jax.random.split(self.random_key)
-            batch = self.buffer.next(sample_key, self.batch_size)
-            self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
-            return metrics
+        if (self._step_count // self.update_every) > (previous_count // self.update_every):
+            return self._run_learner_step()
         return {}

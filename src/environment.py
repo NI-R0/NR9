@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich
+"""
+
 import numpy as np
 from typing import Union
 import src.environments.suite as suite
@@ -94,3 +99,6 @@ class Environment:
         """Returns the current frame as an (H, W, 3) uint8 RGB array."""
         cam = camera_id if camera_id is not None else self._preferred_camera
         return self.env.physics.render(height=height, width=width, camera_id=cam)
+
+    def reseed(self, seed: int):
+        self.env.task.random.seed(seed)

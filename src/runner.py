@@ -1,4 +1,6 @@
-"""Episode runner functions shared between training and testing."""
+"""
+Implemented by: See each function individually
+"""
 
 import time
 import numpy as np
@@ -12,12 +14,15 @@ from src.vector_env import ParallelVectorEnv
 def run_episode(
     env: Environment,
     agent: MPOAgent,
-    args: dict = None,
     explore: bool = True,
     visualize: bool = False,
     profile: bool = False,
 ):
-    """Run a single episode and return (reward, steps, avg_metrics, frames, reward_components)."""
+    """
+    Run a single episode and return (reward, steps, avg_metrics, frames, reward_components).
+
+    Implemented by: Niklas Rodenbüsch
+    """
     state = env.reset()
     episode_reward = 0.0
     done = False
@@ -93,14 +98,11 @@ def run_vectorized_episode(
     max_steps: int,
     profile: bool = False,
 ):
-    """Run one meta-episode across all parallel environments.
+    """
+    Run one meta-episode across all parallel environments until each finishes at least once.
+    Terminal observations are passed to the buffer before the auto-reset obs is used.
 
-    All envs step simultaneously until every env has completed at least one
-    episode.  When an env finishes it auto-resets (inside
-    ``ParallelVectorEnv.step``) and the terminal observation is used for the
-    buffer before the new observation is carried forward.
-
-    Returns a list of (reward, length) tuples - one per env, in order.
+    Implemented by: Jason Dietrich
     """
     num_envs = venv.num_envs
     states = venv.reset()
@@ -193,16 +195,10 @@ def run_episode_with_respawn(
     args: dict,
     visualize: bool = False,
 ):
-    """Run a test episode with the same termination/respawn logic as training.
-    Unlike ``run_episode``, which stops at the first termination, this
-    function keeps stepping until ``max_steps`` is reached.  When the env
-    terminates (done=True) it is reset and the episode continues —
-    mirroring the auto-reset behaviour of ``run_vectorized_episode``
-    during training.
-    All completed sub-episodes are tracked individually so you can see
-    how many terminations/respawns occur and what reward/length each
-    sub-episode achieves.
-    Returns ``(all_rewards, all_lengths, frames)``.
+    """
+    Like run_episode but auto-resets on each termination until max_steps.
+
+    Implemented by: Jason Dietrich
     """
     max_steps = args["steps"]
     state = env.reset()

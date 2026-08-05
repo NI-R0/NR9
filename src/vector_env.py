@@ -1,18 +1,6 @@
-"""Parallel vectorized environment using multiprocessing + shared memory.
-
-Each worker process owns a single ``dm_control`` environment instance.
-Communication uses a hybrid approach:
-
-- **Shared-memory NumPy arrays** carry the large, fixed-size payloads
-  (actions, observations, rewards, done flags).  Workers read/write
-  these arrays directly — no pickling, no serialisation overhead.
-- **Pipes** carry only tiny command signals (``"step"``, ``"reset"``,
-  ``"close"``) and per-step metadata (e.g. ``reward_components`` dicts,
-  ``terminal_obs``).
-
-When an env terminates it auto-resets and returns the terminal
-observation in ``info["terminal_obs"]`` so the caller can store it in
-the replay buffer before using the new observation for the next step.
+"""
+Implemented by: Jason Dietrich
+Note: Implemented with the help of Claude!
 """
 
 import numpy as np
@@ -24,15 +12,7 @@ from loguru import logger
 
 def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed,
                shm_names, state_dim, action_dim, num_envs, env_idx):
-    """Worker process: owns one Environment, handles step/reset commands.
-
-    Reads actions from the shared action buffer (row ``env_idx``),
-    steps the environment, and writes results back into the shared
-    result buffers (row ``env_idx``).
-
-    ``shm_names`` is a dict mapping buffer names to shared-memory
-    segment names (strings), which are picklable across ``spawn``.
-    """
+    """Worker process: owns one Environment, handles step/reset commands."""
     parent_remote.close()
 
     from src.environment import Environment
@@ -103,15 +83,7 @@ def _worker_fn(remote, parent_remote, domain_name, task_name, max_steps, seed,
 
 
 class ParallelVectorEnv:
-    """Runs ``num_envs`` dm_control environments in separate processes.
-
-    All environments share the same domain/task but are otherwise
-    independent (different random seeds, auto-reset on done).
-
-    Data transfer uses shared-memory arrays for fixed-size payloads
-    (actions, observations, rewards, dones) and pipes only for
-    lightweight command/ack signals and variable-size metadata.
-    """
+    """Runs n=num_envs dm_control environments in separate processes."""
 
     def __init__(self, domain_name: str, task_name: str, max_steps: int,
                  num_envs: int, seed: int = 42):
@@ -201,17 +173,10 @@ class ParallelVectorEnv:
         return self._next_state_buf.copy()
 
     def step(self, actions: np.ndarray):
-        """Step all environments with the given batched actions.
-
+        """
+        Step all environments with the given batched actions.
         Writes actions into the shared action buffer, signals all workers
         to step in parallel, then collects results from shared memory.
-
-        Returns:
-            next_states: (N, state_dim) - observation for the *next* step
-                         (auto-reset obs if the env was done).
-            rewards: (N,)
-            dones: (N,)
-            infos: list[dict] - ``info["terminal_obs"]`` present when done.
         """
         self._action_buf[:] = actions
 

@@ -1,3 +1,7 @@
+"""
+Implemented by: Continuous Joint Effort
+"""
+
 import argparse
 
 
@@ -5,7 +9,10 @@ def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "-t", "--task", type=str, choices=["train", "test", "serve"], default="train"
+        "-t", "--task",
+        type=str,
+        choices=["train", "test", "serve"],
+        default="train"
     )
     parser.add_argument(
         "-v",
@@ -26,7 +33,11 @@ def parse_args() -> dict:
         type=str,
         help="The outdir will be created in the current working directory and used by all loggers and file dumps.",
     )
-    parser.add_argument("--run_name", default=None, type=str)
+    parser.add_argument(
+        "--run_name",
+        default=None,
+        type=str
+    )
     parser.add_argument(
         "--profile",
         default=False,
@@ -40,10 +51,26 @@ def parse_args() -> dict:
         help="Specifies path to some checkpoint file to continue training from.",
     )
 
-    parser.add_argument("--env_domain", type=str, default="cartpole")
-    parser.add_argument("--env_task", type=str, default="balance")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--episodes", type=int, default=300)
+    parser.add_argument(
+        "--env_domain",
+        type=str,
+        default="cartpole"
+    )
+    parser.add_argument(
+        "--env_task",
+        type=str,
+        default="balance"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=300
+    )
     parser.add_argument(
         "--duration",
         type=float,
@@ -61,7 +88,11 @@ def parse_args() -> dict:
         default=1000,
         help="Number of steps to fill buffer with before starting training.",
     )
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=256
+    )
     parser.add_argument(
         "--lr",
         type=float,
@@ -80,12 +111,22 @@ def parse_args() -> dict:
         default=0.01,
         help="Learning rate for dual variables. If not set, defaults to --lr (paper).",
     )
-    parser.add_argument("--capacity", type=int, default=100000)
     parser.add_argument(
-        "--gamma", type=float, default=0.99, help="Discount factor for Bellman target."
+        "--capacity",
+        type=int,
+        default=100000
     )
     parser.add_argument(
-        "--epsilon", type=float, default=0.1, help="KL constraint for E-step."
+        "--gamma",
+        type=float,
+        default=0.99,
+        help="Discount factor for Bellman target."
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=0.1,
+        help="KL constraint for E-step."
     )
     parser.add_argument(
         "--epsilon_mean",
@@ -143,7 +184,11 @@ def parse_args() -> dict:
         "(multiprocessing).  1 = single env (default).",
     )
 
-    parser.add_argument("--eval_frequency", type=int, default=10)
+    parser.add_argument(
+        "--eval_frequency",
+        type=int,
+        default=10
+    )
     parser.add_argument(
         "--num_eval_episodes",
         type=int,
@@ -157,7 +202,10 @@ def parse_args() -> dict:
         help="Path to a previous run directory to load a checkpoint from for testing.",
     )
     parser.add_argument(
-        "--checkpoint", type=str, default="best_ckpt", help="Checkpoint name to load."
+        "--checkpoint",
+        type=str,
+        default="best_ckpt",
+        help="Checkpoint name to load."
     )
     parser.add_argument(
         "--live",

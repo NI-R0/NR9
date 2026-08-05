@@ -1,3 +1,7 @@
+"""
+Implemented by: Niklas Rodenbüsch, Jason Dietrich
+"""
+
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -17,12 +21,7 @@ class MLP(nn.Module):
 
 
 class ActorNetwork(nn.Module):
-    """Actor network with diagonal Gaussian output (Acme-style).
-
-    Uses a MultivariateNormalDiag distribution instead of full covariance.
-    The initial scale is set to ``init_scale`` to match Acme's
-    ``MultivariateNormalDiagHead(init_scale=0.7)``.
-    """
+    """Actor network with diagonal Gaussian output (Acme-style)."""
     action_dim: tuple[int]
     init_scale: float = 0.3
 

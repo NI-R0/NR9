@@ -1,3 +1,7 @@
+"""
+Implemented by: Leon Manthey
+"""
+
 import typing
 import jax
 import jax.numpy as jnp
@@ -5,11 +9,6 @@ import optax
 import distrax
 from functools import partial
 from src.networks import ActorNetwork, CriticNetwork
-
-
-def _all_finite(tree) -> jax.Array:
-    leaves = jax.tree_util.tree_leaves(tree)
-    return jnp.all(jnp.array([jnp.all(jnp.isfinite(l)) for l in leaves]))
 
 
 class TrainingState(typing.NamedTuple):
@@ -26,8 +25,9 @@ class TrainingState(typing.NamedTuple):
 
 
 def _clip_log_dual_params(dual_params: dict) -> dict:
-    """Clip dual parameters in log-space to stay within a reasonable range.
-    Prevents explosion (too high) and collapse (too low).
+    """
+    Clip dual parameters in log-space to stay within a reasonable range.
+    Should prevent parameter explosion and collapse.
     """
     return {
         "log_eta": jnp.clip(dual_params["log_eta"], -18.0, 10.0),
@@ -37,18 +37,8 @@ def _clip_log_dual_params(dual_params: dict) -> dict:
 
 
 def _tanh_log_prob_correction(pre_tanh_actions: jax.Array) -> jax.Array:
-    """Log-absolute-determinant of the tanh Jacobian (summed over action dims).
-
-    For ``a = tanh(x)`` the change-of-variables term is::
-
-        log|d a / d x| = sum_i log(1 - tanh(x_i)^2)
-
-    A numerically stable form is used::
-
-        log(1 - tanh(x)^2) = 2 * (log(2) - x - softplus(-2*x))
-
-    Returns shape ``(batch, K)`` — the correction summed over the action
-    dimension so it can be subtracted from ``log_prob`` directly.
+    """
+    Log-absolute-determinant of the tanh Jacobian (summed over action dims).
     """
     return 2.0 * (jnp.log(2.0) - pre_tanh_actions
                   - jax.nn.softplus(-2.0 * pre_tanh_actions)).sum(axis=-1)
@@ -56,11 +46,7 @@ def _tanh_log_prob_correction(pre_tanh_actions: jax.Array) -> jax.Array:
 
 def _kl_diag_per_dim(dist_old: distrax.MultivariateNormalDiag,
                      dist_new: distrax.MultivariateNormalDiag) -> jax.Array:
-    """Per-dimension KL divergence between two diagonal Gaussians.
-
-    Returns shape ``(batch, dim)`` so that each action dimension can be
-    constrained independently (Acme per-dim constraining).
-    """
+    """Per-dimension KL divergence between two diagonal Gaussians."""
     mu_old, std_old = dist_old.loc, dist_old.scale_diag
     mu_new, std_new = dist_new.loc, dist_new.scale_diag
 
@@ -261,7 +247,6 @@ class MPOLearner:
             + jnp.sum(jax.lax.stop_gradient(alpha_std) * kl_std)
         )
 
-        # Policy std for logging
         policy_std_mean = jnp.mean(distribution_current.scale_diag)
         policy_std_min = jnp.min(distribution_current.scale_diag)
         policy_std_max = jnp.max(distribution_current.scale_diag)
@@ -279,24 +264,11 @@ class MPOLearner:
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, state: TrainingState, batch):
-        """Performs one full learner step.
-
-        The E-step (sample actions from target policy, evaluate Q with
-        target critic, compute weights and dual loss for eta) is executed
-        **once** at the beginning.  The M-step (update policy and KL
-        multipliers) is repeated ``sgd_steps_per_learner_step`` times via
-        ``jax.lax.scan``, reusing the fixed E-step weights and sampled
-        actions.  The KL constraint is measured against the **target**
-        policy (the E-step distribution), not the per-sub-step policy.
-
-        The critic is also updated inside each sub-step (standard practice
-        in Acme), but the E-step weights are computed from the **target**
-        critic so they remain stable across sub-steps.
+        """
+        One full learner update (E-step + M-step).
         """
 
-        # ================================================================
         # E-step: compute weights ONCE using target networks.
-        # ================================================================
         key_e, key_critic_sample = jax.random.split(state.random_key, 2)
         dist_target = self.actor_net.apply(state.target_params_actor, batch["state"])
         eta = jnp.exp(state.dual_params["log_eta"])
@@ -318,14 +290,12 @@ class MPOLearner:
             "max_weight": max_weight,
         }
 
-        # ================================================================
         # M-step: repeated SGD updates with fixed E-step quantities.
-        # ================================================================
         def sgd_step(carry, _):
             state = carry
             key, key_critic = jax.random.split(state.random_key, 2)
 
-            # --- Critic update (uses target networks for bootstrap) ---
+            # Critic update (uses target networks for bootstrap)
             def critic_loss_fn(p):
                 return self._critic_loss(
                     p,
@@ -339,7 +309,7 @@ class MPOLearner:
             updates_c, opt_state_c = self.opt_critic.update(grads_critic, state.opt_state_critic)
             params_critic = optax.apply_updates(state.params_critic, updates_c)
 
-            # --- Actor + dual update (M-step with fixed E-step weights) ---
+            # Actor + dual update (M-step with fixed E-step weights)
             def actor_dual_loss_fn(p_actor, p_dual):
                 total_loss, aux = self._policy_and_dual_loss(
                     p_actor, p_dual, dist_target, batch,
@@ -394,14 +364,6 @@ class MPOLearner:
         state, metrics_history = jax.lax.scan(
             sgd_step, state, None, length=self.config["sgd_steps_per_learner_step"]
         )
-        # is_finite = (
-        #     _all_finite(new_state.params_actor) &
-        #     _all_finite(new_state.params_critic) &
-        #     _all_finite(new_state.dual_params)
-        # )
-        # new_state = jax.tree_util.tree_map(
-        #     lambda new, old: jnp.where(is_finite, new, old), new_state, state
-        # )
 
         # Report last sub-step's actor/dual metrics, but E-step metrics
         # are constant (computed once above).

@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Jason Dietrich
+"""
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -5,19 +10,9 @@ from loguru import logger
 
 
 class NStepTransitionBuffer:
-    """Replay buffer that stores n-step transitions.
-
-    Incoming 1-step transitions are accumulated into n-step transitions
-    following the ``rlax.n_step_bootstrapped_returns`` convention:
-
-        state_t, action_t, sum_{i=0}^{n-1} gamma^i * r_{t+i},
-        next_state_{t+n}, done_{t+n}, discount_{t+n}
-
-    The buffer keeps a rolling window of the last ``n_step`` raw
-    transitions per episode trajectory.  As soon as a full n-step window is
-    available, the aggregated transition is committed to the circular
-    replay storage.  When ``done`` is encountered, all remaining partial
-    windows are flushed (with appropriate discounting and done flags).
+    """
+    Circular eplay buffer that stores n-step transitions.
+    Accumulates incoming 1-step transitions n-step transitions.
     """
 
     def __init__(self, state_shape: tuple[int], action_shape: tuple[int],
@@ -128,16 +123,8 @@ class NStepTransitionBuffer:
         window.pop(0)
 
     def next(self, key, batch_size):
-        """Samples a random batch of n-step transitions.
-
-        Uses the provided JAX PRNG key for reproducible sampling.  Indices
-        are generated on-device then converted to a Python list to avoid a
-        GPU→CPU array-deref sync point.  Each array is transferred
-        individually via ``jnp.asarray`` simple host→device copies that
-        are cheaper than concatenating on CPU and then slicing on GPU.
-        """
+        """Sample a batch using the JAX PRNG key"""
         indices = jax.random.randint(key, (batch_size,), 0, self._size).tolist()
-
         return {
             "state": jnp.asarray(self._states[indices]),
             "action": jnp.asarray(self._actions[indices]),

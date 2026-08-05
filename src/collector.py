@@ -1,3 +1,8 @@
+"""
+Implemented by: Niklas Rodenbüsch
+Extended by: Leon Manthey
+"""
+
 import os
 import sys
 import json
@@ -10,7 +15,7 @@ from tensorboardX import SummaryWriter
 
 class InterceptHandler(logging.Handler):
     """
-    Intercepts standard `logging` calls and routes them through `loguru`, for when external dependencies use pythons builtin logging.
+    Intercepts standard logging calls and routes them through loguru, for when external dependencies use pythons builtin logging.
     """
 
     def emit(self, record):
@@ -209,8 +214,10 @@ Evaluation Configuration:
     def log_hparams(self, args: dict):
         """Log hyperparameters to TensorBoard HParams tab.
 
-        Must be called once at the start of training (before any metrics).
+        Must be called once at the start of training before any metrics are logged.
         The final metric (Mean_Eval_Reward) is used as the HParams metric.
+
+        Author: Leon Manthey
         """
         hparam_keys = [
             "env_domain",
@@ -301,10 +308,9 @@ Evaluation Configuration:
         return improved
 
     def _write_training_meta(self, episode: int, agent_step_count: int = 0):
-        """Write training_meta.json with current episode + best reward.
-        This is read by the checkpoint server (``--task serve``) and
-        external tools (e.g. check_convergence.py) without unpickling
-        the full state.
+        """
+        Write training_meta.json with current episode + best reward 
+        (read by serve mode and external tools without unpickling).
         """
         meta_path = os.path.join(self.checkpoint_dir, "training_meta.json")
         meta = {
@@ -320,15 +326,8 @@ Evaluation Configuration:
     def save_train_state(
         self, episode: int, learner_state, buffer, collector, agent_step_count: int = 0
     ):
-        """Save a full training checkpoint to disk (atomic write).
-
-        Only serializable collector fields (``stats`` dict and
-        ``best_eval_reward``) are stored – the ``SummaryWriter`` and
-        logger objects are *not* picklable because they contain
-        ``multiprocessing.Queue`` instances.
-
-        ``agent_step_count`` is stored so the warmup/update_every timing
-        is preserved across restarts.
+        """
+        Save a full training checkpoint to disk (only objects relevant for resuming training later).
         """
         tmp_path = os.path.join(self.checkpoint_dir, "state.tmp")
         path = os.path.join(self.checkpoint_dir, "state.pkl")

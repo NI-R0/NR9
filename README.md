@@ -15,14 +15,26 @@ Next steps:
 
 Install `uv` and `python>=3.11` on your system and run:
 ```bash
-git clone --recurse-submodules https://github.com/NI-R0/NR9.git
+git clone https://github.com/NI-R0/NR9.git
 uv sync --frozen
 ```
 
-If you forgot to add `--recurse-submodules` to the `git clone` command:
+`cd` into the project folder and run (for instance):
 ```bash
-git submodule update --init
+uv run python main.py \
+    --task train \
+    --run_name humanoid_custom \
+    --env_domain stand \
+    --env_task stand \
+    --episodes 50000 \
+    --num_envs 24 \
+    --eval_frequency 50 \
+    --num_eval_episodes 8 \
+    --batch_size 512 \
+    --capacity 500000 \
+    --duration 27 \
 ```
+See `src/cli.py` for all CLI options and default hyperparameter values.
 
 ---
 
