@@ -47,64 +47,97 @@ def _worker_fn(
     ``ready_buf[env_idx] = True``.  The master clears the ready flag
     before issuing the next command.
     """
-    from src.environment import Environment
+    import sys
+    import traceback as _tb
+
+    # ── Attach to shared memory FIRST so we can signal errors ──
     from multiprocessing import shared_memory as _shm_mod
 
-    env = Environment(domain_name=domain_name, task_name=task_name, max_steps=max_steps)
-    np.random.seed(seed)
-
-    # Attach to shared-memory segments.
     shm_objects = {k: _shm_mod.SharedMemory(name=v) for k, v in shm_names.items()}
 
-    # Data buffers (same layout as main process).
-    action_buf = np.ndarray(
-        (num_envs, action_dim), dtype=np.float32, buffer=shm_objects["action"].buf
-    )
-    next_state_buf = np.ndarray(
-        (num_envs, state_dim), dtype=np.float32, buffer=shm_objects["next_state"].buf
-    )
-    reward_buf = np.ndarray(
-        (num_envs,), dtype=np.float32, buffer=shm_objects["reward"].buf
-    )
-    done_buf = np.ndarray(
-        (num_envs,), dtype=np.int64, buffer=shm_objects["done"].buf
-    )
-    terminal_obs_buf = np.ndarray(
-        (num_envs, state_dim), dtype=np.float32, buffer=shm_objects["terminal_obs"].buf
-    )
     command_buf = np.ndarray(
         (num_envs,), dtype=np.int32, buffer=shm_objects["command"].buf
     )
     ready_buf = np.ndarray(
         (num_envs,), dtype=np.int32, buffer=shm_objects["ready"].buf
     )
-    reward_comp_buf = np.ndarray(
-        (num_envs, num_reward_keys), dtype=np.float32, buffer=shm_objects["reward_comp"].buf
-    )
-
-    # Discover reward component keys from the environment (done once).
-    reward_keys: list[str] = []
-    _ = env.reset()
-    _action = np.zeros(env.action_spec.shape, dtype=np.float32)
-    _timestep = env.step(_action)
-    task = getattr(env, "task", None)
-    if task is not None and hasattr(task, "_reward_components"):
-        reward_keys = list(task._reward_components.keys())
-    actual_num_keys = len(reward_keys)
-
-    # Write reward keys into the key buffer (JSON string, null-terminated).
-    key_shm = shm_objects["reward_comp_keys"]
-    keys_json = json.dumps(reward_keys)
-    key_array = np.ndarray(key_shm.size, dtype=np.uint8, buffer=key_shm.buf)
-    encoded = keys_json.encode("utf-8")
-    key_array[: len(encoded)] = encoded
 
     try:
+        from src.environment import Environment
+
+        env = Environment(domain_name=domain_name, task_name=task_name, max_steps=max_steps)
+        np.random.seed(seed)
+
+        # Data buffers (same layout as main process).
+        action_buf = np.ndarray(
+            (num_envs, action_dim), dtype=np.float32, buffer=shm_objects["action"].buf
+        )
+        next_state_buf = np.ndarray(
+            (num_envs, state_dim), dtype=np.float32, buffer=shm_objects["next_state"].buf
+        )
+        reward_buf = np.ndarray(
+            (num_envs,), dtype=np.float32, buffer=shm_objects["reward"].buf
+        )
+        done_buf = np.ndarray(
+            (num_envs,), dtype=np.int64, buffer=shm_objects["done"].buf
+        )
+        terminal_obs_buf = np.ndarray(
+            (num_envs, state_dim), dtype=np.float32, buffer=shm_objects["terminal_obs"].buf
+        )
+        reward_comp_buf = np.ndarray(
+            (num_envs, num_reward_keys), dtype=np.float32, buffer=shm_objects["reward_comp"].buf
+        )
+
+        # Discover reward component keys from the environment (done once).
+        reward_keys: list[str] = []
+        _ = env.reset()
+        _action = np.zeros(env.action_spec.shape, dtype=np.float32)
+        _timestep = env.step(_action)
+        task = getattr(env, "task", None)
+        if task is not None and hasattr(task, "_reward_components"):
+            reward_keys = list(task._reward_components.keys())
+        actual_num_keys = len(reward_keys)
+
+        # Write reward keys into the key buffer (JSON string, null-terminated).
+        key_shm = shm_objects["reward_comp_keys"]
+        keys_json = json.dumps(reward_keys)
+        key_array = np.ndarray(key_shm.size, dtype=np.uint8, buffer=key_shm.buf)
+        encoded = keys_json.encode("utf-8")
+        key_array[: len(encoded)] = encoded
+
+        # Signal to master that this worker is fully initialized and ready.
+        ready_buf[env_idx] = 1
+
+    except Exception:
+        # Worker init failed — write error info to stderr so it shows up
+        # in the job log, then exit to let master detect us as dead.
+        err_msg = (
+            f"Worker {env_idx} failed to initialise: "
+            f"{type(sys.exc_info()[1]).__name__}: {sys.exc_info()[1]}\n"
+            f"{''.join(_tb.format_exception(*sys.exc_info()))}"
+        )
+        # Write to a file so master can read it if needed.
+        err_file = f"/tmp/worker_{env_idx}_init_error.log"
+        try:
+            with open(err_file, "w") as f:
+                f.write(err_msg)
+        except Exception:
+            pass
+        print(err_msg, file=sys.stderr, flush=True)
+        ready_buf[env_idx] = -1  # Signal failure to master
+        sys.exit(1)
+
+    try:
+        import time as _time
+
         while True:
             # ── Phase 1: Wait for a non-IDLE command ──────────────────
+            # Re-read command from shared memory every iteration so we
+            # don't spin on a stale local copy.
             cmd = command_buf[env_idx]
             if cmd == _CMD_IDLE:
-                continue  # Spin until master sets a command
+                _time.sleep(0.0001)  # 0.1ms yield — prevents 100% CPU spin
+                continue
             if cmd == _CMD_CLOSE:
                 break
 
@@ -264,16 +297,30 @@ class ParallelVectorEnv:
             p.start()
             self.processes.append(p)
 
-        # Wait for workers to initialise (they write reward keys during
-        # the first env reset).  Give them a generous timeout.
+        # Wait for ALL workers to initialise (they set ready_buf[env_idx] = 1
+        # after Environment creation + reward key discovery).  Each worker
+        # needs ~1-3s for spawn + dm_control import + env creation.
         import time
-        deadline = time.monotonic() + 30.0
+        deadline = time.monotonic() + 120.0  # 2 min for 48 workers
         while time.monotonic() < deadline:
-            if self._ready_buf[0]:
+            if np.all(self._ready_buf[: self.num_envs]):
                 break
+            elapsed = time.monotonic() - (deadline - 120.0)
+            ready_count = int(np.sum(self._ready_buf[: self.num_envs]))
+            if int(elapsed) % 5 == 0:
+                logger.info(
+                    f"Waiting for workers to initialise: {ready_count}/{num_envs} ready "
+                    f"({elapsed:.1f}s elapsed)"
+                )
             time.sleep(0.05)
+        else:
+            not_ready = np.where(self._ready_buf[: self.num_envs] == 0)[0]
+            raise TimeoutError(
+                f"Workers {not_ready.tolist()} did not become ready within 120.0s. "
+                f"Check that dm_control and the environment can be loaded."
+            )
 
-        # Clear all ready flags.
+        # Clear ready flags now that all workers are confirmed initialised.
         self._ready_buf[:] = 0
 
         # Read reward keys from worker 0.
@@ -321,7 +368,12 @@ class ParallelVectorEnv:
         )
 
     def _clear_ready(self) -> None:
-        """Clear ready flags for all envs (called by master after collecting results)."""
+        """Clear ready flags and reset commands to IDLE for all envs.
+
+        Must set command to IDLE *before* clearing ready, so that workers
+        blocked in Phase 3 (waiting for IDLE after step/reset) can proceed.
+        """
+        self._command_buf[: self.num_envs] = _CMD_IDLE
         self._ready_buf[: self.num_envs] = 0
 
     # ── Public API ─────────────────────────────────────────────────────
