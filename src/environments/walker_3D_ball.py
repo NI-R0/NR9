@@ -147,14 +147,16 @@ _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatnes
 _BALL_MOVING_THRESHOLD = 0.2  # ball speed (m/s) above which ball is "rolling"
 _BALL_SPEED_SATURATE = 3.0    # ball speed at which kick reward saturates
 
-# March alternation: trapezoidal hold-time curve (~6.7 steps/s).
-# Steps on same swing leg:
-#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (~1.5s)
-#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (~4.5s plateau)
-#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (~3s)
-_MARCH_RAMP_UP = 10
-_MARCH_DECAY_START = 40
-_MARCH_DECAY_END = 60
+# March alternation: trapezoidal hold-time curve (~6.7 steps/s, _CONTROL_TIMESTEP=0.15s).
+# Ein einzelner Schritt (Fuß anheben → absetzen) dauert ~0.3-0.7s.
+#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (~0.45s)
+#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (~0.3s plateau)
+#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (~0.45s)
+# Gesamtdauer bis decay=0: ~1.2s. Schnelles Laufen = unteres Plateau,
+# langsames Gehen = längeres Verweilen. Nach ~8 steps ohne Fußwechsel: 0.
+_MARCH_RAMP_UP = 3
+_MARCH_DECAY_START = 5
+_MARCH_DECAY_END = 8
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
