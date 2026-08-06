@@ -66,7 +66,7 @@ import numpy as np
 
 
 _DEFAULT_TIME_LIMIT = 25
-_CONTROL_TIMESTEP = 0.025
+_CONTROL_TIMESTEP = 0.15   # agent decides ~6.7×/s
 _STUCK_CHECK_STEPS = 25
 _STUCK_EPSILON = 1e-3
 _STAND_HEIGHT = 1.5  # nearer to full upright height; prevents saturation in prone/spagat pose
@@ -123,15 +123,12 @@ assert abs(sum([
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
 # Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
-# Effort kept very low; action-change penalty limits switching frequency
-# (~6 switches/s = ~150 steps) instead of punishing motion itself.
 _W_EFFORT = 0.001          # raw control magnitude (near zero — motion is OK)
 _W_FEET_UNDER = 0.03
 _W_HIP_ALIGN = 0.03
 _W_LEG_SPREAD = 0.02
 _W_SELF_COLLISION = 0.05   # penalizes interpenetration of non-adjacent body parts
 _W_TIME = 0.02             # per-step time penalty — encourages fast action
-_W_ACTION_CHANGE = 0.03    # penalizes switching actions too fast (~6/s limit)
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -149,16 +146,14 @@ _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatnes
 _BALL_MOVING_THRESHOLD = 0.2  # ball speed (m/s) above which ball is "rolling"
 _BALL_SPEED_SATURATE = 3.0    # ball speed at which kick reward saturates
 
-# March alternation: trapezoidal hold-time curve.
+# March alternation: trapezoidal hold-time curve (~6.7 steps/s).
 # Steps on same swing leg:
-#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (learn to hold leg up)
-#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (plateau)
-#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (force switch)
-# This lets the agent walk slowly (short hold) or run (longer hold),
-# but punishes staying on one leg too long.
-_MARCH_RAMP_UP = 10         # Steps to ramp up to full reward (~0.25s)
-_MARCH_DECAY_START = 40     # Steps before reward starts decaying (~1s)
-_MARCH_DECAY_END = 60       # Steps where reward hits 0 (~1.5s)
+#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (~1.5s)
+#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (~4.5s plateau)
+#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (~3s)
+_MARCH_RAMP_UP = 10
+_MARCH_DECAY_START = 40
+_MARCH_DECAY_END = 60
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -999,16 +994,6 @@ class Walker3DBall(base.Task):
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
         effort_penalty = -float(np.mean(ctrl**2))
 
-        # --- Action-change penalty [-1, 0]: penalizes switching ctrl too fast
-        # Limits effective switching frequency to ~6/s (≈150 steps at 40Hz),
-        # similar to human muscle switching limits.  Standing still costs nothing,
-        # moving smoothly costs little, only jerky changes are punished.
-        if hasattr(self, '_prev_action') and self._prev_action is not None:
-            action_diff = np.mean(np.abs(ctrl - self._prev_action))
-            action_change_penalty = -float(np.clip(action_diff, 0.0, 1.0))
-        else:
-            action_change_penalty = 0.0
-
         # --- Self-collision penalty [-1, 0]: interpenetration of non-adjacent bodies ---
         self_collision = physics.self_collision_penalty()
 
@@ -1290,7 +1275,6 @@ class Walker3DBall(base.Task):
             + _W_HIP_ALIGN * hip_align_penalty
             + _W_LEG_SPREAD * leg_spread
             + _W_TIME  # per-step time penalty — encourages fast action
-            + _W_ACTION_CHANGE * action_change_penalty
         )
 
         if target_hit:
@@ -1313,7 +1297,6 @@ class Walker3DBall(base.Task):
             "hip_align": _W_HIP_ALIGN * hip_align_penalty,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
             "time": _W_TIME,
-            "action_change": _W_ACTION_CHANGE * action_change_penalty,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         # --- Stuck detection (input/output similarity) ---
