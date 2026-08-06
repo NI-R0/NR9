@@ -107,12 +107,12 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # Positive weights (sum = 1.0) — kick and target weighted highest as they
 # are the actual task goal; locomotion rewards are stepping stones.
 _W_FEET = 0.08
-_W_FLAT_FOOT = 0.08       # foot sole flatness (cos of tilt angle)
+_W_FLAT_FOOT = 0.15       # foot sole flatness (cos of tilt angle)
 _W_STAND = 0.10
 _W_WEIGHT_SHIFT = 0.10
 _W_MARCH = 0.10
 _W_APPROACH = 0.12
-_W_GAIT = 0.10
+_W_GAIT = 0.03
 _W_KICK = 0.17            # ball direction toward target — the main task
 _W_TARGET = 0.15          # ball in target zone
 
@@ -827,8 +827,9 @@ class Walker3DBall(base.Task):
         self._consecutive_successes = 0
         self._target_pos = None
         self._reward_components: dict[str, float] = {}
-        self._last_swing_leg: str | None = None  # 'right' or 'left' (for march alternation)
-        self._same_swing_count: int = 0  # consecutive steps with same swing leg
+        self._last_swing_leg: str | None = None  # 'right' or 'left' — letzter Fuß in der Luft
+        self._confirmed_swing_leg: str | None = None  # bestätigter swing foot (nach switch)
+        self._same_swing_count: int = 0  # consecutive steps mit bestätigtem swing leg
         self._step_count = 0  # per-episode step counter for grace period
         super().__init__(random=random)
 
@@ -890,6 +891,7 @@ class Walker3DBall(base.Task):
 
         self._step_count = 0
         self._last_swing_leg = None
+        self._confirmed_swing_leg = None
         self._same_swing_count = 0
 
     def _place_target(self, physics):
@@ -1053,18 +1055,6 @@ class Walker3DBall(base.Task):
         hip_pitch = physics.hip_pitch_angles()
         foot_z = physics.foot_heights()
 
-        right_knee_lift = float(np.clip(-knee[0] / _MARCH_KNEE_TARGET, 0.0, 1.0))
-        left_knee_lift = float(np.clip(-knee[1] / _MARCH_KNEE_TARGET, 0.0, 1.0))
-        right_hip_lift = float(
-            np.clip(hip_pitch[0] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0)
-        )
-        left_hip_lift = float(
-            np.clip(hip_pitch[1] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0)
-        )
-
-        right_lift = (right_knee_lift + right_hip_lift) / 2.0
-        left_lift = (left_knee_lift + left_hip_lift) / 2.0
-
         touch_r = float(np.tanh(physics.data.sensordata[
             physics._sensor_foot[physics._si_r_heel]]))
         touch_l = float(np.tanh(physics.data.sensordata[
@@ -1080,22 +1070,54 @@ class Walker3DBall(base.Task):
             )
         )
 
-        right_as_swing = right_lift * (1.0 - touch_r) * touch_l
-        left_as_swing = left_lift * (1.0 - touch_l) * touch_r
-        march_lift = float(max(right_as_swing, left_as_swing))
+        # Determine which foot is airborne (swing leg)
+        right_in_air = touch_r < _FLAT_FOOT_TOUCH_THRESHOLD
+        left_in_air = touch_l < _FLAT_FOOT_TOUCH_THRESHOLD
 
-        # --- March alternation: trapezoidal hold-time curve ---
-        if right_as_swing > left_as_swing:
+        if right_in_air and not left_in_air:
             current_swing_leg = "right"
-        else:
+        elif left_in_air and not right_in_air:
             current_swing_leg = "left"
-
-        if self._last_swing_leg is None or current_swing_leg != self._last_swing_leg:
-            # First step or leg switched → reset counter
-            self._same_swing_count = 0
         else:
-            self._same_swing_count += 1
-        self._last_swing_leg = current_swing_leg
+            # Both on ground or both in air → kein klarer swing
+            current_swing_leg = None
+
+        # Knee bend + hip lift nur vom schwebenden Fuß
+        if current_swing_leg == "right":
+            knee_lift = float(np.clip(-knee[0] / _MARCH_KNEE_TARGET, 0.0, 1.0))
+            hip_lift = float(np.clip(hip_pitch[0] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0))
+        elif current_swing_leg == "left":
+            knee_lift = float(np.clip(-knee[1] / _MARCH_KNEE_TARGET, 0.0, 1.0))
+            hip_lift = float(np.clip(hip_pitch[1] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0))
+        else:
+            knee_lift = 0.0
+            hip_lift = 0.0
+
+        march_lift = (knee_lift + hip_lift) / 2.0
+
+        # --- March alternation: foot-switch-Logik ---
+        # Merkt sich welcher Fuß zuletzt in der Luft war. Wenn beide kurz auf dem
+        # Boden sind (double support) wird nur der Timer resettet. Ein Reward wird
+        # nur gegeben, wenn sich der swing foot wirklich gewechselt hat. So wird
+        # „Treppeln" mit einem Fuß verhindert.
+        if current_swing_leg is not None:
+            # Ein Fuß ist in der Luft
+            if self._last_swing_leg is None:
+                # Erster swing nach reset → bestätige diesen Fuß
+                self._confirmed_swing_leg = current_swing_leg
+                self._same_swing_count = 0
+            elif current_swing_leg != self._confirmed_swing_leg:
+                # Echter Fußwechsel → reset counter und bestätige neuen Fuß
+                self._confirmed_swing_leg = current_swing_leg
+                self._same_swing_count = 0
+            elif current_swing_leg == self._confirmed_swing_leg:
+                # Gleicher Fuß wie bestätigt → counter hochzählen (Treppeln)
+                self._same_swing_count += 1
+            self._last_swing_leg = current_swing_leg
+        else:
+            # Double support (beide auf Boden) → nur last_swing_leg resetten,
+            # confirmed bleibt unverändert (wird erst beim nächsten switch geprüft)
+            self._last_swing_leg = None
 
         # Trapezoidal curve: ramp up → plateau → decay
         count = self._same_swing_count
