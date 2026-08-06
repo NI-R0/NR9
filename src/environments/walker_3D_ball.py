@@ -104,54 +104,38 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # magnitude × weight.
 # ---------------------------------------------------------------------------
 
-# Positive weights (sum = 1.0) — kick and target weighted highest as they
-# are the actual task goal; locomotion rewards are stepping stones.
-_W_FEET = 0.05
-_W_FLAT_FOOT = 0.15       # foot sole flatness (cos of tilt angle)
-_W_STAND = 0.05
-_W_WEIGHT_SHIFT = 0.10
-_W_MARCH = 0.08
-_W_STANCE = 0.10            # COM on stance heel-toe line + step forward
-_W_APPROACH = 0.12
-_W_GAIT = 0.03
-_W_KICK = 0.17            # ball direction toward target — the main task
-_W_TARGET = 0.15          # ball in target zone
+# Positive weights (sum = 1.0) — 8 components, kick & target weighted highest
+_W_FLAT_FOOT = 0.16   # foot sole flatness (cos of tilt angle)
+_W_STAND = 0.05       # height + upright
+_W_WEIGHT_SHIFT = 0.11  # COM lateral shift over one foot
+_W_MARCH = 0.09       # knee lift + hip lift of swing leg
+_W_STANCE = 0.11      # COM on stance heel-toe line + step forward
+_W_APPROACH = 0.13    # walk toward ball / approach point
+_W_KICK = 0.18        # ball direction toward target — the main task
+_W_TARGET = 0.17      # ball in target zone
 
 # Check that positive weights sum to 1.0
 assert abs(sum([
-    _W_FEET, _W_FLAT_FOOT, _W_STAND, _W_WEIGHT_SHIFT,
-    _W_MARCH, _W_STANCE, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
+    _W_FLAT_FOOT, _W_STAND, _W_WEIGHT_SHIFT, _W_MARCH,
+    _W_STANCE, _W_APPROACH, _W_KICK, _W_TARGET,
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
-# Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
-_W_EFFORT = 0.001          # raw control magnitude (near zero — motion is OK)
+# Penalty weights (on top of the 1.0 budget)
 _W_FEET_UNDER = 0.03
 _W_HIP_ALIGN = 0.03
 _W_LEG_SPREAD = 0.04
-_W_SELF_COLLISION = 0.05   # penalizes interpenetration of non-adjacent body parts
-_W_TIME = 0.01             # per-step time penalty — encourages fast action
-# Action-rate penalty: penalize high-frequency action changes (> ~6 Hz).
-# Low-pass filter cutoff frequency in Hz — lets human-like motions through.
-_ACTION_RATE_CUTOFF = 6.0  # Hz
-# Filter coefficient (timestep-independent): alpha = exp(-dt * 2π * f_c)
-_ACTION_RATE_ALPHA = float(np.exp(-_CONTROL_TIMESTEP * 2 * np.pi * _ACTION_RATE_CUTOFF))
-_W_ACTION_RATE = 0.005     # weight for action-rate penalty
+_W_SELF_COLLISION = 0.05
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
-_HIP_YAW_MAX = np.radians(45)  # Max hip-yaw range for normalization
-_HIP_ROLL_MAX = np.radians(45)  # Max hip-roll deviation from neutral for normalization
-_GAIT_MIN_VELOCITY = 0.3  # Min horizontal velocity (m/s) for gait reward to activate
-_SHIN_LENGTH = 0.25  # Shin (leg) capsule half-length in m; used as foot-clearance target
-_MARCH_KNEE_TARGET = np.radians(60)  # Target knee lift angle for marching
-_MARCH_HIP_PITCH_TARGET = np.radians(45)  # Target hip pitch for knee lift
-_FEET_UNDER_MAX_OFFSET = (
-    0.5  # Max xy-distance (m) from feet-midpoint to torso for feet_under reward
-)
-_FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
-_ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatness reward
-_BALL_MOVING_THRESHOLD = 0.2  # ball speed (m/s) above which ball is "rolling"
-_BALL_SPEED_SATURATE = 3.0    # ball speed at which kick reward saturates
+_HIP_YAW_MAX = np.radians(45)
+_HIP_ROLL_MAX = np.radians(45)
+_MARCH_KNEE_TARGET = np.radians(60)
+_MARCH_HIP_PITCH_TARGET = np.radians(45)
+_FEET_UNDER_MAX_OFFSET = 0.5
+_FLAT_FOOT_TOUCH_THRESHOLD = 0.3
+_ANKLE_ROLL_MAX = np.radians(30)
+_BALL_SPEED_SATURATE = 3.0  # ball speed (m/s) at which kick reward saturates
 
 # March alternation: trapezoidal hold-time curve (in seconds, converted to steps at runtime).
 # Ein einzelner Schritt (Fuß anheben → absetzen) dauert ~0.3-0.7s.
@@ -197,19 +181,6 @@ _ALL_TOUCHES = _NON_FOOT_TOUCHES + _FOOT_TOUCHES
 
 SUITE = containers.TaggedTasks()
 FILE = "walker_3D_ball.xml"
-
-
-def _sigmoid(x: float, k: float = 1.0) -> float:
-    """Numerically stable logistic sigmoid, output ∈ (0, 1).
-
-    ``k`` controls steepness.  Used for smooth [0, 1] reward shaping
-    instead of hard binary thresholds.
-    """
-    z = k * x
-    if z >= 0:
-        return float(1.0 / (1.0 + np.exp(-z)))
-    ez = np.exp(z)
-    return float(ez / (1.0 + ez))
 
 
 def get_model_and_assets():
@@ -422,36 +393,13 @@ class Physics(mujoco.Physics):
         self._ensure_indices()
         return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
 
-    @staticmethod
-    def _flatness_curve(x: float) -> float:
-        """Linear flatness curve: 0 at vertical, 0.5 at horizontal.
-
-        ``x`` is a [0, 1] flatness measure (1 = perfectly flat).
-        Returns ``0.5 * x``:
-          - x = 0.0 (vertical / on toes) → 0
-          - x = 0.7 (≈45°)              → 0.35
-          - x = 1.0 (horizontal sole)   → 0.5
-
-        The remaining 0.5 → 1.0 gap is bridged by the heel+toe shortcut
-        in :meth:`flat_foot_contact` (both sensors in contact → 1.0).
-        """
-        x = max(0.0, min(1.0, x))
-        return float(0.5 * x)
-
     def flat_foot_contact(self):
         """Returns the flatness [0, 1] of the *best* foot touching the ground.
 
-        Two paths:
-        1. **Heel+toe shortcut** — if both heel and toe sensors are in contact
-           for either foot, returns 1.0 immediately (foot is fully flat).
-        2. **Partial contact** — combines sole-tilt (xmat zz) and ankle-roll
-           flatness via multiplication.  Both measures are passed through
-           the linear :meth:`_flatness_curve` (0.5 * x), so even a partially
-           flat foot gets a meaningful gradient toward flatness.
-
-        ``max(right, left)`` is returned so that one flat foot already gives
-        the full standing reward — the agent is not penalised for lifting
-        the other foot (prerequisite for walking).
+        If both heel and toe sensors are in contact for a foot, the flatness
+        is computed from sole-tilt (xmat zz component) and ankle-roll,
+        combined multiplicatively.  ``max(right, left)`` is returned so
+        that one flat foot suffices for the full standing reward.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
@@ -730,20 +678,6 @@ class Physics(mujoco.Physics):
             self.data.qpos[self._qpos_l_hip_pitch],
         ]).ravel()
 
-    def com_lateral_offset(self):
-        """Returns the lateral (y) distance from COM to the midpoint of the feet.
-
-        Positive = COM shifted toward the left foot, negative = toward the right.
-        Used for the weight-shift reward: the agent should shift its COM over
-        one foot, then the other.
-        """
-        self._ensure_indices()
-        com_y = self.data.subtree_com[self._bid_torso, 1]
-        right_foot_y = self.data.xpos[self._bid_right_foot, 1]
-        left_foot_y = self.data.xpos[self._bid_left_foot, 1]
-        feet_mid_y = (right_foot_y + left_foot_y) / 2.0
-        return float(com_y - feet_mid_y)
-
     def com_lateral_to_foot(self):
         """Returns [com_to_right_foot_y, com_to_left_foot_y] distances.
 
@@ -834,21 +768,19 @@ class Walker3DBall(base.Task):
     """
 
     def __init__(self, random=None):
-        """Initializes an instance of `Walker3DBall`.
-
-        Args:
-          random: Optional, either a `numpy.random.RandomState` instance, an
-            integer seed for creating a new `RandomState`, or None to select a
-            seed automatically (default).
-        """
         self._target_size = _TARGET_SIZE_MAX
         self._consecutive_successes = 0
         self._target_pos = None
         self._reward_components: dict[str, float] = {}
-        self._last_swing_leg: str | None = None  # 'right' or 'left' — letzter Fuß in der Luft
-        self._confirmed_swing_leg: str | None = None  # bestätigter swing foot (nach switch)
-        self._same_swing_count: int = 0  # consecutive steps mit bestätigtem swing leg
-        self._step_count = 0  # per-episode step counter for grace period
+        # March alternation tracking
+        self._last_swing_leg: str | None = None
+        self._confirmed_swing_leg: str | None = None
+        self._same_swing_count: int = 0
+        # Stuck detection
+        self._step_count = 0
+        self._stuck_count = 0
+        self._last_obs: np.ndarray | None = None
+        self._last_action: np.ndarray | None = None
         super().__init__(random=random)
 
     def register_success(self):
@@ -917,10 +849,10 @@ class Walker3DBall(base.Task):
             physics.named.data.qpos["ball_joint"][:2] = [ball_x, ball_y]
             attempts += 1
 
-        self._prev_action = None  # reset action history
-        self._filtered_action = None  # reset low-pass filter for rate penalty
-
         self._step_count = 0
+        self._stuck_count = 0
+        self._last_obs = None
+        self._last_action = None
         self._last_swing_leg = None
         self._confirmed_swing_leg = None
         self._same_swing_count = 0
@@ -955,475 +887,326 @@ class Walker3DBall(base.Task):
         return obs
 
     def should_terminate(self, physics) -> bool:
-        """Returns ``True`` when the agent has fallen and the episode should end.
-
-        Termination conditions (only checked after ``_TERMINATE_GRACE_TIME``
-        to avoid spurious triggers from initial randomization):
-
-        1. **Torso too low** — ``torso_height() < _TERMINATE_HEIGHT`` (fallen down).
-        2. **Non-foot contact** — any non-foot body part touches the ground
-           firmly (summed tanh touch > ``_TERMINATE_NON_FOOT``).
-        3. **Both knees on ground** — both knee z-positions below
-           ``_TERMINATE_KNEE_HEIGHT`` (agent collapsed on knees).
-
-        The time-limit termination (1000 steps) is handled by the
-        ``control.Environment`` itself via ``time_limit``.
-        """
         self._step_count += 1
+
+        # Grace period: don't terminate during initial randomization
         if self._step_count <= _TERMINATE_GRACE_STEPS:
             return False
+
+        # 1. Torso too low
         if physics.torso_height() < _TERMINATE_HEIGHT:
             return True
+
+        # 2. Non-foot body parts touching ground
         if physics.non_foot_touch() > _TERMINATE_NON_FOOT:
             return True
+
+        # 3. Either knee on ground
         knee_z = physics.knee_heights()
         if knee_z[0] < _TERMINATE_KNEE_HEIGHT or knee_z[1] < _TERMINATE_KNEE_HEIGHT:
             return True
-        if getattr(self, '_stuck_count', 0) >= _STUCK_CHECK_STEPS:
-            logger.warning(f"Episode terminated: agent stuck (no obs/act change for {_STUCK_CHECK_STEPS} steps / {_STUCK_CHECK_TIME}s)")
+
+        # 4. Stuck detection (observation + action unchanged)
+        current_obs = self.get_observation(physics)
+        flat_obs = np.concatenate([v.ravel() for v in current_obs.values()])
+        current_act = physics.control().copy()
+
+        if self._last_obs is not None:
+            if (np.max(np.abs(flat_obs - self._last_obs)) < _STUCK_EPSILON and
+                    np.max(np.abs(current_act - self._last_action)) < _STUCK_EPSILON):
+                self._stuck_count += 1
+            else:
+                self._stuck_count = 0
+        else:
+            self._stuck_count = 0
+
+        self._last_obs = flat_obs
+        self._last_action = current_act
+
+        if self._stuck_count >= _STUCK_CHECK_STEPS:
+            logger.warning(
+                f"Episode terminated: agent stuck "
+                f"({_STUCK_CHECK_STEPS} steps / {_STUCK_CHECK_TIME}s)"
+            )
             return True
+
         return False
 
     def get_reward(self, physics):
-        """Direct reward: all components active, no gates.
+        """Reward with 8 positive components (summing to 1.0) + penalties.
 
-        Positive weights sum to 1.0 → perfect step = 1.0.
-        Penalty weights are on top → realistic optimum < 1.0.
-
-        ``_reward_components`` stores **raw (unweighted)** values so logged
-        components directly show each sub-reward's quality in [0, 1] or
-        [-1, 0].
+        Positive rewards in [0, 1], penalties in [-1, 0].
+        All components active from step 1 (no gates / no curriculum phases).
         """
-        ctrl = physics.control()
+        physics._ensure_indices()
 
-        # ======================================================================
-        # Shared quantities (computed once)
-        # ======================================================================
-        feet_touch_raw = physics.feet_touch()
-        non_foot_touch_raw = physics.non_foot_touch()
-
-        # --- Smooth [0, 1] contact signals via sigmoid ---
-        feet_contact = _sigmoid(feet_touch_raw - 0.5, k=4.0)
-        non_foot_contact = _sigmoid(non_foot_touch_raw - 0.5, k=4.0)
-
-        # feet_only: 1 when no non-foot contact, 0 when any. ∈ [0, 1].
-        feet_only = 1.0 - non_foot_contact
-
-        # --- Flat-foot reward [0, 1]: foot sole flatness via tilt angle.
-        flat_foot_reward = physics.flat_foot_contact()
-
-        # --- Feet reward [0, 1]: foot contact scaled by absence of non-foot contact ---
-        feet_reward = feet_contact * feet_only
-
-        # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
-        effort_penalty = -float(np.mean(ctrl**2))
-
-        # --- Self-collision penalty [-1, 0]: interpenetration of non-adjacent bodies ---
-        self_collision = physics.self_collision_penalty()
-
-        # --- Action-rate penalty [-1, 0]: high-frequency action changes above cutoff.
-        # A virtual low-pass filter tracks "slow" actions; the deviation is penalised.
-        # This does NOT modify the action — it is only a reward signal. ---
-        if self._filtered_action is None:
-            self._filtered_action = ctrl.copy()
-        self._filtered_action = _ACTION_RATE_ALPHA * self._filtered_action + (1.0 - _ACTION_RATE_ALPHA) * ctrl
-        action_rate_penalty = -float(np.mean((ctrl - self._filtered_action) ** 2))
-
-        # --- Shared: knee angles (used by stand + march reward) ---
+        # ------------------------------------------------------------------
+        # Shared quantities
+        # ------------------------------------------------------------------
         knee = physics.knee_angles()
+        sensor_foot = physics._sensor_foot
 
-        # --- Standing [0, 1]: height + upright + knee flexion.
-        # Knee flexion encourages an athletic posture (bent knees) instead of
-        # straight-legged swaying.  Negative knee angle = bent (~-0.5 rad = 29°).
+        # ------------------------------------------------------------------
+        # 1. Stand [0, 1] — height + upright + knee flexion
+        # ------------------------------------------------------------------
         standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
-        upright = float((1 + physics.torso_upright()) / 2)
-        knee_flexion = float(np.clip(
-            -np.mean(knee) / np.radians(30), 0.0, 1.0
-        ))
-        # Height and upright are primary; knee flexion pushes toward athletic stance
+        upright = float((1.0 + physics.torso_upright()) / 2.0)
+        knee_flexion = float(np.clip(-np.mean(knee) / np.radians(30), 0.0, 1.0))
         stand_reward = 0.48 * standing + 0.42 * upright + 0.10 * knee_flexion
 
-        # --- Hip alignment penalty [-1, 0] ---
+        # ------------------------------------------------------------------
+        # 2. Flat foot [0, 1] — foot sole flatness
+        # ------------------------------------------------------------------
+        flat_foot_reward = physics.flat_foot_contact()
+
+        # ------------------------------------------------------------------
+        # 3. Penalties
+        # ------------------------------------------------------------------
+        # Hip alignment [-1, 0]: yaw + roll deviation
         hip_yaw = physics.hip_yaw_angles()
         hip_roll = physics.hip_roll_angles()
-        hip_align_penalty = -float(
+        hip_align = -float(
             np.clip(
-                (
-                    np.mean(np.abs(hip_yaw) / _HIP_YAW_MAX)
-                    + np.mean(np.abs(hip_roll) / _HIP_ROLL_MAX)
-                )
-                / 2.0,
-                0.0,
-                1.0,
+                (np.mean(np.abs(hip_yaw) / _HIP_YAW_MAX)
+                 + np.mean(np.abs(hip_roll) / _HIP_ROLL_MAX)) / 2.0,
+                0.0, 1.0,
             )
         )
 
-        # --- Leg spread penalty [-1, 0] ---
+        # Leg spread [-1, 0]: feet too far apart
         feet_dist = physics.feet_horizontal_distance()
         leg_spread = -float(
-            np.clip(
-                (feet_dist - _LEG_SPREAD_THRESHOLD) / _LEG_SPREAD_THRESHOLD, 0.0, 1.0
-            )
+            np.clip((feet_dist - _LEG_SPREAD_THRESHOLD) / _LEG_SPREAD_THRESHOLD, 0.0, 1.0)
         )
 
-        # --- Feet under torso [0, 1] ---
+        # Feet under torso [-1, 0]: feet should be beneath COM
         feet_offset = physics.feet_xy_offset()
-        feet_under = 1.0 - float(
-            np.clip(feet_offset / _FEET_UNDER_MAX_OFFSET, 0.0, 1.0)
-        )
+        feet_under = float(np.clip(feet_offset / _FEET_UNDER_MAX_OFFSET, 0.0, 1.0))
 
-        # ======================================================================
-        # Weight shift reward (simplified: COM over one foot)
-        # ======================================================================
+        # Self-collision [-1, 0]
+        self_collision = physics.self_collision_penalty()
+
+        # ------------------------------------------------------------------
+        # 4. Weight shift [0, 1] — COM laterally over one foot
+        # ------------------------------------------------------------------
         com_to_feet = physics.com_lateral_to_foot()
         half_foot_dist = max(physics.feet_lateral_distance() / 2.0, 1e-6)
-        shift_right = 1.0 - float(
-            np.clip(np.abs(com_to_feet[0]) / half_foot_dist, 0.0, 1.0)
-        )
-        shift_left = 1.0 - float(
-            np.clip(np.abs(com_to_feet[1]) / half_foot_dist, 0.0, 1.0)
-        )
+        shift_right = 1.0 - float(np.clip(np.abs(com_to_feet[0]) / half_foot_dist, 0.0, 1.0))
+        shift_left = 1.0 - float(np.clip(np.abs(com_to_feet[1]) / half_foot_dist, 0.0, 1.0))
         weight_shift_reward = float(np.clip(max(shift_right, shift_left), 0.0, 1.0))
-        stillness = 1.0 - float(
-            np.clip(physics.horizontal_velocity() / _GAIT_MIN_VELOCITY, 0.0, 1.0)
-        )
 
-        # ======================================================================
-        # March reward (simplified: one leg lifts while other supports)
-        # ======================================================================
-        hip_pitch = physics.hip_pitch_angles()
-        foot_z = physics.foot_heights()
-
-        touch_r = float(np.tanh(physics.data.sensordata[
-            physics._sensor_foot[physics._si_r_heel]]))
-        touch_l = float(np.tanh(physics.data.sensordata[
-            physics._sensor_foot[physics._si_l_heel]]))
-        touch_sum = touch_r + touch_l
+        # ------------------------------------------------------------------
+        # 5. March [0, 1] — single support + swing leg lift + alternation
+        # ------------------------------------------------------------------
+        touch_r = float(np.tanh(physics.data.sensordata[sensor_foot[0]]))  # right heel
+        touch_l = float(np.tanh(physics.data.sensordata[sensor_foot[2]]))  # left heel
         single_support = float(
-            rewards.tolerance(
-                touch_sum,
-                bounds=(0.7, 1.3),
-                margin=1.0,
-                value_at_margin=0.1,
-                sigmoid="linear",
-            )
+            rewards.tolerance(touch_r + touch_l, bounds=(0.7, 1.3),
+                              margin=1.0, value_at_margin=0.1, sigmoid="linear")
         )
 
-        # Determine which foot is airborne (swing leg)
-        right_in_air = touch_r < _FLAT_FOOT_TOUCH_THRESHOLD
-        left_in_air = touch_l < _FLAT_FOOT_TOUCH_THRESHOLD
-
-        if right_in_air and not left_in_air:
-            current_swing_leg = "right"
-        elif left_in_air and not right_in_air:
-            current_swing_leg = "left"
+        # Determine swing leg
+        if touch_r < _FLAT_FOOT_TOUCH_THRESHOLD and not touch_l < _FLAT_FOOT_TOUCH_THRESHOLD:
+            swing = 0  # right in air → left swings
+        elif touch_l < _FLAT_FOOT_TOUCH_THRESHOLD and not touch_r < _FLAT_FOOT_TOUCH_THRESHOLD:
+            swing = 1  # left in air → right swings
         else:
-            # Both on ground or both in air → kein klarer swing
-            current_swing_leg = None
+            swing = -1  # double support or double flight
 
-        # Knee bend + hip lift nur vom schwebenden Fuß
-        if current_swing_leg == "right":
-            knee_lift = float(np.clip(-knee[0] / _MARCH_KNEE_TARGET, 0.0, 1.0))
-            hip_lift = float(np.clip(hip_pitch[0] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0))
-        elif current_swing_leg == "left":
-            knee_lift = float(np.clip(-knee[1] / _MARCH_KNEE_TARGET, 0.0, 1.0))
-            hip_lift = float(np.clip(hip_pitch[1] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0))
+        hip_pitch = physics.hip_pitch_angles()
+        if swing >= 0:
+            knee_lift = float(np.clip(-knee[swing] / _MARCH_KNEE_TARGET, 0.0, 1.0))
+            hip_lift = float(np.clip(hip_pitch[swing] / _MARCH_HIP_PITCH_TARGET, 0.0, 1.0))
+            march_lift = (knee_lift + hip_lift) / 2.0
         else:
-            knee_lift = 0.0
-            hip_lift = 0.0
+            march_lift = 0.0
 
-        march_lift = (knee_lift + hip_lift) / 2.0
-
-        # --- March alternation: foot-switch-Logik ---
-        # Merkt sich welcher Fuß zuletzt in der Luft war. Wenn beide kurz auf dem
-        # Boden sind (double support) wird nur der Timer resettet. Ein Reward wird
-        # nur gegeben, wenn sich der swing foot wirklich gewechselt hat. So wird
-        # „Treppeln" mit einem Fuß verhindert.
+        # Alternation: penalise "stair-stepping" (same leg swinging repeatedly)
+        current_swing_leg = ("right", "left")[swing] if swing >= 0 else None
         if current_swing_leg is not None:
-            # Ein Fuß ist in der Luft
             if self._last_swing_leg is None:
-                # Erster swing nach reset → bestätige diesen Fuß
                 self._confirmed_swing_leg = current_swing_leg
                 self._same_swing_count = 0
             elif current_swing_leg != self._confirmed_swing_leg:
-                # Echter Fußwechsel → reset counter und bestätige neuen Fuß
                 self._confirmed_swing_leg = current_swing_leg
                 self._same_swing_count = 0
-            elif current_swing_leg == self._confirmed_swing_leg:
-                # Gleicher Fuß wie bestätigt → counter hochzählen (Treppeln)
+            else:
                 self._same_swing_count += 1
             self._last_swing_leg = current_swing_leg
         else:
-            # Double support (beide auf Boden) → nur last_swing_leg resetten,
-            # confirmed bleibt unverändert (wird erst beim nächsten switch geprüft)
             self._last_swing_leg = None
 
-        # Trapezoidal curve: ramp up → plateau → decay
         count = self._same_swing_count
         if count < _MARCH_RAMP_UP:
-            # Ramp-up phase: 0 → 1
-            alternation_factor = float(count / _MARCH_RAMP_UP)
+            alt_factor = float(count / _MARCH_RAMP_UP)
         elif count < _MARCH_DECAY_START:
-            # Plateau: full reward
-            alternation_factor = 1.0
+            alt_factor = 1.0
         elif count < _MARCH_DECAY_END:
-            # Decay phase: 1 → 0
-            alternation_factor = float(
-                max(0.0, (_MARCH_DECAY_END - count) / (_MARCH_DECAY_END - _MARCH_DECAY_START))
-            )
+            alt_factor = float(max(0.0, (_MARCH_DECAY_END - count) /
+                                   (_MARCH_DECAY_END - _MARCH_DECAY_START)))
         else:
-            alternation_factor = 0.0
+            alt_factor = 0.0
 
-        march_reward = float(np.clip(march_lift * single_support * alternation_factor, 0.0, 1.0))
+        march_reward = float(np.clip(march_lift * single_support * alt_factor, 0.0, 1.0))
 
-        # ======================================================================
-        # Stance reward: COM on heel-toe line + swing foot steps forward
-        # ======================================================================
-        # Belohnt, dass der COM auf der Ferse→Zehen-Linie des Standbeins liegt
-        # und der Schwungfuß weiter vorne als das Standbein gesetzt wird.
-        # Verhindert Spagat-Stand und fördert echte Schritte nach vorne.
-        if current_swing_leg == "right":
-            # Left foot is stance → get left heel/toe site positions
-            stance_heel_xy = physics.data.site_xpos[physics._sid_foot[physics._si_l_heel], :2]
-            stance_toe_xy = physics.data.site_xpos[physics._sid_foot[physics._si_l_toe], :2]
-            swing_foot_xy = physics.data.xpos[physics._bid_right_foot, :2]
-        elif current_swing_leg == "left":
-            stance_heel_xy = physics.data.site_xpos[physics._sid_foot[physics._si_r_heel], :2]
-            stance_toe_xy = physics.data.site_xpos[physics._sid_foot[physics._si_r_toe], :2]
-            swing_foot_xy = physics.data.xpos[physics._bid_left_foot, :2]
+        # ------------------------------------------------------------------
+        # 6. Stance [0, 1] — COM on heel-toe line + forward step
+        # ------------------------------------------------------------------
+        if swing == 0:
+            # Right in air → left is stance
+            stance_heel = physics.data.site_xpos[physics._sid_foot[2], :2]
+            stance_toe = physics.data.site_xpos[physics._sid_foot[3], :2]
+            swing_xy = physics.data.xpos[physics._bid_right_foot, :2]
+        elif swing == 1:
+            stance_heel = physics.data.site_xpos[physics._sid_foot[0], :2]
+            stance_toe = physics.data.site_xpos[physics._sid_foot[1], :2]
+            swing_xy = physics.data.xpos[physics._bid_left_foot, :2]
         else:
-            stance_heel_xy = stance_toe_xy = swing_foot_xy = None
+            stance_heel = None
 
-        if stance_heel_xy is not None:
-            # Heel-toe axis vector (points from heel to toe = "forward" direction of foot)
-            ht_vec = stance_toe_xy - stance_heel_xy
-            ht_length = float(np.linalg.norm(ht_vec))
-            if ht_length > 0.02:
-                ht_dir = ht_vec / ht_length  # unit vector along heel-toe axis
-                # Perpendicular direction (rotate 90°)
+        stance_reward = 0.0
+        if stance_heel is not None:
+            ht_vec = stance_toe - stance_heel
+            ht_len = float(np.linalg.norm(ht_vec))
+            if ht_len > 0.02:
+                ht_dir = ht_vec / ht_len
                 ht_perp = np.array([-ht_dir[1], ht_dir[0]])
-
                 com_xy = physics.com_ground_projection()
+                com_to_heel = com_xy - stance_heel
 
-                # Lateral: COM distance from heel-toe line (closer = better)
-                com_to_heel = com_xy - stance_heel_xy
-                lateral_dist = float(abs(np.dot(com_to_heel, ht_perp)))
-                lateral_reward = float(np.clip(1.0 - lateral_dist / 0.15, 0.0, 1.0))  # saturates at 15cm
+                # Lateral: COM near heel-toe line
+                lateral_reward = float(
+                    np.clip(1.0 - abs(np.dot(com_to_heel, ht_perp)) / 0.15, 0.0, 1.0))
 
-                # Longitudinal: COM position along heel-toe axis (should be between heel and toe, or slightly ahead)
-                longitudinal = float(np.dot(com_to_heel, ht_dir))
-                # Reward COM in front of heel, peaking near toe region (0 to ~0.18m foot length)
-                # Tolerance: best at 0.05-0.15m ahead of heel, decays if behind heel or way past toe
+                # Longitudinal: COM between heel and toe
                 long_reward = float(
-                    rewards.tolerance(
-                        longitudinal,
-                        bounds=(0.0, 0.20),
-                        margin=0.15,
-                        value_at_margin=0.2,
-                        sigmoid="linear",
-                    )
-                )
+                    rewards.tolerance(np.dot(com_to_heel, ht_dir),
+                                      bounds=(0.0, 0.20), margin=0.15,
+                                      value_at_margin=0.2, sigmoid="linear"))
 
-                # Step forward: swing foot should be placed ahead of stance foot
-                swing_to_heel = swing_foot_xy - stance_heel_xy
-                step_ahead = float(np.dot(swing_to_heel, ht_dir))
-                # Reward step ahead of stance foot (>0 means forward step)
+                # Step forward: swing foot ahead of stance
                 step_reward = float(
-                    rewards.tolerance(
-                        step_ahead,
-                        bounds=(0.05, 0.30),  # 5-30cm forward step
-                        margin=0.15,
-                        value_at_margin=0.1,
-                        sigmoid="linear",
-                    )
-                )
+                    rewards.tolerance(np.dot(swing_xy - stance_heel, ht_dir),
+                                      bounds=(0.05, 0.30), margin=0.15,
+                                      value_at_margin=0.1, sigmoid="linear"))
 
-                stance_reward = float(np.clip(lateral_reward * 0.4 + long_reward * 0.3 + step_reward * 0.3, 0.0, 1.0))
-            else:
-                stance_reward = 0.0
-        else:
-            stance_reward = 0.0
+                stance_reward = float(
+                    np.clip(lateral_reward * 0.4 + long_reward * 0.3 +
+                            step_reward * 0.3, 0.0, 1.0))
 
-        # ======================================================================
-        # Approach + gait reward
-        # ======================================================================
+        # ------------------------------------------------------------------
+        # 7. Approach [0, 1] — walk toward ball / approach point
+        # ------------------------------------------------------------------
         torso_xy = physics.torso_xy()
         ball_xy = physics.ball_xy()
         target_xy = physics.target_xy()
         ball_to_target = target_xy - ball_xy
-        ball_to_target_norm = np.linalg.norm(ball_to_target)
-        if ball_to_target_norm > 1e-6:
-            dir_ball_to_target = ball_to_target / ball_to_target_norm
-        else:
-            dir_ball_to_target = np.array([1.0, 0.0])
+        b2t_norm = np.linalg.norm(ball_to_target)
+        dir_b2t = ball_to_target / b2t_norm if b2t_norm > 1e-6 else np.array([1.0, 0.0])
 
-        # Adaptive approach point: when agent is far, aim behind the ball for a
-        # good kicking position.  When close, aim at the ball itself so the agent
-        # learns to step in and kick, not just wait behind it.
-        ideal_approach = ball_xy - dir_ball_to_target * _APPROACH_OFFSET
-        dist_to_ideal = np.linalg.norm(ideal_approach - torso_xy)
-        if dist_to_ideal > 0.8:
-            # Still approaching → target the ideal kick-behind position
+        # Adaptive approach: aim behind ball when far, at ball when close
+        ideal_approach = ball_xy - dir_b2t * _APPROACH_OFFSET
+        if np.linalg.norm(ideal_approach - torso_xy) > 0.8:
             approach_point = ideal_approach
         else:
-            # In position → now walk to the ball and kick it
             approach_point = ball_xy
 
-        dist_to_approach = np.linalg.norm(approach_point - torso_xy)
         approach_dist = float(
-            rewards.tolerance(
-                dist_to_approach,
-                bounds=(0, _BALL_RADIUS),
-                margin=3.0,
-                value_at_margin=0.1,
-                sigmoid="linear",
-            )
-        )
-        # Direction bonus: reward torso velocity pointing toward approach point.
-        # Cos ∈ [0, 1]: 1 = directly toward, 0 = sideways or away.
-        torso_vel_xy = physics.velocity()[:2]
-        torso_vel_norm = np.linalg.norm(torso_vel_xy)
-        approach_dir = approach_point - torso_xy
-        approach_dir_norm = np.linalg.norm(approach_dir)
-        # Compute normalized approach direction once, reused below.
-        if approach_dir_norm > 1e-6:
-            dir_approach = approach_dir / approach_dir_norm
-        else:
-            dir_approach = np.array([0.0, 0.0])
+            rewards.tolerance(np.linalg.norm(approach_point - torso_xy),
+                              bounds=(0, _BALL_RADIUS), margin=3.0,
+                              value_at_margin=0.1, sigmoid="linear"))
 
-        if torso_vel_norm > 1e-6 and approach_dir_norm > 1e-6:
-            dir_torso_vel = torso_vel_xy / torso_vel_norm
-            vel_toward = float(max(0.0, np.dot(dir_torso_vel, dir_approach)))
-        elif approach_dir_norm <= 1e-6:
-            vel_toward = 1.0  # already at approach point
+        # Velocity direction toward approach point
+        torso_vel = physics.velocity()[:2]
+        approach_dir = approach_point - torso_xy
+        ad_norm = np.linalg.norm(approach_dir)
+        if ad_norm > 1e-6:
+            dir_approach = approach_dir / ad_norm
+        else:
+            dir_approach = np.zeros(2)
+
+        tv_norm = np.linalg.norm(torso_vel)
+        if tv_norm > 1e-6 and ad_norm > 1e-6:
+            vel_toward = float(max(0.0, np.dot(torso_vel / tv_norm, dir_approach)))
+        elif ad_norm <= 1e-6:
+            vel_toward = 1.0
         else:
             vel_toward = 0.0
-        # Forward bonus: reward torso facing toward approach point (x-axis of xmat).
-        # Forces the agent to rotate and walk forward, not sideways/backward.
-        bid = physics._bid_torso
-        torso_fwd = physics.data.xmat[bid, :2]  # x-axis (forward) of torso in world xy
-        torso_fwd_norm = np.linalg.norm(torso_fwd)
-        if torso_fwd_norm > 1e-6 and approach_dir_norm > 1e-6:
-            dir_fwd = torso_fwd / torso_fwd_norm
-            facing_toward = float(max(0.0, np.dot(dir_fwd, dir_approach)))
+
+        # Facing direction (torso x-axis toward approach point)
+        torso_fwd = physics.data.xmat[physics._bid_torso, :2]
+        tf_norm = np.linalg.norm(torso_fwd)
+        if tf_norm > 1e-6 and ad_norm > 1e-6:
+            facing_toward = float(max(0.0, np.dot(torso_fwd / tf_norm, dir_approach)))
         else:
             facing_toward = 0.0
-        # Combine: 30% distance + 35% velocity direction + 35% facing direction
-        approach_reward = 0.30 * approach_dist + 0.35 * vel_toward + 0.35 * facing_toward
 
-        h_vel = physics.horizontal_velocity()
-        gait_gate = float(np.clip(h_vel / _GAIT_MIN_VELOCITY, 0.0, 1.0))
-        support_foot_z = float(np.min(foot_z))
-        swing_foot_lift = float(np.max(foot_z)) - support_foot_z
-        foot_clearance = float(
-            rewards.tolerance(
-                swing_foot_lift,
-                bounds=(_SHIN_LENGTH, float("inf")),
-                margin=_SHIN_LENGTH,
-                value_at_margin=0.1,
-                sigmoid="linear",
-            )
-        )
-        gait_reward = gait_gate * (foot_clearance + single_support) / 2.0
+        approach_reward = float(np.clip(
+            0.30 * approach_dist + 0.35 * vel_toward + 0.35 * facing_toward, 0.0, 1.0))
 
-        # ======================================================================
-        # Kick + target reward
-        # ======================================================================
+        # ------------------------------------------------------------------
+        # 8. Kick [0, 1] — ball velocity toward target
+        # ------------------------------------------------------------------
         ball_vel_xy = physics.ball_linear_velocity_xy()
         ball_speed = float(np.linalg.norm(ball_vel_xy))
         if ball_speed > 1e-6:
-            ball_vel_dir = ball_vel_xy / ball_speed
-            cos_angle = float(np.dot(ball_vel_dir, dir_ball_to_target))
-            # cos_angle > 0 = toward target, < 0 = away → clip to [0, 1]
-            # Speed bonus: faster ball = more reward (saturates at _BALL_SPEED_SATURATE m/s)
+            cos_angle = float(np.dot(ball_vel_xy / ball_speed, dir_b2t))
             speed_factor = float(np.clip(ball_speed / _BALL_SPEED_SATURATE, 0.0, 1.0))
             kick_reward = float(max(0.0, cos_angle) * speed_factor)
         else:
             kick_reward = 0.0
 
-        # When the ball is rolling, approach reward is maxed out — agent should
-        # set up the next kick, not chase the ball.
-        if ball_speed > _BALL_MOVING_THRESHOLD:
+        # Ball already rolling → approach is maxed (agent should set up next kick)
+        if ball_speed > 0.2:
             approach_reward = 1.0
 
+        # ------------------------------------------------------------------
+        # 9. Target [0, 1] — ball in target zone
+        # ------------------------------------------------------------------
         target_size = physics.get_target_size()
-        dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
-        target_hit = dist_ball_to_target < target_size + _BALL_RADIUS
+        target_hit = (np.linalg.norm(target_xy - ball_xy) < target_size + _BALL_RADIUS)
         target_reward = 1.0 if target_hit else 0.0
 
+        # Respawn when ball reaches target
         if target_hit:
             self._respawn_after_hit(physics)
 
-        # ======================================================================
-        # Final reward (no gates)
-        # ======================================================================
+        # ------------------------------------------------------------------
+        # Combine
+        # ------------------------------------------------------------------
         reward = (
-            # Positive rewards (sum of weights = 1.0)
-            _W_FEET * feet_reward
-            + _W_FLAT_FOOT * flat_foot_reward
+            _W_FLAT_FOOT * flat_foot_reward
             + _W_STAND * stand_reward
-            + _W_WEIGHT_SHIFT * weight_shift_reward * stillness
+            + _W_WEIGHT_SHIFT * weight_shift_reward
             + _W_MARCH * march_reward
             + _W_STANCE * stance_reward
             + _W_APPROACH * approach_reward
-            + _W_GAIT * gait_reward
             + _W_KICK * kick_reward
             + _W_TARGET * target_reward
-            # Penalties (on top, small weights)
-            + _W_EFFORT * effort_penalty
-            + _W_SELF_COLLISION * self_collision
+            # Penalties
             + _W_FEET_UNDER * (feet_under - 1.0)
-            + _W_HIP_ALIGN * hip_align_penalty
+            + _W_HIP_ALIGN * hip_align
             + _W_LEG_SPREAD * leg_spread
-            + _W_TIME  # per-step time penalty — encourages fast action
-            + _W_ACTION_RATE * action_rate_penalty  # smooth actions, no high-frequency jitter
+            + _W_SELF_COLLISION * self_collision
         )
 
         if target_hit:
             reward += _TARGET_HIT_BONUS
 
-        # Log weighted values for inspection
         self._reward_components = {
-            "feet": _W_FEET * feet_reward,
             "flat_foot": _W_FLAT_FOOT * flat_foot_reward,
             "stand": _W_STAND * stand_reward,
-            "weight_shift": _W_WEIGHT_SHIFT * weight_shift_reward * stillness,
+            "weight_shift": _W_WEIGHT_SHIFT * weight_shift_reward,
             "march": _W_MARCH * march_reward,
             "stance": _W_STANCE * stance_reward,
             "approach": _W_APPROACH * approach_reward,
-            "gait": _W_GAIT * gait_reward,
             "kick": _W_KICK * kick_reward,
             "target": _W_TARGET * target_reward,
-            "effort": _W_EFFORT * effort_penalty,
-            "self_collision": _W_SELF_COLLISION * self_collision,
             "feet_under": _W_FEET_UNDER * (feet_under - 1.0),
-            "hip_align": _W_HIP_ALIGN * hip_align_penalty,
+            "hip_align": _W_HIP_ALIGN * hip_align,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
-            "time": _W_TIME,
-            "action_rate": _W_ACTION_RATE * action_rate_penalty,
+            "self_collision": _W_SELF_COLLISION * self_collision,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
-        # --- Stuck detection (input/output similarity) ---
-        current_obs = self.get_observation(physics)
-        flat_obs = np.concatenate([v.ravel() for v in current_obs.values()])
-        current_act = ctrl.copy()
 
-        last_obs = getattr(self, '_last_obs', None)
-        last_act = getattr(self, '_last_action', None)
-        stuck_count = getattr(self, '_stuck_count', 0)
-
-        if last_obs is not None:
-            if np.max(np.abs(flat_obs - last_obs)) < _STUCK_EPSILON and \
-               np.max(np.abs(current_act - last_act)) < _STUCK_EPSILON:
-                stuck_count += 1
-            else:
-                stuck_count = 0
-        else:
-            stuck_count = 0
-
-        self._stuck_count = stuck_count
-        self._last_obs = flat_obs
-        self._last_action = current_act
-
-        self._prev_action = ctrl.copy()
         return float(reward)
