@@ -130,8 +130,8 @@ _W_FEET_UNDER = 0.03           # feet not under COM
 _W_HIP_ALIGN = 0.03            # hip yaw/roll deviation
 _W_LEG_SPREAD = 0.04           # feet too far apart laterally
 _W_SELF_COLLISION = 0.05       # interpenetration of non-adjacent bodies
-_W_TORSO_VEL_ALIGN = 0.04      # torso forward vs. linear velocity direction
-_W_FEET_TORSO_ALIGN = 0.04     # foot forward vs. torso forward (ground-contact feet)
+_W_TORSO_VEL_ALIGN = 0.02      # torso forward vs. linear velocity direction (reduced — torso may rotate freely)
+_W_FEET_TORSO_ALIGN = 0.02     # foot forward vs. torso forward (reduced — allows torso yaw freedom)
 
 # --- Alignment & normalisation constants ---
 _VELOCITY_THRESHOLD = 0.15            # m/s: below this, skip torso-velocity penalty
@@ -143,6 +143,7 @@ _MARCH_HIP_PITCH_TARGET = np.radians(45)  # hip pitch (rad) for full march lift
 _FEET_UNDER_MAX_OFFSET = 0.5          # m: feet-COM xy offset at full penalty
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3      # tanh(touch-force) threshold for foot contact
 _ANKLE_ROLL_MAX = np.radians(30)      # ankle roll (rad) at zero flat-foot reward
+_ANKLE_PITCH_MAX = np.radians(30)     # ankle pitch (rad) at zero flat-foot reward
 _BALL_SPEED_SATURATE = 3.0            # m/s: ball speed at which kick reward saturates
 
 # March alternation: trapezoidal hold-time curve (in seconds, converted to steps at runtime).
@@ -304,6 +305,10 @@ class Physics(mujoco.Physics):
             mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_ankle_roll")]
         self._qpos_l_ankle_roll = model.jnt_qposadr[
             mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_ankle_roll")]
+        self._qpos_r_ankle_pitch = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_ankle_pitch")]
+        self._qpos_l_ankle_pitch = model.jnt_qposadr[
+            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_ankle_pitch")]
 
         # Sensor addresses
         self._sensor_linvel = model.sensor_adr[
@@ -404,20 +409,10 @@ class Physics(mujoco.Physics):
     def flat_foot_contact(self):
         """Returns the combined flatness [0, 1] of both feet.
 
-        Each foot contributes a flatness signal that is weighted by its
-        ground-contact strength (tanh of heel+toe touch force).  The foot
-        on the ground counts roughly twice as much as the foot in the air.
+        Each foot contributes flatness = roll × pitch (ankle joints only).
+        Yaw (rotation around vertical axis) is ignored.
 
-        **Foot on ground**: flatness = tilt × roll.  The sole must face
-        downward (tilt from xmat zz) and not be twisted (ankle roll near 0).
-
-        **Foot in the air**: flatness = roll only.  The pitch (tilt) is
-        ignored because the swing foot naturally points forward/upward.
-        Only the roll (twist) matters — the sole should be parallel to the
-        direction of travel so it lands flat on the next step.
-
-        This gives the agent a continuous signal to place the swing foot
-        flat on the ground while keeping the stance foot stable.
+        Ground-contact foot is weighted ≈ 2× the air foot via touch-force.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
@@ -427,22 +422,18 @@ class Physics(mujoco.Physics):
         l_contact = float((touches[2] + touches[3]) / 2.0)
 
         # Right foot flatness
-        r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8]))
         r_roll = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
         r_roll_flat = float(max(0.0, 1.0 - r_roll / _ANKLE_ROLL_MAX))
-        if r_contact > _FLAT_FOOT_TOUCH_THRESHOLD:
-            r_flat = r_tilt * r_roll_flat  # on ground: tilt × roll
-        else:
-            r_flat = r_roll_flat  # in air: only roll matters
+        r_pitch = abs(float(self.data.qpos[self._qpos_r_ankle_pitch]))
+        r_pitch_flat = float(max(0.0, 1.0 - r_pitch / _ANKLE_PITCH_MAX))
+        r_flat = r_roll_flat * r_pitch_flat  # roll × pitch; tilt is redundant
 
         # Left foot flatness
-        l_tilt = float(max(0.0, self.data.xmat[self._bid_left_foot, 8]))
         l_roll = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
         l_roll_flat = float(max(0.0, 1.0 - l_roll / _ANKLE_ROLL_MAX))
-        if l_contact > _FLAT_FOOT_TOUCH_THRESHOLD:
-            l_flat = l_tilt * l_roll_flat  # on ground: tilt × roll
-        else:
-            l_flat = l_roll_flat  # in air: only roll matters
+        l_pitch = abs(float(self.data.qpos[self._qpos_l_ankle_pitch]))
+        l_pitch_flat = float(max(0.0, 1.0 - l_pitch / _ANKLE_PITCH_MAX))
+        l_flat = l_roll_flat * l_pitch_flat  # roll × pitch; tilt is redundant
 
         # Weight by contact strength: ground foot ≈ 2×, air foot ≈ 1×
         r_weight = 1.0 + r_contact
@@ -921,7 +912,12 @@ class Walker3DBall(base.Task):
         # Spawn: walker at random xy, ball at random distance/angle from walker.
         spawn_x = self.random.uniform(-1.5, 1.5)
         spawn_y = self.random.uniform(-1.5, 1.5)
-        physics.named.data.qpos["root"] = [spawn_x, spawn_y, 1.6, 1.0, 0.0, 0.0, 0.0]
+        spawn_yaw = self.random.uniform(0, 2 * np.pi)  # random torso orientation
+        # freejoint qpos: [x, y, z, qw, qx, qy, qz] — yaw → quaternion about z-axis
+        physics.named.data.qpos["root"] = [
+            spawn_x, spawn_y, 1.6,
+            np.cos(spawn_yaw / 2.0), 0.0, 0.0, np.sin(spawn_yaw / 2.0)
+        ]
         physics.named.data.qvel["root"] = 0.0
         joints = physics.joint_positions()
         joints += self.random.uniform(-0.175, 0.175, size=joints.shape)
