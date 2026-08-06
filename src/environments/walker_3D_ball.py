@@ -110,7 +110,8 @@ _W_FEET = 0.08
 _W_FLAT_FOOT = 0.15       # foot sole flatness (cos of tilt angle)
 _W_STAND = 0.10
 _W_WEIGHT_SHIFT = 0.10
-_W_MARCH = 0.10
+_W_MARCH = 0.08
+_W_STANCE = 0.03            # COM on stance heel-toe line + step forward
 _W_APPROACH = 0.12
 _W_GAIT = 0.03
 _W_KICK = 0.17            # ball direction toward target — the main task
@@ -119,7 +120,7 @@ _W_TARGET = 0.15          # ball in target zone
 # Check that positive weights sum to 1.0
 assert abs(sum([
     _W_FEET, _W_FLAT_FOOT, _W_STAND, _W_WEIGHT_SHIFT,
-    _W_MARCH, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
+    _W_MARCH, _W_STANCE, _W_APPROACH, _W_GAIT, _W_KICK, _W_TARGET,
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
 # Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
@@ -1145,6 +1146,74 @@ class Walker3DBall(base.Task):
         march_reward = float(np.clip(march_lift * single_support * alternation_factor, 0.0, 1.0))
 
         # ======================================================================
+        # Stance reward: COM on heel-toe line + swing foot steps forward
+        # ======================================================================
+        # Belohnt, dass der COM auf der Ferse→Zehen-Linie des Standbeins liegt
+        # und der Schwungfuß weiter vorne als das Standbein gesetzt wird.
+        # Verhindert Spagat-Stand und fördert echte Schritte nach vorne.
+        if current_swing_leg == "right":
+            # Left foot is stance → get left heel/toe site positions
+            stance_heel_xy = physics.data.site_xpos[physics._sid_foot[physics._si_l_heel], :2]
+            stance_toe_xy = physics.data.site_xpos[physics._sid_foot[physics._si_l_toe], :2]
+            swing_foot_xy = physics.data.xpos[physics._bid_right_foot, :2]
+        elif current_swing_leg == "left":
+            stance_heel_xy = physics.data.site_xpos[physics._sid_foot[physics._si_r_heel], :2]
+            stance_toe_xy = physics.data.site_xpos[physics._sid_foot[physics._si_r_toe], :2]
+            swing_foot_xy = physics.data.xpos[physics._bid_left_foot, :2]
+        else:
+            stance_heel_xy = stance_toe_xy = swing_foot_xy = None
+
+        if stance_heel_xy is not None:
+            # Heel-toe axis vector (points from heel to toe = "forward" direction of foot)
+            ht_vec = stance_toe_xy - stance_heel_xy
+            ht_length = float(np.linalg.norm(ht_vec))
+            if ht_length > 0.02:
+                ht_dir = ht_vec / ht_length  # unit vector along heel-toe axis
+                # Perpendicular direction (rotate 90°)
+                ht_perp = np.array([-ht_dir[1], ht_dir[0]])
+
+                com_xy = physics.com_ground_projection()
+
+                # Lateral: COM distance from heel-toe line (closer = better)
+                com_to_heel = com_xy - stance_heel_xy
+                lateral_dist = float(abs(np.dot(com_to_heel, ht_perp)))
+                lateral_reward = float(np.clip(1.0 - lateral_dist / 0.15, 0.0, 1.0))  # saturates at 15cm
+
+                # Longitudinal: COM position along heel-toe axis (should be between heel and toe, or slightly ahead)
+                longitudinal = float(np.dot(com_to_heel, ht_dir))
+                # Reward COM in front of heel, peaking near toe region (0 to ~0.18m foot length)
+                # Tolerance: best at 0.05-0.15m ahead of heel, decays if behind heel or way past toe
+                long_reward = float(
+                    rewards.tolerance(
+                        longitudinal,
+                        bounds=(0.0, 0.20),
+                        margin=0.15,
+                        value_at_margin=0.2,
+                        sigmoid="linear",
+                    )
+                )
+
+                # Step forward: swing foot should be placed ahead of stance foot
+                swing_to_heel = swing_foot_xy - stance_heel_xy
+                step_ahead = float(np.dot(swing_to_heel, ht_dir))
+                # Reward step ahead of stance foot (>0 means forward step)
+                step_reward = float(
+                    rewards.tolerance(
+                        step_ahead,
+                        bounds=(0.05, 0.30),  # 5-30cm forward step
+                        margin=0.15,
+                        value_at_margin=0.1,
+                        sigmoid="linear",
+                    )
+                )
+
+                stance_reward = float(np.clip(lateral_reward * 0.4 + long_reward * 0.3 + step_reward * 0.3, 0.0, 1.0))
+            else:
+                stance_reward = 0.0
+        else:
+            stance_reward = 0.0
+
+        # ======================================================================
         # Approach + gait reward
         # ======================================================================
         torso_xy = physics.torso_xy()
@@ -1264,6 +1333,7 @@ class Walker3DBall(base.Task):
             + _W_STAND * stand_reward
             + _W_WEIGHT_SHIFT * weight_shift_reward * stillness
             + _W_MARCH * march_reward
+            + _W_STANCE * stance_reward
             + _W_APPROACH * approach_reward
             + _W_GAIT * gait_reward
             + _W_KICK * kick_reward
@@ -1287,6 +1357,7 @@ class Walker3DBall(base.Task):
             "stand": _W_STAND * stand_reward,
             "weight_shift": _W_WEIGHT_SHIFT * weight_shift_reward * stillness,
             "march": _W_MARCH * march_reward,
+            "stance": _W_STANCE * stance_reward,
             "approach": _W_APPROACH * approach_reward,
             "gait": _W_GAIT * gait_reward,
             "kick": _W_KICK * kick_reward,
