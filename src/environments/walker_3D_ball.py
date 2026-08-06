@@ -125,6 +125,11 @@ _W_FEET_UNDER = 0.03
 _W_HIP_ALIGN = 0.03
 _W_LEG_SPREAD = 0.04
 _W_SELF_COLLISION = 0.05
+_W_TORSO_VELOCITY_ALIGN = 0.04  # torso forward vs. linear velocity
+_W_FEET_TORSO_ALIGN = 0.04     # feet forward vs. torso forward
+
+# Alignment thresholds
+_VELOCITY_THRESHOLD = 0.15   # m/s: below this, skip torso-velocity penalty
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -754,6 +759,75 @@ class Physics(mujoco.Physics):
 
         return float(-min(1.0, total_depth / depth_scale))
 
+    def torso_forward_xy(self):
+        """Returns the xy-component of the torso's forward (local +x) vector."""
+        self._ensure_indices()
+        return self.data.xmat[self._bid_torso, :2].copy()
+
+    def foot_forward_xy(self, foot_id: int):
+        """Returns the xy-component of a foot's forward (local +x) vector."""
+        self._ensure_indices()
+        return self.data.xmat[foot_id, :2].copy()
+
+    def torso_velocity_align(self):
+        """Returns alignment [0, 1] between torso forward and linear velocity.
+
+        Returns 1.0 when torso faces the direction of motion, 0.0 when
+        perpendicular or moving backwards. Returns 0.0 when speed is
+        below ``_VELOCITY_THRESHOLD`` (penalty not applicable when still).
+        """
+        self._ensure_indices()
+        fwd = self.torso_forward_xy()
+        fwd_norm = float(np.linalg.norm(fwd))
+        if fwd_norm < 1e-6:
+            return 0.0
+
+        vel_xy = self.data.qvel[0:2].copy()
+        # Root qvel[0:2] = translational velocity of torso (freejoint: x, y, z, qx, qy, qz)
+        speed = float(np.linalg.norm(vel_xy))
+        if speed < _VELOCITY_THRESHOLD:
+            return 0.0  # no penalty when still
+
+        cos_angle = float(np.dot(fwd / fwd_norm, vel_xy / speed))
+        return float(max(0.0, cos_angle))  # [0, 1]
+
+    def feet_torso_align(self):
+        """Returns average alignment [0, 1] between each foot's forward and torso forward.
+
+        Only counts feet that are in contact with the ground.  If no foot
+        is in contact, returns 0.0 (fully misaligned → penalty applies).
+        """
+        self._ensure_indices()
+        touches = np.tanh(self.data.sensordata[self._sensor_foot])
+        # Average heel+toe per foot
+        r_contact = (touches[0] + touches[1]) / 2.0 > _FLAT_FOOT_TOUCH_THRESHOLD
+        l_contact = (touches[2] + touches[3]) / 2.0 > _FLAT_FOOT_TOUCH_THRESHOLD
+
+        torso_fwd = self.torso_forward_xy()
+        tf_norm = float(np.linalg.norm(torso_fwd))
+        if tf_norm < 1e-6:
+            return 0.0
+        torso_fwd = torso_fwd / tf_norm
+
+        align_sum = 0.0
+        count = 0
+        if r_contact:
+            r_fwd = self.foot_forward_xy(self._bid_right_foot)
+            rf_norm = float(np.linalg.norm(r_fwd))
+            if rf_norm > 1e-6:
+                align_sum += max(0.0, np.dot(r_fwd / rf_norm, torso_fwd))
+                count += 1
+        if l_contact:
+            l_fwd = self.foot_forward_xy(self._bid_left_foot)
+            lf_norm = float(np.linalg.norm(l_fwd))
+            if lf_norm > 1e-6:
+                align_sum += max(0.0, np.dot(l_fwd / lf_norm, torso_fwd))
+                count += 1
+
+        if count == 0:
+            return 0.0  # no feet in contact → penalise
+        return float(align_sum / count)
+
 
 class Walker3DBall(base.Task):
     """3D walker with direct reward (no gates) and target curriculum.
@@ -986,6 +1060,14 @@ class Walker3DBall(base.Task):
         # Self-collision [-1, 0]
         self_collision = physics.self_collision_penalty()
 
+        # Torso-velocity alignment [-1, 0]: torso forward vs. motion direction
+        # When speed < _VELOCITY_THRESHOLD, returns 0 (no penalty when still).
+        # Otherwise 0.0 (perpendicular/backwards) → -1.0, 1.0 (aligned) → 0.0.
+        torso_vel_align = physics.torso_velocity_align()
+
+        # Feet-torso alignment [-1, 0]: each ground-contact foot should face torso direction
+        feet_torso_align = physics.feet_torso_align()
+
         # ------------------------------------------------------------------
         # 4. Weight shift [0, 1] — COM laterally over one foot
         # ------------------------------------------------------------------
@@ -1188,6 +1270,8 @@ class Walker3DBall(base.Task):
             + _W_HIP_ALIGN * hip_align
             + _W_LEG_SPREAD * leg_spread
             + _W_SELF_COLLISION * self_collision
+            + _W_TORSO_VELOCITY_ALIGN * (torso_vel_align - 1.0)
+            + _W_FEET_TORSO_ALIGN * (feet_torso_align - 1.0)
         )
 
         if target_hit:
@@ -1206,6 +1290,8 @@ class Walker3DBall(base.Task):
             "hip_align": _W_HIP_ALIGN * hip_align,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
             "self_collision": _W_SELF_COLLISION * self_collision,
+            "torso_velocity_align": _W_TORSO_VELOCITY_ALIGN * (torso_vel_align - 1.0),
+            "feet_torso_align": _W_FEET_TORSO_ALIGN * (feet_torso_align - 1.0),
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
 
