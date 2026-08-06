@@ -57,7 +57,7 @@ export OPENBLAS_NUM_THREADS=1
 uv sync --frozen
 
 CPUS=${SLURM_CPUS_PER_TASK:-16}
-NUM_ENVS=$((CPUS * 3))
+NUM_ENVS=$((CPUS * 1))
 echo "Allocated ${CPUS} CPUs -> using ${NUM_ENVS} parallel envs"
 
 CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-10}"
