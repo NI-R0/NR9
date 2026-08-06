@@ -110,14 +110,14 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # ---------------------------------------------------------------------------
 
 # --- Positive weights (sum = 1.0) ---
-_W_FLAT_FOOT = 0.16    # foot sole flatness (cos of tilt angle)
+_W_FLAT_FOOT = 0.28    # foot sole flatness (highest — stable standing is the foundation)
 _W_STAND = 0.05        # height + upright
 _W_WEIGHT_SHIFT = 0.11 # COM lateral shift over one foot
 _W_MARCH = 0.09        # knee lift + hip lift of swing leg
 _W_STANCE = 0.11       # COM on stance heel-toe line + step forward
-_W_APPROACH = 0.13     # walk toward ball / approach point
-_W_KICK = 0.18         # ball direction toward target — the main task
-_W_TARGET = 0.17       # ball in target zone
+_W_APPROACH = 0.10     # walk toward ball / approach point
+_W_KICK = 0.12         # ball direction toward target
+_W_TARGET = 0.14       # ball in target zone
 
 # Check that positive weights sum to 1.0
 assert abs(sum([
@@ -402,35 +402,54 @@ class Physics(mujoco.Physics):
         return float(np.sum(np.tanh(self.data.sensordata[self._sensor_foot])))
 
     def flat_foot_contact(self):
-        """Returns the flatness [0, 1] of the *best* foot touching the ground.
+        """Returns the combined flatness [0, 1] of both feet.
 
-        If both heel and toe sensors are in contact for a foot, the flatness
-        is computed from sole-tilt (xmat zz component) and ankle-roll,
-        combined multiplicatively.  ``max(right, left)`` is returned so
-        that one flat foot suffices for the full standing reward.
+        Each foot contributes a flatness signal that is weighted by its
+        ground-contact strength (tanh of heel+toe touch force).  The foot
+        on the ground counts roughly twice as much as the foot in the air.
+
+        **Foot on ground**: flatness = tilt × roll.  The sole must face
+        downward (tilt from xmat zz) and not be twisted (ankle roll near 0).
+
+        **Foot in the air**: flatness = roll only.  The pitch (tilt) is
+        ignored because the swing foot naturally points forward/upward.
+        Only the roll (twist) matters — the sole should be parallel to the
+        direction of travel so it lands flat on the next step.
+
+        This gives the agent a continuous signal to place the swing foot
+        flat on the ground while keeping the stance foot stable.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
-        r_in_contact = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
-        l_in_contact = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
 
-        if r_in_contact or l_in_contact:
-            # Combine pitch (xmat zz) and roll (ankle_roll) multiplicatively [0, 1]
-            if r_in_contact:
-                r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8]))
-                r_roll = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
-                r_flat = r_tilt * max(0.0, 1.0 - r_roll / _ANKLE_ROLL_MAX)
-            else:
-                r_flat = 0.0
-            if l_in_contact:
-                l_tilt = max(0.0, self.data.xmat[self._bid_left_foot, 8])
-                l_roll = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
-                l_flat = l_tilt * max(0.0, 1.0 - l_roll / _ANKLE_ROLL_MAX)
-            else:
-                l_flat = 0.0
-            return float(max(r_flat, l_flat))
+        # Average heel+toe per foot → continuous contact strength [0, 1]
+        r_contact = float((touches[0] + touches[1]) / 2.0)
+        l_contact = float((touches[2] + touches[3]) / 2.0)
 
-        return 0.0
+        # Right foot flatness
+        r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8]))
+        r_roll = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
+        r_roll_flat = float(max(0.0, 1.0 - r_roll / _ANKLE_ROLL_MAX))
+        if r_contact > _FLAT_FOOT_TOUCH_THRESHOLD:
+            r_flat = r_tilt * r_roll_flat  # on ground: tilt × roll
+        else:
+            r_flat = r_roll_flat  # in air: only roll matters
+
+        # Left foot flatness
+        l_tilt = float(max(0.0, self.data.xmat[self._bid_left_foot, 8]))
+        l_roll = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
+        l_roll_flat = float(max(0.0, 1.0 - l_roll / _ANKLE_ROLL_MAX))
+        if l_contact > _FLAT_FOOT_TOUCH_THRESHOLD:
+            l_flat = l_tilt * l_roll_flat  # on ground: tilt × roll
+        else:
+            l_flat = l_roll_flat  # in air: only roll matters
+
+        # Weight by contact strength: ground foot ≈ 2×, air foot ≈ 1×
+        r_weight = 1.0 + r_contact
+        l_weight = 1.0 + l_contact
+        total_weight = r_weight + l_weight
+
+        return float((r_weight * r_flat + l_weight * l_flat) / total_weight)
 
     def foot_contact_points(self):
         """Returns the xy positions of all foot contact points on the ground.
