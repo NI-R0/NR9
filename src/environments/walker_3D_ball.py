@@ -130,6 +130,12 @@ _W_HIP_ALIGN = 0.03
 _W_LEG_SPREAD = 0.04
 _W_SELF_COLLISION = 0.05   # penalizes interpenetration of non-adjacent body parts
 _W_TIME = 0.01             # per-step time penalty — encourages fast action
+# Action-rate penalty: penalize high-frequency action changes (> ~6 Hz).
+# Low-pass filter cutoff frequency in Hz — lets human-like motions through.
+_ACTION_RATE_CUTOFF = 6.0  # Hz
+# Filter coefficient (timestep-independent): alpha = exp(-dt * 2π * f_c)
+_ACTION_RATE_ALPHA = float(np.exp(-_CONTROL_TIMESTEP * 2 * np.pi * _ACTION_RATE_CUTOFF))
+_W_ACTION_RATE = 0.005     # weight for action-rate penalty
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -391,14 +397,15 @@ class Physics(mujoco.Physics):
         return float(np.linalg.norm(linvel[:2]))
 
     def orientations(self):
-        """Returns planar orientations of all bodies.
+        """Returns 3D orientations of all bodies (first two rows of xmat).
 
-        For the 3D walker the full rotation matrix carries more information, but
-        to keep the observation dimension manageable we return the same projection
-        components (xx, xz) used by the planar walker for every non-torso body.
+        Returns columns [xx, xy, xz, yx, yy, yz] for every non-world body.
+        The third row is implied by orthogonality, so 6 components suffice.
+        This gives the agent full information about forward, lateral, and
+        roll/pitch orientation — essential for flat-foot and stance rewards.
         """
         self._ensure_indices()
-        return self.data.xmat[1:, [0, 2]].ravel()
+        return self.data.xmat[1:, :6].ravel()
 
     def touch_forces(self):
         """Returns touch forces of all body parts (including feet) as a 1-D array.
@@ -911,6 +918,7 @@ class Walker3DBall(base.Task):
             attempts += 1
 
         self._prev_action = None  # reset action history
+        self._filtered_action = None  # reset low-pass filter for rate penalty
 
         self._step_count = 0
         self._last_swing_leg = None
@@ -1012,6 +1020,14 @@ class Walker3DBall(base.Task):
 
         # --- Self-collision penalty [-1, 0]: interpenetration of non-adjacent bodies ---
         self_collision = physics.self_collision_penalty()
+
+        # --- Action-rate penalty [-1, 0]: high-frequency action changes above cutoff.
+        # A virtual low-pass filter tracks "slow" actions; the deviation is penalised.
+        # This does NOT modify the action — it is only a reward signal. ---
+        if self._filtered_action is None:
+            self._filtered_action = ctrl.copy()
+        self._filtered_action = _ACTION_RATE_ALPHA * self._filtered_action + (1.0 - _ACTION_RATE_ALPHA) * ctrl
+        action_rate_penalty = -float(np.mean((ctrl - self._filtered_action) ** 2))
 
         # --- Shared: knee angles (used by stand + march reward) ---
         knee = physics.knee_angles()
@@ -1360,6 +1376,7 @@ class Walker3DBall(base.Task):
             + _W_HIP_ALIGN * hip_align_penalty
             + _W_LEG_SPREAD * leg_spread
             + _W_TIME  # per-step time penalty — encourages fast action
+            + _W_ACTION_RATE * action_rate_penalty  # smooth actions, no high-frequency jitter
         )
 
         if target_hit:
@@ -1383,6 +1400,7 @@ class Walker3DBall(base.Task):
             "hip_align": _W_HIP_ALIGN * hip_align_penalty,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
             "time": _W_TIME,
+            "action_rate": _W_ACTION_RATE * action_rate_penalty,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         # --- Stuck detection (input/output similarity) ---
