@@ -66,8 +66,8 @@ import numpy as np
 
 
 _DEFAULT_TIME_LIMIT = 25
-_CONTROL_TIMESTEP = 0.15   # agent decides ~6.7×/s
-_STUCK_CHECK_STEPS = 25
+_CONTROL_TIMESTEP = 0.05   # agent decides ~6.7×/s (set to 0.02 for 50 Hz)
+_STUCK_CHECK_TIME = 1   # s: terminate if agent stuck for this long
 _STUCK_EPSILON = 1e-3
 _STAND_HEIGHT = 1.5  # nearer to full upright height; prevents saturation in prone/spagat pose
 _BALL_RADIUS = 0.2
@@ -88,7 +88,7 @@ _TARGET_HIT_BONUS = 5.0  # flat bonus added to reward when ball reaches target
 # firmly, or both knees hit the ground (agent collapsed on knees).
 _TERMINATE_HEIGHT = 0.5       # Torso height (m) below which episode ends
 _TERMINATE_NON_FOOT = 0     # Sum of tanh(non-foot touch) that triggers end
-_TERMINATE_GRACE_STEPS = 10  # Steps after reset before termination is active (0.25s)
+_TERMINATE_GRACE_TIME = 0.1   # s: grace period after reset before termination active
 _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on ground"
 
 # ---------------------------------------------------------------------------
@@ -106,12 +106,12 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 
 # Positive weights (sum = 1.0) — kick and target weighted highest as they
 # are the actual task goal; locomotion rewards are stepping stones.
-_W_FEET = 0.08
+_W_FEET = 0.05
 _W_FLAT_FOOT = 0.15       # foot sole flatness (cos of tilt angle)
-_W_STAND = 0.10
+_W_STAND = 0.05
 _W_WEIGHT_SHIFT = 0.10
 _W_MARCH = 0.08
-_W_STANCE = 0.02            # COM on stance heel-toe line + step forward
+_W_STANCE = 0.10            # COM on stance heel-toe line + step forward
 _W_APPROACH = 0.12
 _W_GAIT = 0.03
 _W_KICK = 0.17            # ball direction toward target — the main task
@@ -127,9 +127,9 @@ assert abs(sum([
 _W_EFFORT = 0.001          # raw control magnitude (near zero — motion is OK)
 _W_FEET_UNDER = 0.03
 _W_HIP_ALIGN = 0.03
-_W_LEG_SPREAD = 0.02
+_W_LEG_SPREAD = 0.04
 _W_SELF_COLLISION = 0.05   # penalizes interpenetration of non-adjacent body parts
-_W_TIME = 0.02             # per-step time penalty — encourages fast action
+_W_TIME = 0.01             # per-step time penalty — encourages fast action
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -147,16 +147,29 @@ _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatnes
 _BALL_MOVING_THRESHOLD = 0.2  # ball speed (m/s) above which ball is "rolling"
 _BALL_SPEED_SATURATE = 3.0    # ball speed at which kick reward saturates
 
-# March alternation: trapezoidal hold-time curve (~6.7 steps/s, _CONTROL_TIMESTEP=0.15s).
+# March alternation: trapezoidal hold-time curve (in seconds, converted to steps at runtime).
 # Ein einzelner Schritt (Fuß anheben → absetzen) dauert ~0.3-0.7s.
-#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (~0.45s)
-#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (~0.3s plateau)
-#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (~0.45s)
+#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (0.45s)
+#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (0.3s plateau)
+#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (0.45s)
 # Gesamtdauer bis decay=0: ~1.2s. Schnelles Laufen = unteres Plateau,
-# langsames Gehen = längeres Verweilen. Nach ~8 steps ohne Fußwechsel: 0.
-_MARCH_RAMP_UP = 3
-_MARCH_DECAY_START = 5
-_MARCH_DECAY_END = 8
+# langsames Gehen = längeres Verweilen. Nach ~1.2s ohne Fußwechsel: 0.
+_MARCH_RAMP_UP_TIME = 0.2    # s: ramp-up to full march reward
+_MARCH_DECAY_START_TIME = 0.4  # s: start decaying march reward
+_MARCH_DECAY_END_TIME = 1     # s: march reward = 0 (no foot switch)
+
+def _steps(t: float) -> int:
+    """Convert a time constant (seconds) to steps based on _CONTROL_TIMESTEP."""
+    return max(1, int(t / _CONTROL_TIMESTEP))
+
+
+# Precomputed step counts (derived from time constants above).
+# Change _CONTROL_TIMESTEP freely — these auto-scale.
+_MARCH_RAMP_UP = _steps(_MARCH_RAMP_UP_TIME)
+_MARCH_DECAY_START = _steps(_MARCH_DECAY_START_TIME)
+_MARCH_DECAY_END = _steps(_MARCH_DECAY_END_TIME)
+_STUCK_CHECK_STEPS = _steps(_STUCK_CHECK_TIME)
+_TERMINATE_GRACE_STEPS = _steps(_TERMINATE_GRACE_TIME)
 
 # Touch sensor names for feet reward
 _NON_FOOT_TOUCHES = (
@@ -936,7 +949,7 @@ class Walker3DBall(base.Task):
     def should_terminate(self, physics) -> bool:
         """Returns ``True`` when the agent has fallen and the episode should end.
 
-        Termination conditions (only checked after ``_TERMINATE_GRACE_STEPS``
+        Termination conditions (only checked after ``_TERMINATE_GRACE_TIME``
         to avoid spurious triggers from initial randomization):
 
         1. **Torso too low** — ``torso_height() < _TERMINATE_HEIGHT`` (fallen down).
@@ -959,7 +972,7 @@ class Walker3DBall(base.Task):
         if knee_z[0] < _TERMINATE_KNEE_HEIGHT or knee_z[1] < _TERMINATE_KNEE_HEIGHT:
             return True
         if getattr(self, '_stuck_count', 0) >= _STUCK_CHECK_STEPS:
-            logger.warning("Episode terminated: agent stuck (no obs/act change for 10 steps)")
+            logger.warning(f"Episode terminated: agent stuck (no obs/act change for {_STUCK_CHECK_STEPS} steps / {_STUCK_CHECK_TIME}s)")
             return True
         return False
 
