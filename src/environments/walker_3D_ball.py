@@ -123,13 +123,15 @@ assert abs(sum([
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
 # Penalty weights (on top of the 1.0 budget, kept small: 0.01–0.05)
-# Effort kept very low so the agent is not discouraged from lifting legs.
-_W_EFFORT = 0.01
+# Effort kept very low; action-change penalty limits switching frequency
+# (~6 switches/s = ~150 steps) instead of punishing motion itself.
+_W_EFFORT = 0.001          # raw control magnitude (near zero — motion is OK)
 _W_FEET_UNDER = 0.03
 _W_HIP_ALIGN = 0.03
 _W_LEG_SPREAD = 0.02
-_W_SELF_COLLISION = 0.05  # penalizes interpenetration of non-adjacent body parts
-_W_TIME = 0.02           # per-step time penalty — encourages fast action
+_W_SELF_COLLISION = 0.05   # penalizes interpenetration of non-adjacent body parts
+_W_TIME = 0.02             # per-step time penalty — encourages fast action
+_W_ACTION_CHANGE = 0.03    # penalizes switching actions too fast (~6/s limit)
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -997,6 +999,16 @@ class Walker3DBall(base.Task):
         # --- Effort penalty [-1, 0]: mean(ctrl^2) is in [0, 1] (ctrl ∈ [-1,1]) ---
         effort_penalty = -float(np.mean(ctrl**2))
 
+        # --- Action-change penalty [-1, 0]: penalizes switching ctrl too fast
+        # Limits effective switching frequency to ~6/s (≈150 steps at 40Hz),
+        # similar to human muscle switching limits.  Standing still costs nothing,
+        # moving smoothly costs little, only jerky changes are punished.
+        if hasattr(self, '_prev_action') and self._prev_action is not None:
+            action_diff = np.mean(np.abs(ctrl - self._prev_action))
+            action_change_penalty = -float(np.clip(action_diff, 0.0, 1.0))
+        else:
+            action_change_penalty = 0.0
+
         # --- Self-collision penalty [-1, 0]: interpenetration of non-adjacent bodies ---
         self_collision = physics.self_collision_penalty()
 
@@ -1278,6 +1290,7 @@ class Walker3DBall(base.Task):
             + _W_HIP_ALIGN * hip_align_penalty
             + _W_LEG_SPREAD * leg_spread
             + _W_TIME  # per-step time penalty — encourages fast action
+            + _W_ACTION_CHANGE * action_change_penalty
         )
 
         if target_hit:
@@ -1300,6 +1313,7 @@ class Walker3DBall(base.Task):
             "hip_align": _W_HIP_ALIGN * hip_align_penalty,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
             "time": _W_TIME,
+            "action_change": _W_ACTION_CHANGE * action_change_penalty,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         # --- Stuck detection (input/output similarity) ---
