@@ -129,6 +129,7 @@ _W_FEET_UNDER = 0.03
 _W_HIP_ALIGN = 0.03
 _W_LEG_SPREAD = 0.02
 _W_SELF_COLLISION = 0.05  # penalizes interpenetration of non-adjacent body parts
+_W_TIME = 0.02           # per-step time penalty — encourages fast action
 
 # Normalisation constants
 _LEG_SPREAD_THRESHOLD = 0.2
@@ -143,6 +144,8 @@ _FEET_UNDER_MAX_OFFSET = (
 )
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3   # tanh(touch) above this = "in contact"
 _ANKLE_ROLL_MAX = np.radians(30)  # Ankle-roll joint range (±30°), for flatness reward
+_BALL_MOVING_THRESHOLD = 0.2  # ball speed (m/s) above which ball is "rolling"
+_BALL_SPEED_SATURATE = 3.0    # ball speed at which kick reward saturates
 
 # March alternation: trapezoidal hold-time curve.
 # Steps on same swing leg:
@@ -432,31 +435,26 @@ class Physics(mujoco.Physics):
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
-        # Sensor order: right_heel, right_toe, left_heel, left_toe
-        if ((touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD) or (touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD)):
-            return 1
+        r_in_contact = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
+        l_in_contact = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
 
-        r_touching = touches[0] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[1] > _FLAT_FOOT_TOUCH_THRESHOLD
-        l_touching = touches[2] > _FLAT_FOOT_TOUCH_THRESHOLD and touches[3] > _FLAT_FOOT_TOUCH_THRESHOLD
+        if r_in_contact or l_in_contact:
+            # Combine pitch (xmat zz) and roll (ankle_roll) multiplicatively [0, 1]
+            if r_in_contact:
+                r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8]))
+                r_roll = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
+                r_flat = r_tilt * max(0.0, 1.0 - r_roll / _ANKLE_ROLL_MAX)
+            else:
+                r_flat = 0.0
+            if l_in_contact:
+                l_tilt = max(0.0, self.data.xmat[self._bid_left_foot, 8])
+                l_roll = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
+                l_flat = l_tilt * max(0.0, 1.0 - l_roll / _ANKLE_ROLL_MAX)
+            else:
+                l_flat = 0.0
+            return float(max(r_flat, l_flat))
 
-        # Sole tilt flatness via xmat zz-component
-        r_tilt = float(max(0.0, self.data.xmat[self._bid_right_foot, 8])) if r_touching else 0.0
-        l_tilt = float(max(0.0, self.data.xmat[self._bid_left_foot, 8])) if l_touching else 0.0
-
-        # Ankle-roll flatness: 1.0 at 0°, 0 at ±_ANKLE_ROLL_MAX
-        r_roll = 0.0
-        l_roll = 0.0
-        if r_touching:
-            r_roll_angle = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
-            r_roll = 1.0 - min(1.0, r_roll_angle / _ANKLE_ROLL_MAX)
-        if l_touching:
-            l_roll_angle = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
-            l_roll = 1.0 - min(1.0, l_roll_angle / _ANKLE_ROLL_MAX)
-
-        # Shape each measure, then multiply sole × ankle_roll
-        r_flat = self._flatness_curve(r_tilt) * self._flatness_curve(r_roll) if r_touching else 0.0
-        l_flat = self._flatness_curve(l_tilt) * self._flatness_curve(l_roll) if l_touching else 0.0
-        return max(r_flat, l_flat)
+        return 0.0
 
     def foot_contact_points(self):
         """Returns the xy positions of all foot contact points on the ground.
@@ -887,6 +885,18 @@ class Walker3DBall(base.Task):
 
         physics.set_target_size(self._target_size)
         self._place_target(physics)
+
+        # Ensure ball is not spawning inside the target zone
+        attempts = 0
+        while (np.linalg.norm(physics.ball_xy() - physics.target_xy()) <
+               physics.get_target_size() + _BALL_RADIUS + 0.5 and attempts < 20):
+            ball_dist = self.random.uniform(1.0, 2.5)
+            ball_angle = self.random.uniform(0, 2 * np.pi)
+            ball_x = spawn_x + ball_dist * np.cos(ball_angle)
+            ball_y = spawn_y + ball_dist * np.sin(ball_angle)
+            physics.named.data.qpos["ball_joint"][:2] = [ball_x, ball_y]
+            attempts += 1
+
         self._prev_action = None  # reset action history
 
         self._step_count = 0
@@ -1150,7 +1160,18 @@ class Walker3DBall(base.Task):
         else:
             dir_ball_to_target = np.array([1.0, 0.0])
 
-        approach_point = ball_xy - dir_ball_to_target * _APPROACH_OFFSET
+        # Adaptive approach point: when agent is far, aim behind the ball for a
+        # good kicking position.  When close, aim at the ball itself so the agent
+        # learns to step in and kick, not just wait behind it.
+        ideal_approach = ball_xy - dir_ball_to_target * _APPROACH_OFFSET
+        dist_to_ideal = np.linalg.norm(ideal_approach - torso_xy)
+        if dist_to_ideal > 0.8:
+            # Still approaching → target the ideal kick-behind position
+            approach_point = ideal_approach
+        else:
+            # In position → now walk to the ball and kick it
+            approach_point = ball_xy
+
         dist_to_approach = np.linalg.norm(approach_point - torso_xy)
         approach_dist = float(
             rewards.tolerance(
@@ -1217,9 +1238,16 @@ class Walker3DBall(base.Task):
             ball_vel_dir = ball_vel_xy / ball_speed
             cos_angle = float(np.dot(ball_vel_dir, dir_ball_to_target))
             # cos_angle > 0 = toward target, < 0 = away → clip to [0, 1]
-            kick_reward = float(max(0.0, cos_angle))
+            # Speed bonus: faster ball = more reward (saturates at _BALL_SPEED_SATURATE m/s)
+            speed_factor = float(np.clip(ball_speed / _BALL_SPEED_SATURATE, 0.0, 1.0))
+            kick_reward = float(max(0.0, cos_angle) * speed_factor)
         else:
             kick_reward = 0.0
+
+        # When the ball is rolling, approach reward is maxed out — agent should
+        # set up the next kick, not chase the ball.
+        if ball_speed > _BALL_MOVING_THRESHOLD:
+            approach_reward = 1.0
 
         target_size = physics.get_target_size()
         dist_ball_to_target = np.linalg.norm(target_xy - ball_xy)
@@ -1249,6 +1277,7 @@ class Walker3DBall(base.Task):
             + _W_FEET_UNDER * (feet_under - 1.0)
             + _W_HIP_ALIGN * hip_align_penalty
             + _W_LEG_SPREAD * leg_spread
+            + _W_TIME  # per-step time penalty — encourages fast action
         )
 
         if target_hit:
@@ -1270,6 +1299,7 @@ class Walker3DBall(base.Task):
             "feet_under": _W_FEET_UNDER * (feet_under - 1.0),
             "hip_align": _W_HIP_ALIGN * hip_align_penalty,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
+            "time": _W_TIME,
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
         # --- Stuck detection (input/output similarity) ---
