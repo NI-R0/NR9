@@ -29,14 +29,21 @@ Foot design:
   other foot for walking.
 
 Early termination:
-  The episode terminates immediately when the agent falls (torso too
-  low or non-foot body parts touching the ground), after a short grace
-  period.
+  The episode terminates immediately when the agent falls (torso too low,
+  any non-foot body part touching the ground, or knee on the ground).
+  No grace period — termination is active from step 1 to avoid wasting
+  training time on failed episodes. A lightweight stuck-detection
+  (torso height + torso xy + ball xy + action) terminates episodes where
+  the agent stops making progress.
 
 Reward normalisation: all positive rewards in [0, 1], penalties in [-1, 0].
 Kick reward is [0, 1] based on the angle between ball velocity and target
 direction — 0 when the ball moves away or sideways, 1 when it moves
 directly toward the target.
+
+Approach shortcut: when the ball is already rolling (speed > 0.2 m/s),
+the approach reward is clamped to 1.0 so the agent focuses on positioning
+for the kick rather than walking toward the ball again.
 
 Positive weights sum to 1.0 so a perfect step yields reward = 1.0.
 Penalty weights are on top of the 1.0 budget, so the realistic optimum
@@ -66,7 +73,7 @@ import numpy as np
 
 
 _DEFAULT_TIME_LIMIT = 25
-_CONTROL_TIMESTEP = 0.05   # agent decides ~6.7×/s (set to 0.02 for 50 Hz)
+_CONTROL_TIMESTEP = 0.05   # agent decides ~20×/s (set to 0.02 for 50 Hz)
 _STUCK_CHECK_TIME = 1   # s: terminate if agent stuck for this long
 _STUCK_EPSILON = 1e-3
 _STAND_HEIGHT = 1.5  # nearer to full upright height; prevents saturation in prone/spagat pose
@@ -83,16 +90,14 @@ _TARGET_HIT_BONUS = 5.0  # flat bonus added to reward when ball reaches target
 # ---------------------------------------------------------------------------
 # Early-termination thresholds
 # ---------------------------------------------------------------------------
-# The episode terminates immediately when the agent "falls": either the
-# torso drops below a safe height, non-foot body parts touch the ground
-# firmly, or both knees hit the ground (agent collapsed on knees).
 _TERMINATE_HEIGHT = 0.5       # Torso height (m) below which episode ends
-_TERMINATE_NON_FOOT = 0     # Sum of tanh(non-foot touch) that triggers end
-_TERMINATE_GRACE_TIME = 0.1   # s: grace period after reset before termination active
+_TERMINATE_GRACE_TIME = 0.0   # Grace period after reset; 0.0 means no grace
 _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on ground"
+# Any single non-foot touch terminates immediately (_TERMINATE_NON_FOOT check
+# in should_terminate uses "> 0" → first contact ends the episode).
 
 # ---------------------------------------------------------------------------
-# Reward design – no gates, all components directly active
+# Reward weights (positive sum to 1.0)
 # ---------------------------------------------------------------------------
 # Every component is normalised to [0, 1] (rewards) or [-1, 0] (penalties).
 #
@@ -104,15 +109,15 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # magnitude × weight.
 # ---------------------------------------------------------------------------
 
-# Positive weights (sum = 1.0) — 8 components, kick & target weighted highest
-_W_FLAT_FOOT = 0.16   # foot sole flatness (cos of tilt angle)
-_W_STAND = 0.05       # height + upright
-_W_WEIGHT_SHIFT = 0.11  # COM lateral shift over one foot
-_W_MARCH = 0.09       # knee lift + hip lift of swing leg
-_W_STANCE = 0.11      # COM on stance heel-toe line + step forward
-_W_APPROACH = 0.13    # walk toward ball / approach point
-_W_KICK = 0.18        # ball direction toward target — the main task
-_W_TARGET = 0.17      # ball in target zone
+# --- Positive weights (sum = 1.0) ---
+_W_FLAT_FOOT = 0.16    # foot sole flatness (cos of tilt angle)
+_W_STAND = 0.05        # height + upright
+_W_WEIGHT_SHIFT = 0.11 # COM lateral shift over one foot
+_W_MARCH = 0.09        # knee lift + hip lift of swing leg
+_W_STANCE = 0.11       # COM on stance heel-toe line + step forward
+_W_APPROACH = 0.13     # walk toward ball / approach point
+_W_KICK = 0.18         # ball direction toward target — the main task
+_W_TARGET = 0.17       # ball in target zone
 
 # Check that positive weights sum to 1.0
 assert abs(sum([
@@ -120,38 +125,36 @@ assert abs(sum([
     _W_STANCE, _W_APPROACH, _W_KICK, _W_TARGET,
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
-# Penalty weights (on top of the 1.0 budget)
-_W_FEET_UNDER = 0.03
-_W_HIP_ALIGN = 0.03
-_W_LEG_SPREAD = 0.04
-_W_SELF_COLLISION = 0.05
-_W_TORSO_VELOCITY_ALIGN = 0.04  # torso forward vs. linear velocity
-_W_FEET_TORSO_ALIGN = 0.04     # feet forward vs. torso forward
+# --- Penalty weights (on top of the 1.0 budget) ---
+_W_FEET_UNDER = 0.03           # feet not under COM
+_W_HIP_ALIGN = 0.03            # hip yaw/roll deviation
+_W_LEG_SPREAD = 0.04           # feet too far apart laterally
+_W_SELF_COLLISION = 0.05       # interpenetration of non-adjacent bodies
+_W_TORSO_VEL_ALIGN = 0.04      # torso forward vs. linear velocity direction
+_W_FEET_TORSO_ALIGN = 0.04     # foot forward vs. torso forward (ground-contact feet)
 
-# Alignment thresholds
-_VELOCITY_THRESHOLD = 0.15   # m/s: below this, skip torso-velocity penalty
-
-# Normalisation constants
-_LEG_SPREAD_THRESHOLD = 0.2
-_HIP_YAW_MAX = np.radians(45)
-_HIP_ROLL_MAX = np.radians(45)
-_MARCH_KNEE_TARGET = np.radians(60)
-_MARCH_HIP_PITCH_TARGET = np.radians(45)
-_FEET_UNDER_MAX_OFFSET = 0.5
-_FLAT_FOOT_TOUCH_THRESHOLD = 0.3
-_ANKLE_ROLL_MAX = np.radians(30)
-_BALL_SPEED_SATURATE = 3.0  # ball speed (m/s) at which kick reward saturates
+# --- Alignment & normalisation constants ---
+_VELOCITY_THRESHOLD = 0.15            # m/s: below this, skip torso-velocity penalty
+_LEG_SPREAD_THRESHOLD = 0.2           # m: feet lateral distance before penalty
+_HIP_YAW_MAX = np.radians(45)         # hip yaw angle (rad) at full penalty
+_HIP_ROLL_MAX = np.radians(45)        # hip roll angle (rad) at full penalty
+_MARCH_KNEE_TARGET = np.radians(60)   # knee flexion (rad) for full march reward
+_MARCH_HIP_PITCH_TARGET = np.radians(45)  # hip pitch (rad) for full march lift
+_FEET_UNDER_MAX_OFFSET = 0.5          # m: feet-COM xy offset at full penalty
+_FLAT_FOOT_TOUCH_THRESHOLD = 0.3      # tanh(touch-force) threshold for foot contact
+_ANKLE_ROLL_MAX = np.radians(30)      # ankle roll (rad) at zero flat-foot reward
+_BALL_SPEED_SATURATE = 3.0            # m/s: ball speed at which kick reward saturates
 
 # March alternation: trapezoidal hold-time curve (in seconds, converted to steps at runtime).
 # Ein einzelner Schritt (Fuß anheben → absetzen) dauert ~0.3-0.7s.
-#   0 – _MARCH_RAMP_UP     : linear ramp 0 → 1  (0.45s)
-#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (0.3s plateau)
-#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (0.45s)
-# Gesamtdauer bis decay=0: ~1.2s. Schnelles Laufen = unteres Plateau,
-# langsames Gehen = längeres Verweilen. Nach ~1.2s ohne Fußwechsel: 0.
-_MARCH_RAMP_UP_TIME = 0.2    # s: ramp-up to full march reward
+#   0 – _MARCH_RAMP_UP       : linear ramp 0 → 1  (0.2s)
+#   _MARCH_RAMP_UP – _MARCH_DECAY_START : full reward 1.0  (0.2s plateau)
+#   _MARCH_DECAY_START – _MARCH_DECAY_END : linear decay 1 → 0  (1.4s)
+# Gesamtdauer bis decay=0: ~1.8s. Verhindert „Stair-Stepping" (gleiche
+# Bein wiederholt), ohne den Agent zu zwingen, unnatürlich schnell zu hinken.
+_MARCH_RAMP_UP_TIME = 0.2     # s: ramp-up to full march reward
 _MARCH_DECAY_START_TIME = 0.4  # s: start decaying march reward
-_MARCH_DECAY_END_TIME = 1     # s: march reward = 0 (no foot switch)
+_MARCH_DECAY_END_TIME = 2.0    # s: march reward = 0 (no foot switch)
 
 def _steps(t: float) -> int:
     """Convert a time constant (seconds) to steps based on _CONTROL_TIMESTEP."""
@@ -853,7 +856,7 @@ class Walker3DBall(base.Task):
         # Stuck detection
         self._step_count = 0
         self._stuck_count = 0
-        self._last_obs: np.ndarray | None = None
+        self._last_state: np.ndarray | None = None
         self._last_action: np.ndarray | None = None
         super().__init__(random=random)
 
@@ -892,11 +895,14 @@ class Walker3DBall(base.Task):
 
         Shared between ``initialize_episode`` (full episode reset) and
         mid-episode respawn after a successful target hit.
+
+        Calls ``physics.forward()`` at the end so that ``xpos``/``xmat`` are
+        up-to-date before the next reward evaluation or observation.
         """
         # Spawn: walker at random xy, ball at random distance/angle from walker.
         spawn_x = self.random.uniform(-1.5, 1.5)
         spawn_y = self.random.uniform(-1.5, 1.5)
-        physics.named.data.qpos["root"] = [spawn_x, spawn_y, 1.8, 1.0, 0.0, 0.0, 0.0]
+        physics.named.data.qpos["root"] = [spawn_x, spawn_y, 1.6, 1.0, 0.0, 0.0, 0.0]
         physics.named.data.qvel["root"] = 0.0
         joints = physics.joint_positions()
         joints += self.random.uniform(-0.175, 0.175, size=joints.shape)
@@ -925,11 +931,14 @@ class Walker3DBall(base.Task):
 
         self._step_count = 0
         self._stuck_count = 0
-        self._last_obs = None
+        self._last_state = None
         self._last_action = None
         self._last_swing_leg = None
         self._confirmed_swing_leg = None
         self._same_swing_count = 0
+
+        # Recompute kinematics so xpos/xmat reflect the new joint positions
+        physics.forward()
 
     def _place_target(self, physics):
         """Randomly places the target at a random angle and distance."""
@@ -963,30 +972,40 @@ class Walker3DBall(base.Task):
     def should_terminate(self, physics) -> bool:
         self._step_count += 1
 
-        # Grace period: don't terminate during initial randomization
-        if self._step_count <= _TERMINATE_GRACE_STEPS:
-            return False
+        physics._ensure_indices()
 
         # 1. Torso too low
         if physics.torso_height() < _TERMINATE_HEIGHT:
+            if getattr(self, "_debug_terminate", False):
+                logger.warning(f"Terminate: torso_height={physics.torso_height():.3f} < {_TERMINATE_HEIGHT}")
             return True
 
-        # 2. Non-foot body parts touching ground
-        if physics.non_foot_touch() > _TERMINATE_NON_FOOT:
+        # 2. Any non-foot body part touching ground (first contact → terminate)
+        non_foot = physics.non_foot_touch()
+        if non_foot > 0:
+            if getattr(self, "_debug_terminate", False):
+                logger.warning(f"Terminate: non_foot_touch={non_foot:.4f}")
             return True
 
         # 3. Either knee on ground
         knee_z = physics.knee_heights()
         if knee_z[0] < _TERMINATE_KNEE_HEIGHT or knee_z[1] < _TERMINATE_KNEE_HEIGHT:
+            if getattr(self, "_debug_terminate", False):
+                logger.warning(f"Terminate: knee_z=({knee_z[0]:.3f}, {knee_z[1]:.3f}) < {_TERMINATE_KNEE_HEIGHT}")
             return True
 
-        # 4. Stuck detection (observation + action unchanged)
-        current_obs = self.get_observation(physics)
-        flat_obs = np.concatenate([v.ravel() for v in current_obs.values()])
+        # 4. Stuck detection – compare COM xyz + both foot xyz + action.
+        # Uses the actual body pose, not the full observation or ball position,
+        # so rolling ball drift does not falsely reset the counter.
+        com_xy = physics.com_ground_projection()
+        com_z = physics.data.subtree_com[physics._bid_torso, 2]
+        right_foot_xyz = physics.data.xpos[physics._bid_right_foot]
+        left_foot_xyz = physics.data.xpos[physics._bid_left_foot]
+        state = np.hstack([com_xy, [com_z], right_foot_xyz, left_foot_xyz])
         current_act = physics.control().copy()
 
-        if self._last_obs is not None:
-            if (np.max(np.abs(flat_obs - self._last_obs)) < _STUCK_EPSILON and
+        if self._last_state is not None:
+            if (np.max(np.abs(state - self._last_state)) < _STUCK_EPSILON and
                     np.max(np.abs(current_act - self._last_action)) < _STUCK_EPSILON):
                 self._stuck_count += 1
             else:
@@ -994,7 +1013,7 @@ class Walker3DBall(base.Task):
         else:
             self._stuck_count = 0
 
-        self._last_obs = flat_obs
+        self._last_state = state.copy()
         self._last_action = current_act
 
         if self._stuck_count >= _STUCK_CHECK_STEPS:
@@ -1006,7 +1025,7 @@ class Walker3DBall(base.Task):
 
         return False
 
-    def get_reward(self, physics):
+    def get_reward(self, physics) -> float:
         """Reward with 8 positive components (summing to 1.0) + penalties.
 
         Positive rewards in [0, 1], penalties in [-1, 0].
@@ -1036,16 +1055,14 @@ class Walker3DBall(base.Task):
         # ------------------------------------------------------------------
         # 3. Penalties
         # ------------------------------------------------------------------
-        # Hip alignment [-1, 0]: yaw + roll deviation
+        # Hip alignment [-1, 0]: mean normalised deviation of yaw + roll
         hip_yaw = physics.hip_yaw_angles()
         hip_roll = physics.hip_roll_angles()
-        hip_align = -float(
-            np.clip(
-                (np.mean(np.abs(hip_yaw) / _HIP_YAW_MAX)
-                 + np.mean(np.abs(hip_roll) / _HIP_ROLL_MAX)) / 2.0,
-                0.0, 1.0,
-            )
-        )
+        hip_align = -float(np.clip(
+            (np.mean(np.abs(hip_yaw)) / _HIP_YAW_MAX + np.mean(np.abs(hip_roll)) / _HIP_ROLL_MAX)
+            / 2.0,
+            0.0, 1.0,
+        ))
 
         # Leg spread [-1, 0]: feet too far apart
         feet_dist = physics.feet_horizontal_distance()
@@ -1087,13 +1104,15 @@ class Walker3DBall(base.Task):
                               margin=1.0, value_at_margin=0.1, sigmoid="linear")
         )
 
-        # Determine swing leg
+        # Determine swing leg index: 0 = right, 1 = left, -1 = neither
+        # Logic: if one foot is off the ground, that foot is the swing leg.
+        # If both feet are on or off the ground, no swing leg is identified.
         if touch_r < _FLAT_FOOT_TOUCH_THRESHOLD and not touch_l < _FLAT_FOOT_TOUCH_THRESHOLD:
-            swing = 0  # right in air → left swings
+            swing = 0  # right is in air → right is swing leg
         elif touch_l < _FLAT_FOOT_TOUCH_THRESHOLD and not touch_r < _FLAT_FOOT_TOUCH_THRESHOLD:
-            swing = 1  # left in air → right swings
+            swing = 1  # left is in air → left is swing leg
         else:
-            swing = -1  # double support or double flight
+            swing = -1  # double support or double flight → no swing leg
 
         hip_pitch = physics.hip_pitch_angles()
         if swing >= 0:
@@ -1270,7 +1289,7 @@ class Walker3DBall(base.Task):
             + _W_HIP_ALIGN * hip_align
             + _W_LEG_SPREAD * leg_spread
             + _W_SELF_COLLISION * self_collision
-            + _W_TORSO_VELOCITY_ALIGN * (torso_vel_align - 1.0)
+            + _W_TORSO_VEL_ALIGN * (torso_vel_align - 1.0)
             + _W_FEET_TORSO_ALIGN * (feet_torso_align - 1.0)
         )
 
@@ -1290,7 +1309,7 @@ class Walker3DBall(base.Task):
             "hip_align": _W_HIP_ALIGN * hip_align,
             "leg_spread": _W_LEG_SPREAD * leg_spread,
             "self_collision": _W_SELF_COLLISION * self_collision,
-            "torso_velocity_align": _W_TORSO_VELOCITY_ALIGN * (torso_vel_align - 1.0),
+            "torso_vel_align": _W_TORSO_VEL_ALIGN * (torso_vel_align - 1.0),
             "feet_torso_align": _W_FEET_TORSO_ALIGN * (feet_torso_align - 1.0),
             "target_hit_bonus": _TARGET_HIT_BONUS if target_hit else 0.0,
         }
