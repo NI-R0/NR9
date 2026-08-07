@@ -399,35 +399,41 @@ class Physics(mujoco.Physics):
     def flat_foot_contact(self):
         """Returns the combined flatness [0, 1] of both feet.
 
-        Purely angle-based: uses the absolute foot orientation in world
-        space (xmat row-2 zz component).  No touch sensors needed.
+        Flatness is measured by the absolute foot orientation in world
+        space (xmat row-2 zz).  Stance foot detection uses touch sensors
+        so the stance foot can be penalised heavily while the swing foot
+        is only lightly penalised.
 
-        The **lower** foot (closer to the ground) is weighted 2× because
-        it carries the load.  The higher (swing) foot is weighted 1×.
-        This forces the agent to keep the stance foot flat while allowing
-        the swing foot to lift naturally during walking.
+        The zz value is raised to the 6th power to make the penalty steep:
+        cos^6(0°)=1.0, cos^6(15°)=0.82, cos^6(30°)=0.42, cos^6(45°)=0.16
         """
         self._ensure_indices()
 
-        # Foot z-position in world space
-        r_foot_z = float(self.data.xpos[self._bid_right_foot, 2])
-        l_foot_z = float(self.data.xpos[self._bid_left_foot, 2])
+        # Which foot is stance? Use touch sensors, fallback to z-position.
+        touches = np.tanh(self.data.sensordata[self._sensor_foot])
+        r_touch = float((touches[0] + touches[1]) / 2.0)
+        l_touch = float((touches[2] + touches[3]) / 2.0)
+        # Stance = mehr Bodenkontakt; fallback = niedrigerer Fuß
+        has_contact = (r_touch + l_touch) > 1e-3
+        use_right_stance = (r_touch > l_touch) if has_contact else (
+            float(self.data.xpos[self._bid_right_foot, 2])
+            <= float(self.data.xpos[self._bid_left_foot, 2])
+        )
 
-        # Absolute world-normal via xmat row 2 (local z-axis of foot body)
-        # zz = cos(pitch) × cos(roll) → 1.0 when foot sole is horizontal
-        r_flat = float(np.clip(
-            self.data.xmat[self._bid_right_foot, 8], 0.0, 1.0))
-        l_flat = float(np.clip(
-            self.data.xmat[self._bid_left_foot, 8], 0.0, 1.0))
+        # zz = cos(pitch) * cos(roll) -> 1.0 when foot sole is horizontal
+        r_zz = float(np.clip(self.data.xmat[self._bid_right_foot, 8], 0.0, 1.0))
+        l_zz = float(np.clip(self.data.xmat[self._bid_left_foot, 8], 0.0, 1.0))
 
-        # Lower foot (stance) is weighted 2×, higher (swing) foot 1×.
-        # This penalises tilted stance feet hard and forgives swing feet.
-        if r_foot_z <= l_foot_z:
-            # Right foot is stance
-            return float(2.0 * r_flat + l_flat) / 3.0
+        # Raise to 6th power for steep penalty: cos(30)^6 = 0.42, cos(45)^6 = 0.16
+        r_flat = r_zz ** 6
+        l_flat = l_zz ** 6
+
+        # Stance foot weighted 3x, swing foot 1x
+        if use_right_stance:
+            return float(3.0 * r_flat + l_flat) / 4.0
         else:
-            # Left foot is stance
-            return float(r_flat + 2.0 * l_flat) / 3.0
+            return float(r_flat + 3.0 * l_flat) / 4.0
+
 
     def foot_contact_points(self):
         """Returns the xy positions of all foot contact points on the ground.
