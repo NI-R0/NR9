@@ -399,40 +399,31 @@ class Physics(mujoco.Physics):
     def flat_foot_contact(self):
         """Returns the combined flatness [0, 1] of both feet.
 
-        Flatness is measured by the absolute foot orientation in world
-        space (xmat row-2 zz).  Stance foot detection uses touch sensors
-        so the stance foot can be penalised heavily while the swing foot
-        is only lightly penalised.
+        Uses the absolute world orientation of each foot (xmat zz component).
+        No touch sensors involved.
 
-        The zz value is raised to the 6th power to make the penalty steep:
-        cos^6(0°)=1.0, cos^6(15°)=0.82, cos^6(30°)=0.42, cos^6(45°)=0.16
+        The lower foot (stance, closer to ground) is weighted 2x, the higher
+        foot (swing) is weighted 1x: ``(stance * 2 + swing) / 3``.
         """
         self._ensure_indices()
 
-        # Which foot is stance? Use touch sensors, fallback to z-position.
-        touches = np.tanh(self.data.sensordata[self._sensor_foot])
-        r_touch = float((touches[0] + touches[1]) / 2.0)
-        l_touch = float((touches[2] + touches[3]) / 2.0)
-        # Stance = mehr Bodenkontakt; fallback = niedrigerer Fuß
-        has_contact = (r_touch + l_touch) > 1e-3
-        use_right_stance = (r_touch > l_touch) if has_contact else (
-            float(self.data.xpos[self._bid_right_foot, 2])
-            <= float(self.data.xpos[self._bid_left_foot, 2])
-        )
-
-        # zz = cos(pitch) * cos(roll) -> 1.0 when foot sole is horizontal
+        # World-normal of each foot (xmat row-2 = local z-axis in world coords)
+        # zz = cos(pitch) * cos(roll) -> 1.0 when foot sole is parallel to ground
         r_zz = float(np.clip(self.data.xmat[self._bid_right_foot, 8], 0.0, 1.0))
         l_zz = float(np.clip(self.data.xmat[self._bid_left_foot, 8], 0.0, 1.0))
 
-        # Raise to 6th power for steep penalty: cos(30)^6 = 0.42, cos(45)^6 = 0.16
-        r_flat = r_zz ** 6
-        l_flat = l_zz ** 6
+        # Cubic: cos^3(0)=1.0, cos^3(30)=0.65, cos^3(45)=0.35
+        r_flat = r_zz ** 3
+        l_flat = l_zz ** 3
 
-        # Stance foot weighted 3x, swing foot 1x
-        if use_right_stance:
-            return float(3.0 * r_flat + l_flat) / 4.0
+        # Lower foot is stance (carries weight), higher foot is swing
+        r_z = float(self.data.xpos[self._bid_right_foot, 2])
+        l_z = float(self.data.xpos[self._bid_left_foot, 2])
+
+        if r_z <= l_z:
+            return float(2.0 * r_flat + l_flat) / 3.0
         else:
-            return float(r_flat + 3.0 * l_flat) / 4.0
+            return float(r_flat + 2.0 * l_flat) / 3.0
 
 
     def foot_contact_points(self):
