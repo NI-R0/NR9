@@ -142,8 +142,6 @@ _MARCH_KNEE_TARGET = np.radians(60)   # knee flexion (rad) for full march reward
 _MARCH_HIP_PITCH_TARGET = np.radians(45)  # hip pitch (rad) for full march lift
 _FEET_UNDER_MAX_OFFSET = 0.5          # m: feet-COM xy offset at full penalty
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3      # tanh(touch-force) threshold for foot contact
-_ANKLE_ROLL_MAX = np.radians(30)      # ankle roll (rad) at zero flat-foot reward
-_ANKLE_PITCH_MAX = np.radians(30)     # ankle pitch (rad) at zero flat-foot reward
 _BALL_SPEED_SATURATE = 3.0            # m/s: ball speed at which kick reward saturates
 
 # March alternation: trapezoidal hold-time curve (in seconds, converted to steps at runtime).
@@ -301,14 +299,6 @@ class Physics(mujoco.Physics):
             mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_hip_pitch")]
         self._qpos_l_hip_pitch = model.jnt_qposadr[
             mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_hip_pitch")]
-        self._qpos_r_ankle_roll = model.jnt_qposadr[
-            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_ankle_roll")]
-        self._qpos_l_ankle_roll = model.jnt_qposadr[
-            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_ankle_roll")]
-        self._qpos_r_ankle_pitch = model.jnt_qposadr[
-            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "right_ankle_pitch")]
-        self._qpos_l_ankle_pitch = model.jnt_qposadr[
-            mujoco.mj_name2id(model, mjt.mjOBJ_JOINT, "left_ankle_pitch")]
 
         # Sensor addresses
         self._sensor_linvel = model.sensor_adr[
@@ -409,10 +399,11 @@ class Physics(mujoco.Physics):
     def flat_foot_contact(self):
         """Returns the combined flatness [0, 1] of both feet.
 
-        Each foot contributes flatness = roll × pitch (ankle joints only).
-        Yaw (rotation around vertical axis) is ignored.
-
-        Ground-contact foot is weighted ≈ 2× the air foot via touch-force.
+        Uses the **absolute** foot orientation in world space (via xmat).
+        A foot that stands vertically in world coordinates (toes up,
+        heel-only contact) scores 0 regardless of the relative ankle
+        joint angle.  Only feet whose world-facing normal is close to
+        vertical (parallel to +z) receive high reward.
         """
         self._ensure_indices()
         touches = np.tanh(self.data.sensordata[self._sensor_foot])
@@ -421,19 +412,17 @@ class Physics(mujoco.Physics):
         r_contact = float((touches[0] + touches[1]) / 2.0)
         l_contact = float((touches[2] + touches[3]) / 2.0)
 
-        # Right foot flatness
-        r_roll = abs(float(self.data.qpos[self._qpos_r_ankle_roll]))
-        r_roll_flat = float(max(0.0, 1.0 - r_roll / _ANKLE_ROLL_MAX))
-        r_pitch = abs(float(self.data.qpos[self._qpos_r_ankle_pitch]))
-        r_pitch_flat = float(max(0.0, 1.0 - r_pitch / _ANKLE_PITCH_MAX))
-        r_flat = r_roll_flat * r_pitch_flat  # roll × pitch; tilt is redundant
+        # Right foot: absolute world-normal via xmat row 2 (local z-axis)
+        r_xmat_row2 = self.data.xmat[self._bid_right_foot, 6:9]
+        r_z_world = float(r_xmat_row2[2])  # cos(angle between foot normal and +z)
+        # zz already encodes both roll and pitch deviations:
+        # zz = cos(pitch) × cos(roll) → any tilt reduces the reward
+        r_flat = float(np.clip(r_z_world, 0.0, 1.0))
 
-        # Left foot flatness
-        l_roll = abs(float(self.data.qpos[self._qpos_l_ankle_roll]))
-        l_roll_flat = float(max(0.0, 1.0 - l_roll / _ANKLE_ROLL_MAX))
-        l_pitch = abs(float(self.data.qpos[self._qpos_l_ankle_pitch]))
-        l_pitch_flat = float(max(0.0, 1.0 - l_pitch / _ANKLE_PITCH_MAX))
-        l_flat = l_roll_flat * l_pitch_flat  # roll × pitch; tilt is redundant
+        # Left foot: same
+        l_xmat_row2 = self.data.xmat[self._bid_left_foot, 6:9]
+        l_z_world = float(l_xmat_row2[2])
+        l_flat = float(np.clip(l_z_world, 0.0, 1.0))
 
         # Weight by contact strength: ground foot ≈ 2×, air foot ≈ 1×
         r_weight = 1.0 + r_contact
