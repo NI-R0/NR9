@@ -95,17 +95,23 @@ else
     echo "Starting fresh training run."
 fi
 
+WARMUP=$((NUM_ENVS * 1000))
+
 uv run python main.py \
   --env_domain walker_3D_ball --env_task kick \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
   --eval_frequency 5 \
   --num_eval_episodes "$CPUS" \
+  --warmup "$WARMUP" \
+  --batch_size 512 \
   --capacity 5000000 \
   --lr 3e-4 \
   --dual_lr 1e-4 \
+  --epsilon 0.05 \
   --epsilon_std 1e-4 \
-  --target_update_period 100 \
+  --sample_k 50 \
+  --target_update_period 10 \
   --duration 25 \
   --profile \
   $RESUME_ARGS
