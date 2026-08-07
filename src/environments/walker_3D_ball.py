@@ -110,14 +110,14 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # ---------------------------------------------------------------------------
 
 # --- Positive weights (sum = 1.0) ---
-_W_FLAT_FOOT = 0.28    # foot sole flatness (highest — stable standing is the foundation)
-_W_STAND = 0.05        # height + upright
-_W_WEIGHT_SHIFT = 0.11 # COM lateral shift over one foot
-_W_MARCH = 0.09        # knee lift + hip lift of swing leg
-_W_STANCE = 0.11       # COM on stance heel-toe line + step forward
+_W_FLAT_FOOT = 0.18    # foot sole flatness
+_W_STAND = 0.12        # height + upright (foundation for all locomotion)
+_W_WEIGHT_SHIFT = 0.15 # COM lateral shift over one foot (stronger signal for weight transfer)
+_W_MARCH = 0.10        # knee lift + hip lift of swing leg (foot-z based, not touch)
+_W_STANCE = 0.08       # COM on stance line + forward step
 _W_APPROACH = 0.10     # walk toward ball / approach point
 _W_KICK = 0.12         # ball direction toward target
-_W_TARGET = 0.14       # ball in target zone
+_W_TARGET = 0.15       # ball in target zone
 
 # Check that positive weights sum to 1.0
 assert abs(sum([
@@ -1095,23 +1095,22 @@ class Walker3DBall(base.Task):
 
         # ------------------------------------------------------------------
         # 5. March [0, 1] — single support + swing leg lift + alternation
-        # ------------------------------------------------------------------
-        touch_r = float(np.tanh(physics.data.sensordata[sensor_foot[0]]))  # right heel
-        touch_l = float(np.tanh(physics.data.sensordata[sensor_foot[2]]))  # left heel
-        single_support = float(
-            rewards.tolerance(touch_r + touch_l, bounds=(0.7, 1.3),
-                              margin=1.0, value_at_margin=0.1, sigmoid="linear")
-        )
+        # Swing detection: higher foot (z-position) is the swing leg.
+        r_foot_z = float(physics.data.xpos[physics._bid_right_foot, 2])
+        l_foot_z = float(physics.data.xpos[physics._bid_left_foot, 2])
+        foot_z_diff = abs(r_foot_z - l_foot_z)
 
-        # Determine swing leg index: 0 = right, 1 = left, -1 = neither
-        # Logic: if one foot is off the ground, that foot is the swing leg.
-        # If both feet are on or off the ground, no swing leg is identified.
-        if touch_r < _FLAT_FOOT_TOUCH_THRESHOLD and not touch_l < _FLAT_FOOT_TOUCH_THRESHOLD:
-            swing = 0  # right is in air → right is swing leg
-        elif touch_l < _FLAT_FOOT_TOUCH_THRESHOLD and not touch_r < _FLAT_FOOT_TOUCH_THRESHOLD:
-            swing = 1  # left is in air → left is swing leg
+        # Single support: one foot clearly higher than the other
+        SWING_MIN_LIFT = 0.05  # m: min z-diff to identify swing leg
+        if foot_z_diff < SWING_MIN_LIFT:
+            single_support = 0.0
+            swing = -1
+        elif r_foot_z > l_foot_z:
+            single_support = 1.0
+            swing = 0  # right is higher -> right is swing leg
         else:
-            swing = -1  # double support or double flight → no swing leg
+            single_support = 1.0
+            swing = 1  # left is higher -> left is swing leg
 
         hip_pitch = physics.hip_pitch_angles()
         if swing >= 0:
