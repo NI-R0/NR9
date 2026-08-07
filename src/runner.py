@@ -73,6 +73,11 @@ def run_episode(
     if updates_count > 0:
         avg_metrics = {k: float(v) / updates_count for k, v in episode_metrics.items()}
 
+    # Normalise reward components to per-step average
+    reward_components_avg: dict[str, float] = {}
+    if step > 0:
+        reward_components_avg = {k: float(v) / step for k, v in reward_components_sum.items()}
+
     if profile and step > 0:
         total = timing["select_action"] + timing["env_step"] + timing["update"]
         logger.info(
@@ -85,7 +90,7 @@ def run_episode(
             f"({timing['update']/step*1000:.1f}ms/step)"
         )
 
-    return episode_reward, step, avg_metrics, frames, reward_components_sum
+    return episode_reward, step, avg_metrics, frames, reward_components_avg
 
 
 def run_vectorized_episode(
@@ -206,6 +211,11 @@ def run_vectorized_episode(
     avg_metrics: dict = {}
     if updates_count > 0:
         avg_metrics = {k: float(v) / updates_count for k, v in episode_metrics.items()}
+
+    # Normalise reward components to per-step average (total steps across all envs)
+    reward_components_avg: dict[str, float] = {}
+    if max_steps > 0:
+        reward_components_avg = {k: float(v) / max_steps for k, v in reward_components_sum.items()}
 
     last_step = max_steps - 1
     if profile:

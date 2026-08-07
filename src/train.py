@@ -65,16 +65,16 @@ def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
     mean_eval_reward = float(np.mean(eval_rewards))
     std_eval_reward = float(np.std(eval_rewards))
     stats.log_stats_to_tb(episode, {"Mean_Eval_Reward": mean_eval_reward, "Eval_Reward_Std": std_eval_reward})
-    # Log reward component breakdown (mean per episode + percentage share).
+    # Log reward component breakdown (mean per step across all eval episodes + percentage share).
     if eval_reward_comp:
-        num_eval_eps = len(eval_rewards) if eval_rewards else 1
+        total_steps = args["steps"] * num_eval  # approx. max steps × eval episodes
         total_comp_sum = sum(eval_reward_comp.values())
         comp_stats = {}
         for k, v in eval_reward_comp.items():
-            mean_val = v / num_eval_eps
-            comp_stats[f"Eval_RewardMean_{k}"] = float(mean_val)
+            mean_per_step = v / max(total_steps, 1)
+            comp_stats[f"Eval_RewardPerStep_{k}"] = float(mean_per_step)
             if total_comp_sum != 0:
-                comp_stats[f"Eval_RewardPct_{k}"] = float(mean_val / abs(total_comp_sum / num_eval_eps) * 100.0)
+                comp_stats[f"Eval_RewardPct_{k}"] = float(mean_per_step / abs(total_comp_sum / max(total_steps, 1)) * 100.0)
             else:
                 comp_stats[f"Eval_RewardPct_{k}"] = 0.0
         stats.log_stats_to_tb(episode, comp_stats)

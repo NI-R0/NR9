@@ -106,11 +106,14 @@ uv run python main.py \
   --warmup "$WARMUP" \
   --batch_size 512 \
   --capacity 5000000 \
-  --lr 3e-4 \
+  --lr 1e-4 \
   --dual_lr 1e-4 \
   --epsilon 0.05 \
+  --epsilon_mean 0.001 \
   --epsilon_std 1e-4 \
   --sample_k 50 \
+  --n_step 3 \
+  --sgd_steps_per_learner_step 10 \
   --target_update_period 10 \
   --duration 25 \
   --profile \

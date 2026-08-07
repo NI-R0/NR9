@@ -110,18 +110,17 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # ---------------------------------------------------------------------------
 
 # --- Positive weights (sum = 1.0) ---
-_W_FLAT_FOOT = 0.21    # foot sole flatness
-_W_STAND = 0.19        # height + upright (foundation for all locomotion)
-_W_WEIGHT_SHIFT = 0.10 # COM lateral shift over one foot (stronger signal for weight transfer)
-_W_MARCH = 0.07        # knee lift + hip lift of swing leg (foot-z based, not touch)
-_W_STANCE = 0.08       # COM on stance line + forward step
-_W_APPROACH = 0.08     # walk toward ball / approach point
-_W_KICK = 0.12         # ball direction toward target
-_W_TARGET = 0.15       # ball in target zone
+_W_FLAT_FOOT = 0.23    # foot sole flatness
+_W_STAND = 0.21        # height + upright (foundation for all locomotion)
+_W_MARCH = 0.08        # knee lift + hip lift of swing leg (foot-z based, not touch)
+_W_STANCE = 0.09       # COM on stance line + forward step
+_W_APPROACH = 0.09     # walk toward ball / approach point
+_W_KICK = 0.13         # ball direction toward target
+_W_TARGET = 0.17       # ball in target zone
 
 # Check that positive weights sum to 1.0
 assert abs(sum([
-    _W_FLAT_FOOT, _W_STAND, _W_WEIGHT_SHIFT, _W_MARCH,
+    _W_FLAT_FOOT, _W_STAND, _W_MARCH,
     _W_STANCE, _W_APPROACH, _W_KICK, _W_TARGET,
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
@@ -1096,16 +1095,7 @@ class Walker3DBall(base.Task):
         feet_torso_align = physics.feet_torso_align()
 
         # ------------------------------------------------------------------
-        # 4. Weight shift [0, 1] — COM laterally over one foot
-        # ------------------------------------------------------------------
-        com_to_feet = physics.com_lateral_to_foot()
-        half_foot_dist = max(physics.feet_lateral_distance() / 2.0, 1e-6)
-        shift_right = 1.0 - float(np.clip(np.abs(com_to_feet[0]) / half_foot_dist, 0.0, 1.0))
-        shift_left = 1.0 - float(np.clip(np.abs(com_to_feet[1]) / half_foot_dist, 0.0, 1.0))
-        weight_shift_reward = float(np.clip(max(shift_right, shift_left), 0.0, 1.0))
-
-        # ------------------------------------------------------------------
-        # 5. March [0, 1] — single support + swing leg lift + alternation
+        # 4. March [0, 1] — single support + swing leg lift + alternation
         # Swing detection: higher foot (z-position) is the swing leg.
         r_foot_z = float(physics.data.xpos[physics._bid_right_foot, 2])
         l_foot_z = float(physics.data.xpos[physics._bid_left_foot, 2])
@@ -1287,7 +1277,6 @@ class Walker3DBall(base.Task):
         reward = (
             _W_FLAT_FOOT * flat_foot_reward
             + _W_STAND * stand_reward
-            + _W_WEIGHT_SHIFT * weight_shift_reward
             + _W_MARCH * march_reward
             + _W_STANCE * stance_reward
             + _W_APPROACH * approach_reward
@@ -1308,7 +1297,6 @@ class Walker3DBall(base.Task):
         self._reward_components = {
             "flat_foot": _W_FLAT_FOOT * flat_foot_reward,
             "stand": _W_STAND * stand_reward,
-            "weight_shift": _W_WEIGHT_SHIFT * weight_shift_reward,
             "march": _W_MARCH * march_reward,
             "stance": _W_STANCE * stance_reward,
             "approach": _W_APPROACH * approach_reward,
