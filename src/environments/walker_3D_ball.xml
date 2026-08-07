@@ -45,8 +45,8 @@
             <joint name="right_ankle_pitch" pos="0 0 0" axis="0 -1 0" range="-45 45"/>
             <joint name="right_ankle_roll" pos="0 0 0" axis="1 0 0" range="-30 30"/>
             <geom name="right_foot" type="box" pos="0.04 0 -0.035" size="0.1 0.04 0.025" friction="1.0 0.1 0.1"/>
-            <site name="right_heel_touch" class="touch" type="sphere" pos="-0.06 0 -0.04" size="0.05"/>
-            <site name="right_toe_touch" class="touch" type="sphere" pos="0.12 0 -0.04" size="0.05"/>
+            <site name="right_heel_touch" class="touch" type="sphere" pos="-0.06 0 -0.06" size="0.05"/>
+            <site name="right_toe_touch" class="touch" type="sphere" pos="0.14 0 -0.06" size="0.05"/>
           </body>
         </body>
       </body>
@@ -64,8 +64,8 @@
             <joint name="left_ankle_pitch" pos="0 0 0" axis="0 -1 0" range="-45 45"/>
             <joint name="left_ankle_roll" pos="0 0 0" axis="1 0 0" range="-30 30"/>
             <geom name="left_foot" type="box" pos="0.04 0 -0.035" size="0.1 0.04 0.025" friction="1.0 0.1 0.1"/>
-            <site name="left_heel_touch" class="touch" type="sphere" pos="-0.06 0 -0.04" size="0.05"/>
-            <site name="left_toe_touch" class="touch" type="sphere" pos="0.12 0 -0.04" size="0.05"/>
+            <site name="left_heel_touch" class="touch" type="sphere" pos="-0.06 0 -0.06" size="0.05"/>
+            <site name="left_toe_touch" class="touch" type="sphere" pos="0.14 0 -0.06" size="0.05"/>
           </body>
         </body>
       </body>
