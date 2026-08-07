@@ -76,7 +76,7 @@ _DEFAULT_TIME_LIMIT = 25
 _CONTROL_TIMESTEP = 0.05   # agent decides ~20×/s (set to 0.02 for 50 Hz)
 _STUCK_CHECK_TIME = 1   # s: terminate if agent stuck for this long
 _STUCK_EPSILON = 1e-3
-_STAND_HEIGHT = 1.5  # nearer to full upright height; prevents saturation in prone/spagat pose
+_STAND_HEIGHT = 1.6  # full upright height; requires fully extended legs for saturation
 _BALL_RADIUS = 0.2
 _APPROACH_OFFSET = 0.3  # m behind ball (away from target) for approach point
 _TARGET_MIN_DIST = 2.0
@@ -126,7 +126,7 @@ assert abs(sum([
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
 # --- Penalty weights (on top of the 1.0 budget) ---
-_W_FEET_UNDER = 0.05           # feet not under COM
+_W_FEET_UNDER = 0.12           # feet not under COM (stronger penalty for sideways-leg posture)
 _W_HIP_ALIGN = 0.03            # hip yaw/roll deviation
 _W_LEG_SPREAD = 0.04           # feet too far apart laterally
 _W_SELF_COLLISION = 0.03       # interpenetration of non-adjacent bodies
@@ -140,7 +140,7 @@ _HIP_YAW_MAX = np.radians(45)         # hip yaw angle (rad) at full penalty
 _HIP_ROLL_MAX = np.radians(45)        # hip roll angle (rad) at full penalty
 _MARCH_KNEE_TARGET = np.radians(60)   # knee flexion (rad) for full march reward
 _MARCH_HIP_PITCH_TARGET = np.radians(45)  # hip pitch (rad) for full march lift
-_FEET_UNDER_MAX_OFFSET = 0.5          # m: feet-COM xy offset at full penalty
+_FEET_UNDER_MAX_OFFSET = 0.25  # m: feet-COM xy offset at full penalty (stricter — feet must be under COM)
 _FLAT_FOOT_TOUCH_THRESHOLD = 0.3      # tanh(touch-force) threshold for foot contact
 _BALL_SPEED_SATURATE = 3.0            # m/s: ball speed at which kick reward saturates
 
@@ -692,21 +692,31 @@ class Physics(mujoco.Physics):
         return np.array([com_y - right_foot_y, com_y - left_foot_y])
 
     def feet_xy_offset(self):
-        """Returns the xy-distance from the feet midpoint to the centre of mass.
+        """Returns the xy-distance from the stance foot to the centre of mass.
 
-        A value near 0 means the feet are directly under the COM (correct
-        support posture).  Uses ``subtree_com["torso"]`` (the actual centre
-        of mass of the torso subtree) rather than ``xpos["torso"]`` so the
-        feet must be under the **centre of mass**, not merely under the
-        torso body origin.  Used by the ``feet_under`` reward component.
+        Stance foot = the lower foot (smaller z).  If both feet are at similar
+        height (dual support), both are included.  Swing feet in the air are
+        naturally ignored because they are higher.
+
+        Returns the offset of ground-feet only.  If no clear ground foot,
+        returns 0.0 (no penalty applicable).
         """
         self._ensure_indices()
         com_xy = self.data.subtree_com[self._bid_torso, :2]
-        right_foot_xy = self.data.xpos[self._bid_right_foot, :2]
-        left_foot_xy = self.data.xpos[self._bid_left_foot, :2]
-        right_foot_com = float(np.linalg.norm(com_xy - right_foot_xy))
-        left_foot_com = float(np.linalg.norm(com_xy - left_foot_xy))
-        return float((right_foot_com + left_foot_com) / 2)
+        r_z = float(self.data.xpos[self._bid_right_foot, 2])
+        l_z = float(self.data.xpos[self._bid_left_foot, 2])
+
+        # Lower foot is stance; include the other only if within 0.05 m (dual support)
+        min_z = min(r_z, l_z)
+        offsets = []
+        if r_z < min_z + 0.05:
+            offsets.append(float(np.linalg.norm(com_xy - self.data.xpos[self._bid_right_foot, :2])))
+        if l_z < min_z + 0.05:
+            offsets.append(float(np.linalg.norm(com_xy - self.data.xpos[self._bid_left_foot, :2])))
+
+        if len(offsets) == 0:
+            return 0.0
+        return float(np.mean(offsets))
 
     def self_collision_penalty(self):
         """Returns the total self-collision penalty [-1, 0].
@@ -1039,12 +1049,13 @@ class Walker3DBall(base.Task):
         sensor_foot = physics._sensor_foot
 
         # ------------------------------------------------------------------
-        # 1. Stand [0, 1] — height + upright + knee flexion
+        # 1. Stand [0, 1] — height + upright + knee extension
         # ------------------------------------------------------------------
         standing = float(np.clip(physics.torso_height() / _STAND_HEIGHT, 0.0, 1.0))
         upright = float((1.0 + physics.torso_upright()) / 2.0)
-        knee_flexion = float(np.clip(-np.mean(knee) / np.radians(30), 0.0, 1.0))
-        stand_reward = 0.48 * standing + 0.42 * upright + 0.10 * knee_flexion
+        # Knee extension: reward fully straight knees (angle≈0), penalise flexion (angle<0)
+        knee_extension = float(np.clip(1.0 + np.mean(knee) / np.radians(30), 0.0, 1.0))
+        stand_reward = 0.48 * standing + 0.42 * upright + 0.10 * knee_extension
 
         # ------------------------------------------------------------------
         # 2. Flat foot [0, 1] — foot sole flatness
