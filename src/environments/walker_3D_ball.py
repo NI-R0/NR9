@@ -110,12 +110,12 @@ _TERMINATE_KNEE_HEIGHT = 0.15  # Knee z-position (m) below which knee is "on gro
 # ---------------------------------------------------------------------------
 
 # --- Positive weights (sum = 1.0) ---
-_W_FLAT_FOOT = 0.18    # foot sole flatness
-_W_STAND = 0.12        # height + upright (foundation for all locomotion)
-_W_WEIGHT_SHIFT = 0.15 # COM lateral shift over one foot (stronger signal for weight transfer)
-_W_MARCH = 0.10        # knee lift + hip lift of swing leg (foot-z based, not touch)
+_W_FLAT_FOOT = 0.21    # foot sole flatness
+_W_STAND = 0.19        # height + upright (foundation for all locomotion)
+_W_WEIGHT_SHIFT = 0.10 # COM lateral shift over one foot (stronger signal for weight transfer)
+_W_MARCH = 0.07        # knee lift + hip lift of swing leg (foot-z based, not touch)
 _W_STANCE = 0.08       # COM on stance line + forward step
-_W_APPROACH = 0.10     # walk toward ball / approach point
+_W_APPROACH = 0.08     # walk toward ball / approach point
 _W_KICK = 0.12         # ball direction toward target
 _W_TARGET = 0.15       # ball in target zone
 
@@ -126,12 +126,12 @@ assert abs(sum([
 ]) - 1.0) < 1e-9, "Positive reward weights must sum to 1.0"
 
 # --- Penalty weights (on top of the 1.0 budget) ---
-_W_FEET_UNDER = 0.03           # feet not under COM
+_W_FEET_UNDER = 0.05           # feet not under COM
 _W_HIP_ALIGN = 0.03            # hip yaw/roll deviation
 _W_LEG_SPREAD = 0.04           # feet too far apart laterally
-_W_SELF_COLLISION = 0.05       # interpenetration of non-adjacent bodies
-_W_TORSO_VEL_ALIGN = 0.02      # torso forward vs. linear velocity direction (reduced — torso may rotate freely)
-_W_FEET_TORSO_ALIGN = 0.02     # foot forward vs. torso forward (reduced — allows torso yaw freedom)
+_W_SELF_COLLISION = 0.03       # interpenetration of non-adjacent bodies
+_W_TORSO_VEL_ALIGN = 0.05      # torso forward vs. linear velocity direction (reduced — torso may rotate freely)
+_W_FEET_TORSO_ALIGN = 0.03     # foot forward vs. torso forward (reduced — allows torso yaw freedom)
 
 # --- Alignment & normalisation constants ---
 _VELOCITY_THRESHOLD = 0.15            # m/s: below this, skip torso-velocity penalty
