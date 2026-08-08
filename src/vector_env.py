@@ -58,6 +58,15 @@ def _worker_fn(
     import traceback as _tb
     import time as _time
 
+    # ── Force JAX to CPU-only in worker processes ──
+    # The main process holds the GPU; workers spawning with "spawn" inherit
+    # CUDA context and exhaust GPU memory when JAX initializes (even for
+    # jax.random.PRNGKey).  Setting this env var BEFORE any jax import
+    # forces all JAX operations to CPU, which is what we want for the
+    # lightweight ICM forward model.
+    _os.environ["JAX_PLATFORM_NAME"] = "cpu"
+    _os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
     # ── Attach to shared memory FIRST so we can signal errors ──
     from multiprocessing import shared_memory as _shm_mod
 
