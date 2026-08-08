@@ -143,6 +143,57 @@ def parse_args() -> dict:
         "(multiprocessing).  1 = single env (default).",
     )
 
+    # ── ICM (Intrinsic Curiosity Module) ──────────────────────────────
+    parser.add_argument(
+        "--use_icm",
+        action="store_true",
+        default=False,
+        help="Enable Intrinsic Curiosity Module: forward prediction error "
+        "is added to the extrinsic reward as curiosity signal.",
+    )
+    parser.add_argument(
+        "--icm_intrinsic_scale",
+        type=float,
+        default=1.0,
+        help="Multiplicative factor for ICM prediction error. "
+        "Higher = stronger curiosity signal (default: 1.0).",
+    )
+    parser.add_argument(
+        "--icm_lr",
+        type=float,
+        default=5e-4,
+        help="Learning rate for ICM forward model (default: 5e-4).",
+    )
+    parser.add_argument(
+        "--icm_hidden_sizes",
+        type=str,
+        default="64,32",
+        help="Hidden layer sizes for ICM MLP, comma-separated (default: '64,32').",
+    )
+
+    # ── PER (Prioritized Experience Replay) ───────────────────────────
+    parser.add_argument(
+        "--use_per",
+        action="store_true",
+        default=False,
+        help="Enable Prioritized Experience Replay: sample transitions proportional "
+        "to |TD-error|^alpha, with importance-sampling weight correction.",
+    )
+    parser.add_argument(
+        "--per_alpha",
+        type=float,
+        default=0.6,
+        help="PER α: how much priority influences sampling (0=uniform, 1=fully prioritized). "
+        "Default: 0.6 (Schaul et al. 2015).",
+    )
+    parser.add_argument(
+        "--per_beta",
+        type=float,
+        default=0.4,
+        help="PER β: importance-sampling weight exponent. Rises to 1.0 over training. "
+        "Default: 0.4.",
+    )
+
     parser.add_argument("--eval_frequency", type=int, default=10)
     parser.add_argument(
         "--num_eval_episodes",

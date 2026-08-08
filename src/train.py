@@ -91,6 +91,10 @@ def _run_eval(episode: int, eval_env: Environment, eval_venv, agent: MPOAgent,
 def train(args: dict, stats: StatsCollector):
     num_envs = args.get("num_envs", 1)
     use_vectorized = num_envs > 1
+    use_icm = args.get("use_icm", False)
+    icm_intrinsic_scale = args.get("icm_intrinsic_scale", 1.0)
+    icm_lr = args.get("icm_lr", 5e-4)
+    icm_hidden_sizes = args.get("icm_hidden_sizes", (64, 32))
 
     if use_vectorized:
         venv = ParallelVectorEnv(
@@ -99,11 +103,24 @@ def train(args: dict, stats: StatsCollector):
             max_steps=args["steps"],
             num_envs=num_envs,
             seed=args.get("seed", 42),
+            use_icm=use_icm,
+            icm_intrinsic_scale=icm_intrinsic_scale,
+            icm_lr=icm_lr,
+            icm_hidden_sizes=icm_hidden_sizes,
         )
         state_dim = venv.state_dim
         action_dim = venv.action_dim
     else:
-        env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
+        env = Environment(
+            domain_name=args["env_domain"],
+            task_name=args["env_task"],
+            max_steps=args["steps"],
+            use_icm=use_icm,
+            icm_intrinsic_scale=icm_intrinsic_scale,
+            icm_lr=icm_lr,
+            icm_hidden_sizes=icm_hidden_sizes,
+            icm_seed=args.get("seed", 42),
+        )
         state_dim = env.state_dim
         action_dim = env.action_dim
 
@@ -117,6 +134,7 @@ def train(args: dict, stats: StatsCollector):
             max_steps=args["steps"],
             num_envs=num_eval,
             seed=args.get("seed", 42) + 10000,
+            use_icm=False,  # eval uses extrinsic reward only
         )
     else:
         eval_env = Environment(domain_name=args["env_domain"], task_name=args["env_task"], max_steps=args["steps"])
@@ -130,6 +148,9 @@ def train(args: dict, stats: StatsCollector):
         capacity=args["capacity"],
         n_step=args.get("n_step", 5),
         gamma=args.get("gamma", 0.99),
+        use_per=args.get("use_per", False),
+        per_alpha=args.get("per_alpha", 0.6),
+        per_beta=args.get("per_beta", 0.4),
     )
     if use_vectorized:
         buffer.set_num_envs(num_envs)

@@ -47,6 +47,13 @@ def main():
         return serve(args)
 
     np.random.seed(args["seed"])
+
+    # Parse icm_hidden_sizes string "64,32" → tuple (64, 32)
+    if "icm_hidden_sizes" in args:
+        args["icm_hidden_sizes"] = tuple(
+            int(x.strip()) for x in args["icm_hidden_sizes"].split(",")
+        )
+
     stats = StatsCollector(args, level="DEBUG" if args["verbose"] else "INFO")
     stats.set_profile(args["profile"])
 

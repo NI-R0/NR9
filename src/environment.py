@@ -7,8 +7,35 @@ import sys
 
 
 class Environment:
-    def __init__(self, domain_name: str = "cartpole", task_name: str = "balance", max_steps: int = 1000):
-        """Standard dm_control wrapper. Flattens dict observations into 1D arrays."""
+    def __init__(
+        self,
+        domain_name: str = "cartpole",
+        task_name: str = "balance",
+        max_steps: int = 1000,
+        use_icm: bool = False,
+        icm_intrinsic_scale: float = 1.0,
+        icm_lr: float = 5e-4,
+        icm_hidden_sizes: tuple[int, ...] = (64, 32),
+        icm_seed: int = 42,
+    ):
+        """Standard dm_control wrapper. Flattens dict observations into 1D arrays.
+
+        Parameters
+        ----------
+        use_icm : bool
+            If True, adds an Intrinsic Curiosity Module that computes a
+            forward prediction error on flattened observations and adds
+            it to the extrinsic reward.
+        icm_intrinsic_scale : float
+            Multiplicative factor applied to the prediction error.  Higher
+            values amplify the curiosity signal.
+        icm_lr : float
+            Learning rate for the ICM forward model.
+        icm_hidden_sizes : tuple[int, ...]
+            Hidden layer sizes of the ICM MLP.
+        icm_seed : int
+            PRNG seed for ICM weight initialization.
+        """
         self._preferred_camera: Union[str, int] = 0
         self.env = self._load_control_env(domain_name, task_name)
 
@@ -20,6 +47,24 @@ class Environment:
 
         self.ep_max_steps = max_steps
         self._setup_camera()
+
+        # ── ICM ────────────────────────────────────────────────────────
+        self._use_icm = use_icm
+        self._icm = None
+        if use_icm:
+            from src.icm import ForwardModel
+            self._icm = ForwardModel(
+                obs_dim=int(np.prod(self.state_dim)),
+                hidden_sizes=icm_hidden_sizes,
+                lr=icm_lr,
+                intrinsic_scale=icm_intrinsic_scale,
+                seed=icm_seed,
+            )
+            logger.info(
+                f"ICM enabled: scale={icm_intrinsic_scale}, "
+                f"lr={icm_lr}, hidden={icm_hidden_sizes}"
+            )
+        self._last_state: np.ndarray | None = None
 
     def _setup_camera(self):
         """Pick the best available named camera, falling back to camera 0."""
@@ -53,7 +98,9 @@ class Environment:
         return np.concatenate([np.asarray(val).ravel() for val in obs_dict.values()]).astype(np.float32)
 
     def reset(self) -> np.ndarray:
-        return self._flatten_observation(self.env.reset().observation)
+        state = self._flatten_observation(self.env.reset().observation)
+        self._last_state = state.copy()
+        return state
 
     def step(self, action: np.ndarray):
         action = np.clip(action, self.action_spec.minimum, self.action_spec.maximum)
@@ -72,10 +119,21 @@ class Environment:
                 if task.should_terminate(self.env.physics):
                     done = True
 
+        # ── ICM intrinsic reward ──────────────────────────────────────
+        icm_reward = 0.0
+        if self._use_icm and self._icm is not None and self._last_state is not None:
+            icm_reward = self._icm.update(self._last_state, state)
+        self._last_state = state.copy()
+        reward = reward + icm_reward
+
         info = {}
         task = getattr(self.env, 'task', None)
         if task is not None and hasattr(task, '_reward_components'):
             info['reward_components'] = dict(task._reward_components)
+        if self._use_icm:
+            if 'reward_components' not in info:
+                info['reward_components'] = {}
+            info['reward_components']['icm_reward'] = icm_reward
 
         return state, reward, done, info
 

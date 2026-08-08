@@ -42,6 +42,10 @@ def _worker_fn(
     num_envs: int,
     num_reward_keys: int,
     log_dir: str,
+    use_icm: bool = False,
+    icm_intrinsic_scale: float = 1.0,
+    icm_lr: float = 5e-4,
+    icm_hidden_sizes: tuple = (64, 32),
 ):
     """Worker process: owns one Environment, polls shared step counter for commands.
 
@@ -72,7 +76,16 @@ def _worker_fn(
     try:
         from src.environment import Environment
 
-        env = Environment(domain_name=domain_name, task_name=task_name, max_steps=max_steps)
+        env = Environment(
+            domain_name=domain_name,
+            task_name=task_name,
+            max_steps=max_steps,
+            use_icm=use_icm,
+            icm_intrinsic_scale=icm_intrinsic_scale,
+            icm_lr=icm_lr,
+            icm_hidden_sizes=icm_hidden_sizes,
+            icm_seed=seed + env_idx,
+        )
         np.random.seed(seed)
 
         # Data buffers (same layout as main process).
@@ -103,6 +116,8 @@ def _worker_fn(
         task = getattr(env, "task", None)
         if task is not None and hasattr(task, "_reward_components"):
             reward_keys = list(task._reward_components.keys())
+        if use_icm:
+            reward_keys.append("icm_reward")
         actual_num_keys = len(reward_keys)
 
         # Write reward keys into the key buffer (JSON string, null-terminated).
@@ -216,8 +231,18 @@ class ParallelVectorEnv:
     # walker_3D_ball/kick has ~15 keys; raise if needed.
     MAX_REWARD_KEYS = 32
 
-    def __init__(self, domain_name: str, task_name: str, max_steps: int,
-                 num_envs: int, seed: int = 42):
+    def __init__(
+        self,
+        domain_name: str,
+        task_name: str,
+        max_steps: int,
+        num_envs: int,
+        seed: int = 42,
+        use_icm: bool = False,
+        icm_intrinsic_scale: float = 1.0,
+        icm_lr: float = 5e-4,
+        icm_hidden_sizes: tuple[int, ...] = (64, 32),
+    ):
         self.num_envs = num_envs
         ctx = mp.get_context("spawn")
 
@@ -231,6 +256,7 @@ class ParallelVectorEnv:
 
         self._state_dim = state_dim
         self._action_dim = action_dim
+        self._use_icm = use_icm
 
         # ── Shared memory allocations ──────────────────────────────────
         shm_specs = {
@@ -322,6 +348,10 @@ class ParallelVectorEnv:
                     num_envs,
                     self.MAX_REWARD_KEYS,
                     self._worker_log_dir,
+                    use_icm,
+                    icm_intrinsic_scale,
+                    icm_lr,
+                    icm_hidden_sizes,
                 ),
                 daemon=True,
             )
