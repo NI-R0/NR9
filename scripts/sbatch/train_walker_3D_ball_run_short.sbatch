@@ -64,18 +64,6 @@ CONV_CONVERGENCE_EPISODES="${CONV_CONVERGENCE_EPISODES:-10}"
 CONV_THRESHOLD="${CONV_THRESHOLD:-10.0}"
 CONV_MIN_REWARD="${CONV_MIN_REWARD:-600.0}"
 
-# ICM (Intrinsic Curiosity Module) parameters
-# Override via sbatch --export:  --export=ICM_SCALE=2.0,ICM_LR=1e-3
-ICM_ENABLED="${ICM_ENABLED:-1}"
-ICM_SCALE="${ICM_SCALE:-0.05}"
-ICM_LR="${ICM_LR:-5e-4}"
-ICM_HIDDEN="${ICM_HIDDEN:-64,32}"
-
-# PER (Prioritized Experience Replay) parameters
-PER_ENABLED="${PER_ENABLED:-1}"
-PER_ALPHA="${PER_ALPHA:-0.6}"
-PER_BETA="${PER_BETA:-0.4}"
-
 RESUME_ARGS=""
 ACTIVE_RUN=""
 if [ -n "$RUN_DIR" ]; then
@@ -109,20 +97,8 @@ fi
 
 WARMUP=$((NUM_ENVS * 1000))
 
-ICM_ARGS=""
-if [ "${ICM_ENABLED}" = "1" ]; then
-    ICM_ARGS="--use_icm --icm_intrinsic_scale ${ICM_SCALE} --icm_lr ${ICM_LR} --icm_hidden_sizes ${ICM_HIDDEN}"
-fi
-
-PER_ARGS=""
-if [ "${PER_ENABLED}" = "1" ]; then
-    PER_ARGS="--use_per --per_alpha ${PER_ALPHA} --per_beta ${PER_BETA}"
-fi
-
 uv run python main.py \
   --env_domain walker_3D_ball --env_task kick \
-  ${ICM_ARGS} \
-  ${PER_ARGS} \
   --episodes 500000 \
   --num_envs "$NUM_ENVS" \
   --eval_frequency 5 \
@@ -130,15 +106,15 @@ uv run python main.py \
   --warmup "$WARMUP" \
   --batch_size 512 \
   --capacity 5000000 \
-  --lr 1e-4 \
-  --dual_lr 1e-4 \
+  --lr 5e-4 \
+  --dual_lr 5e-4 \
   --epsilon 0.05 \
   --epsilon_mean 0.001 \
   --epsilon_std 1e-3 \
   --sample_k 50 \
   --n_step 3 \
   --sgd_steps_per_learner_step 10 \
-  --target_update_period 10 \
+  --target_update_period 100 \
   --duration 25 \
   --profile \
   $RESUME_ARGS
