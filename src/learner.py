@@ -154,10 +154,10 @@ class MPOLearner:
         )
 
         next_q = self.critic_net.apply(target_params_critic, batch["next_state"], next_actions)
-        next_q = jnp.clip(next_q, -100.0, 100.0)
+        next_q = jnp.clip(next_q, -1000.0, 1000.0)
 
         target_q = batch["reward"] + batch["discount"] * (1.0 - batch["done"]) * next_q
-        target_q = jnp.clip(target_q, -200.0, 200.0)
+        target_q = jnp.clip(target_q, -2000.0, 2000.0)
         current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
 
         sq_error = jnp.square(current_q - jax.lax.stop_gradient(target_q))

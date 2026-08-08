@@ -67,7 +67,7 @@ CONV_MIN_REWARD="${CONV_MIN_REWARD:-600.0}"
 # ICM (Intrinsic Curiosity Module) parameters
 # Override via sbatch --export:  --export=ICM_SCALE=2.0,ICM_LR=1e-3
 ICM_ENABLED="${ICM_ENABLED:-1}"
-ICM_SCALE="${ICM_SCALE:-1.0}"
+ICM_SCALE="${ICM_SCALE:-0.05}"
 ICM_LR="${ICM_LR:-5e-4}"
 ICM_HIDDEN="${ICM_HIDDEN:-64,32}"
 
@@ -134,7 +134,7 @@ uv run python main.py \
   --dual_lr 1e-4 \
   --epsilon 0.05 \
   --epsilon_mean 0.001 \
-  --epsilon_std 1e-4 \
+  --epsilon_std 1e-3 \
   --sample_k 50 \
   --n_step 3 \
   --sgd_steps_per_learner_step 10 \

@@ -24,7 +24,7 @@ class ActorNetwork(nn.Module):
     ``MultivariateNormalDiagHead(init_scale=0.7)``.
     """
     action_dim: tuple[int]
-    init_scale: float = 0.7
+    init_scale: float = 1.0
 
     @nn.compact
     def __call__(self, obs: jax.Array) -> distrax.MultivariateNormalDiag:
