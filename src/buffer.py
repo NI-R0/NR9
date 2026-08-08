@@ -14,6 +14,12 @@ windows are flushed (with appropriate discounting and done flags).
 
 **Vectorized batch operations** are used for ``add_many`` to avoid
 Python-loop overhead when feeding from 48+ parallel envs.
+
+**Prioritized Experience Replay (PER)** — Schaul et al. 2015:
+When ``use_per=True``, transitions are sampled proportional to their
+|TD-error|^alpha.  Importance Sampling (IS) weights correct the bias
+introduced by non-uniform sampling.  The TD-error is written back by
+the learner via ``update_priorities()``.
 """
 
 import numpy as np
@@ -22,9 +28,50 @@ import jax.numpy as jnp
 from loguru import logger
 
 
+class _SegmentTree:
+    """Simple segment tree for efficient priority lookup and update.
+
+    Supports:
+    - ``__setitem__(index, value)``: O(log n)
+    - ``sample(prob)``: O(log n) — find leaf by cumulative probability
+    - ``total``: O(1) sum of all priorities
+    - ``__getitem__(index)``: O(log n)
+    """
+
+    def __init__(self, capacity: int):
+        self._capacity = capacity
+        self._tree = np.zeros(2 * capacity, dtype=np.float64)
+        self._tree_size = 2 * capacity
+
+    def __setitem__(self, index: int, value: float):
+        i = index + self._capacity  # leaf offset
+        self._tree[i] = max(value, 1e-8)  # avoid zero priorities
+        i //= 2
+        while i > 0:
+            self._tree[i] = self._tree[2 * i] + self._tree[2 * i + 1]
+            i //= 2
+
+    def __getitem__(self, index: int):
+        return float(self._tree[index + self._capacity])
+
+    @property
+    def total(self) -> float:
+        if self._capacity == 0:
+            return 0.0
+        return self._tree[1]
+
+    def sample(self, prob: float) -> int:
+        """Find the leaf index whose cumulative probability covers ``prob``."""
+        i = 1  # root
+        while i < self._capacity:
+            i = 2 * i if prob <= self._tree[i] else 2 * i + 1
+        return i - self._capacity
+
+
 class NStepTransitionBuffer:
     def __init__(self, state_shape: tuple[int], action_shape: tuple[int],
-                 capacity: int = 100_000, n_step: int = 5, gamma: float = 0.99):
+                 capacity: int = 100_000, n_step: int = 5, gamma: float = 0.99,
+                 use_per: bool = False, per_alpha: float = 0.6, per_beta: float = 0.4):
         self._capacity = capacity
         self._state_shape = state_shape
         self._action_shape = action_shape
@@ -34,6 +81,11 @@ class NStepTransitionBuffer:
         self._gamma = gamma
         self._size = 0
         self._pos = 0
+        self._use_per = use_per
+
+        # PER hyper-parameters
+        self._per_alpha = per_alpha
+        self._per_beta = per_beta
 
         # Precompute gamma powers for discounted reward aggregation.
         self._gamma_powers = np.power(gamma, np.arange(n_step + 1), dtype=np.float32)
@@ -46,12 +98,21 @@ class NStepTransitionBuffer:
         self._discounts = np.zeros((capacity,), dtype=np.float32)
         self._dones = np.zeros((capacity,), dtype=np.float32)
 
+        # ── PER storage ───────────────────────────────────────────────
+        if use_per:
+            self._tree = _SegmentTree(capacity)
+            self._priorities = np.ones(capacity, dtype=np.float32)  # uniform at init
+        else:
+            self._tree = None
+            self._priorities = None
+
         self._num_envs = 1
         self._windows: list[list[dict]] = [[]]
 
         logger.debug(
             f"NStepTransitionBuffer initialized: capacity={capacity}, "
-            f"n_step={n_step}, gamma={gamma}, state_shape={state_shape}"
+            f"n_step={n_step}, gamma={gamma}, state_shape={state_shape}, "
+            f"PER={'ON (α=' + str(per_alpha) + ', β=' + str(per_beta) + ')' if use_per else 'OFF'}"
         )
 
     def __len__(self):
@@ -152,21 +213,70 @@ class NStepTransitionBuffer:
         self._discounts[self._pos] = discount
         self._dones[self._pos] = done
 
+        if self._use_per:
+            # New transitions start with max priority (will be updated by learner)
+            max_p = self._priorities.max() if self._size > 0 else 1.0
+            self._priorities[self._pos] = max_p
+            self._tree[self._pos] = max_p
+
         self._pos = (self._pos + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
 
         window.pop(0)
 
-    def next(self, key, batch_size):
-        """Samples a random batch of n-step transitions.
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray):
+        """Update priorities for a batch of transitions after learning.
 
-        Uses the provided JAX PRNG key for reproducible sampling.  Indices
-        are generated on-device then converted to a Python list to avoid a
-        GPU→CPU array-deref sync point.  Each array is transferred
-        individually via ``jnp.asarray`` simple host→device copies that
-        are cheaper than concatenating on CPU and then slicing on GPU.
+        Called by the learner after computing TD-errors for a batch.
+        Priority = |TD-error| + ε raised to α.
+
+        Parameters
+        ----------
+        indices : np.ndarray
+            Buffer indices of the transitions (length batch_size).
+        td_errors : np.float32
+            Absolute TD-error per transition (length batch_size).
         """
-        indices = jax.random.randint(key, (batch_size,), 0, self._size).tolist()
+        if not self._use_per:
+            return
+        priorities = (np.abs(td_errors) + 1e-8) ** self._per_alpha
+        for idx, p in zip(indices, priorities):
+            self._priorities[idx] = p
+            self._tree[idx] = p
+
+    def next(self, key, batch_size):
+        """Sample a batch of n-step transitions.
+
+        With PER enabled: samples proportional to priority^α and returns
+        importance sampling (IS) weights for gradient correction.
+        Without PER: uniform random sampling.
+
+        Returns
+        -------
+        dict with keys: state, action, next_state, reward, discount, done
+            plus (with PER): weights (IS correction), indices (buffer positions)
+        """
+        if self._use_per:
+            # Probability-proportional sampling via segment tree
+            probs = np.random.rand(batch_size) * self._tree.total
+            indices = np.array([self._tree.sample(p) for p in probs], dtype=np.int64)
+            # Clamp to valid range
+            indices = np.clip(indices, 0, self._size - 1)
+
+            # Importance sampling weights: (N * P(i))^(-β)
+            # Normalised to [0, 1] for numerical stability
+            sampling_probs = self._priorities[indices] / (self._tree.total + 1e-8)
+            is_weights = (self._size * sampling_probs + 1e-8) ** (-self._per_beta)
+            max_weight = float(is_weights.max())
+            is_weights = (is_weights / max_weight).astype(np.float32)
+        else:
+            # Non-PER: use numpy random fallback when key is None
+            if key is None:
+                indices = np.random.randint(0, self._size, batch_size).tolist()
+            else:
+                indices = jax.random.randint(key, (batch_size,), 0, self._size).tolist()
+
+        is_weights = np.ones(batch_size, dtype=np.float32)
 
         return {
             "state": jnp.asarray(self._states[indices]),
@@ -175,4 +285,6 @@ class NStepTransitionBuffer:
             "reward": jnp.asarray(self._rewards[indices]),
             "discount": jnp.asarray(self._discounts[indices]),
             "done": jnp.asarray(self._dones[indices]),
+            "weights": jnp.asarray(is_weights) if self._use_per else jnp.ones(batch_size, dtype=jnp.float32),
+            "indices": jnp.asarray(indices),
         }

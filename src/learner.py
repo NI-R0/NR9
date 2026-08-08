@@ -160,7 +160,11 @@ class MPOLearner:
         target_q = jnp.clip(target_q, -200.0, 200.0)
         current_q = self.critic_net.apply(params_critic, batch["state"], batch["action"])
 
-        return jnp.mean(jnp.square(current_q - jax.lax.stop_gradient(target_q)))
+        sq_error = jnp.square(current_q - jax.lax.stop_gradient(target_q))
+
+        # PER: weight each sample by importance-sampling weight
+        weights = batch.get("weights", jnp.ones_like(current_q))
+        return jnp.mean(weights * sq_error)
 
     def _compute_weights(self, params_critic, dist_target, batch, eta, key):
         states = batch["state"]

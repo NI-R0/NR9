@@ -1,4 +1,5 @@
 import jax
+import numpy as np
 from src.learner import MPOLearner
 from src.actor import MPOActor
 from src.buffer import NStepTransitionBuffer
@@ -61,8 +62,43 @@ class MPOAgent:
             self.random_key, sample_key = jax.random.split(self.random_key)
             batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
+
+            # PER: write TD-errors back to buffer for priority update
+            if self.buffer._use_per and "indices" in batch and "weights" in batch:
+                # Compute TD-error from critic loss (|Q - target_Q|)
+                # We can extract it from the batch: compute current Q vs target Q
+                self._update_priorities_from_batch(batch)
+
             return metrics
         return {}
+
+    def _update_priorities_from_batch(self, batch):
+        """Compute TD-errors and write them back to the buffer."""
+        from jax import numpy as jnp
+        # Current Q-values
+        current_q = self.learner.critic_net.apply(
+            self.learner.state.params_critic,
+            batch["state"],
+            batch["action"],
+        )
+        # Target Q-values (bootstrap from target networks)
+        dist_next = self.learner.actor_net.apply(
+            self.learner.state.target_params_actor, batch["next_state"]
+        )
+        next_actions = jnp.tanh(dist_next.sample(seed=self.random_key))
+        _, self.random_key = jax.random.split(self.random_key)
+        next_q = self.learner.critic_net.apply(
+            self.learner.state.target_params_critic,
+            batch["next_state"],
+            next_actions,
+        )
+        target_q = batch["reward"] + batch["discount"] * (1.0 - batch["done"]) * next_q
+        td_errors = jnp.abs(current_q - target_q)
+
+        # Convert to numpy for buffer update
+        indices = np.asarray(batch["indices"])
+        errors = np.asarray(td_errors)
+        self.buffer.update_priorities(indices, errors)
 
     def update_batch(self, states, actions, rewards, next_states, dones):
         """Add transitions from all parallel envs and optionally run a learner step.
@@ -81,5 +117,10 @@ class MPOAgent:
             self.random_key, sample_key = jax.random.split(self.random_key)
             batch = self.buffer.next(sample_key, self.batch_size)
             self.learner.state, metrics = self.learner._update_step(self.learner.state, batch)
+
+            # PER: write TD-errors back to buffer for priority update
+            if self.buffer._use_per and "indices" in batch and "weights" in batch:
+                self._update_priorities_from_batch(batch)
+
             return metrics
         return {}
